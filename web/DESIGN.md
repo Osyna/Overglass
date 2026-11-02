@@ -83,8 +83,8 @@ and tighten tab padding so the navigation never collides with status or Settings
 | Home | first-run pairing help, TV status and power, shortcuts, TV details |
 | Remote | power, input, direction pad, volume |
 | Apps | add an app (file or link, with install progress), installed apps with uninstall |
-| Automate | saved scenes with JSON creation/editing and run results; local-time schedules with day selection and enable/disable; private webhook links to copy or revoke |
-| Show | message and read-aloud, on-screen card with a collapsed Advanced builder (all ten widget types, nested stacks/rows, live local preview, Send to TV), live view and screenshot (both open a full-screen zoom/pan lightbox) |
+| Automate | saved scenes with JSON creation/editing and run results; local-time schedules with day selection and enable/disable; private webhook links to copy or revoke; catalog-driven Extensions with settings, refresh intervals, install/update, enable/disable, preview and uninstall |
+| Show | message and read-aloud, on-screen card with a collapsed Advanced builder (all twelve widget types, nested stacks/rows, live local preview, Send to TV), live view and screenshot (both open a full-screen zoom/pan lightbox) |
 | Tune | picture & sound settings, process a file |
 | Settings (gear) | appearance, who can use this page (token or login off), this device's token, link to developer tools |
 | Developer (`#api`) | request log, API reference |
@@ -94,8 +94,13 @@ validates and replaces the draft, while builder edits refresh the JSON. Unapplie
 discarded without changing the draft. The preview uses the TV renderer's widget proportions with Lamplight tokens,
 not screenshot capture (the floating overlay is invisible to both TV capture paths). External images are labelled
 placeholders to preserve the same-origin CSP; Send to TV uses the existing overlay route for final by-eye confirmation.
+Comparison bars have 2–4 editable segments; small bar charts take 3–24 numbers separated by commas or spaces.
+Images can be square or circular. Cards allow up to 5 nested levels and 60 widgets, within 32 KB of JSON.
 
-Automate keeps Scenes in the left column and Scheduler / Webhook links stacked on the right (all stacked on phones).
+Automate keeps Scenes in the left column and Scheduler / Webhook links stacked on the right, with Extensions below
+both columns (all stacked on phones). Extension cards and their setting fields come from the server's catalog.
+Install and Update enable the extension; enabling one disables any other. The server refreshes the enabled card,
+not the page. Preview shows the current settings once without installing; uninstall confirms in place.
 Scene editing uses the server’s existing `{"steps":[...]}` JSON format, not a second visual card builder. Scene-name
 suggestions come from the saved list; names can also be entered before a scene exists. Deletes confirm in place;
 deleting a scene does not remove its schedules or links. Webhook URLs are shown as read-only text and copied,
@@ -124,8 +129,8 @@ a group name.
 
 `index.html` markup and icon sprite · `tokens.css` generated tokens · `app.css` components and layout · `theme.js` theme
 switch (runs in `<head>`) · `app.js` API client, status, remote, notify, card, live, screenshot, zoom lightbox, pairing,
-settings, scenes, scheduler, webhooks, jobs, API reference · `apps.js` apps, login setting, auth wiring, service-worker registration and the install banner ·
+settings, scenes, scheduler, webhooks, extensions, jobs, API reference · `apps.js` apps, login setting, auth wiring, service-worker registration and the install banner ·
 `favicon.svg` · `manifest.json`, `sw.js`, `icons/` installable app (the worker caches only the static shell, never `/api/`;
 bump `CACHE` in `sw.js` to drop old copies) · `check-ui.mjs` offline markup/capability regression gate · `check-overlay.mjs`
-widget-schema checks · `check-automate.mjs` scene suggestions, schedule toggles and copy-only webhook checks
+widget-schema and builder checks · `check-automate.mjs` scene suggestions, schedule and extension toggles, catalog forms and copy-only webhook checks
 (`node web/check-{ui,overlay,automate}.mjs`, no browser or TV).

@@ -420,6 +420,15 @@
         </section>
       </div>
     </div>
+    <section class="panel" data-needs-group="Addons" aria-labelledby="h-addons">
+      <header class="panel-head">
+        <h2 id="h-addons">Extensions</h2>
+        <button class="btn quiet" type="button" id="addons-refresh"><svg><use href="#i-refresh"/></svg><span>Reload</span></button>
+      </header>
+      <p class="lede">Extensions keep a card live on your TV while this server is running. Only one extension can be live at a time. Installing or enabling one disables any other. Preview shows it once without installing.</p>
+      <div id="addons-list" aria-live="polite"><p class="empty">Loading extensions…</p></div>
+      <p class="result-msg" id="addons-msg" role="status" hidden></p>
+    </section>
     <datalist id="automation-scenes"></datalist>
   </main>
 
@@ -506,7 +515,7 @@
                   <option value="xl">Extra large</option><option value="full">Full width</option>
                 </select>
               </div>
-              <p class="hint">Add widgets in order. Stack and row widgets can hold children. Up to 4 levels, 40 widgets and 32 KB of JSON.</p>
+              <p class="hint">Add widgets in order. Vertical and side-by-side groups hold other widgets. Use up to 5 levels, 60 widgets and 32 KB of JSON.</p>
               <div id="ov-builder"></div>
               <p class="result-msg" id="ov-builder-msg" role="status" hidden></p>
               <figure class="overlay-preview">
@@ -516,7 +525,7 @@
               </figure>
               <details class="overlay-json">
                 <summary>Edit raw JSON</summary>
-                <label for="ov-json">Widget tree <span class="sub">root node only, not the request envelope</span></label>
+                <label for="ov-json">Card as JSON <span class="sub">the whole card widget, without request settings</span></label>
                 <p class="hint" id="ov-json-help">The builder is the saved draft. Apply JSON to replace it; builder edits replace this text. Unapplied JSON is not sent.</p>
                 <textarea id="ov-json" rows="12" spellcheck="false" aria-describedby="ov-json-help"></textarea>
                 <div class="row">

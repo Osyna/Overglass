@@ -817,18 +817,27 @@ function cardFromForm() {
 
 const OVERLAY_TONES = ['info', 'success', 'warning', 'alert'];
 const OVERLAY_FIELDS = {
-  stack: { gap: ['Gap (TV pixels)', 0, 48, 1], align: ['Align', ['start', 'center', 'end']] },
-  row: { gap: ['Gap (TV pixels)', 0, 48, 1], align: ['Align', ['start', 'center', 'end']] },
+  stack: { gap: ['Spacing (TV pixels)', 0, 48, 1], align: ['Alignment', ['start', 'center', 'end']] },
+  row: { gap: ['Spacing (TV pixels)', 0, 48, 1], align: ['Alignment', ['start', 'center', 'end']] },
   text: { text: ['Text', 400], size: ['Text size', ['xs', 's', 'm', 'l', 'xl']],
     weight: ['Weight', ['normal', 'strong']], color: ['Colour', ['fg', 'fg-2', ...OVERLAY_TONES]] },
-  image: { src: ['Image URL', 500] },
-  badge: { text: ['Badge text', 24], tone: ['Tone', OVERLAY_TONES] },
-  dot: { tone: ['Tone', OVERLAY_TONES] },
-  progress: { value: ['Value (0–1)', 0, 1, 0.01], label: ['Label', 40], tone: ['Tone', OVERLAY_TONES] },
-  countdown: { target: ['Target (ISO 8601, include time zone)', 80], label: ['Label', 40] },
+  image: { src: ['Image URL', 500], shape: ['Shape', ['square', 'circle']] },
+  badge: { text: ['Badge text', 24], tone: ['Colour', OVERLAY_TONES] },
+  dot: { tone: ['Colour', OVERLAY_TONES] },
+  progress: { value: ['Value (0–1)', 0, 1, 0.01], label: ['Label', 40], tone: ['Colour', OVERLAY_TONES] },
+  countdown: { target: ['Date and time (ISO 8601, include time zone)', 80], label: ['Label', 40] },
   list: { items: ['Items (one per line, up to 10)', 120], style: ['List style', ['bullet', 'number', 'plain']] },
   divider: {},
+  compare: { segments: ['Segments'] },
+  sparkline: { points: ['Points (3–24 numbers from −1 to 1, separated by commas or spaces)'], tone: ['Colour', OVERLAY_TONES] },
 };
+const OVERLAY_SEGMENT_FIELDS = {
+  label: ['Label', 24], value: ['Value', 16], fraction: ['Share (0–1)', 0, 1, 0.01],
+  tone: ['Colour', ['', ...OVERLAY_TONES]],
+};
+const OVERLAY_NAMES = { stack: 'Vertical group', row: 'Side-by-side group', text: 'Text', image: 'Image',
+  badge: 'Badge', dot: 'Status dot', progress: 'Progress bar', countdown: 'Countdown', list: 'List',
+  divider: 'Divider', compare: 'Comparison bar', sparkline: 'Small bar chart' };
 let overlayRoot = { type: 'stack', children: [{ type: 'text', text: 'Your card', size: 'l', weight: 'strong' }] };
 let overlayError = '';
 let overlayJsonDirty = false;
@@ -839,19 +848,22 @@ function newOverlayNode(type) {
     text: { text: 'Text' }, image: { src: 'https://example.com/image.png' }, badge: { text: 'Ready' },
     progress: { value: 0.5 }, countdown: { target: new Date(Date.now() + 300000).toISOString() },
     list: { items: ['First item'] },
+    compare: { segments: [{ label: 'First', value: '50%', fraction: 0.5 }, { label: 'Second', value: '50%', fraction: 0.5 }] },
+    sparkline: { points: [-0.5, 0, 0.5] },
   }[type] || {}) };
 }
 
 function checkOverlayTree(root) {
   let count = 0;
   function check(node, depth) {
-    if (++count > 40 || depth > 4) throw new Error('Use at most 40 widgets and 4 levels.');
+    if (++count > 60) throw new Error('A card may have at most 60 widgets');
+    if (depth > 5) throw new Error('A card may nest at most 5 levels deep');
     if (!node || typeof node !== 'object' || Array.isArray(node) || !Object.hasOwn(OVERLAY_FIELDS, node.type)) {
       throw new Error('Each widget needs a known type.');
     }
     const fields = OVERLAY_FIELDS[node.type];
     const required = { text: ['text'], image: ['src'], badge: ['text'], progress: ['value'],
-      countdown: ['target'], list: ['items'] }[node.type] || [];
+      countdown: ['target'], list: ['items'], compare: ['segments'], sparkline: ['points'] }[node.type] || [];
     for (const key of required) if (node[key] === undefined) throw new Error(`${node.type} needs ${key}.`);
     for (const [key, value] of Object.entries(node)) {
       if (key === 'type' || key === 'children' && (node.type === 'stack' || node.type === 'row')) continue;
@@ -861,6 +873,25 @@ function checkOverlayTree(root) {
         if (!Array.isArray(value) || value.length < 1 || value.length > 10) throw new Error('A list needs 1–10 items.');
         if (value.some((item) => typeof item !== 'string' || [...item].length > 120 || /[\x00-\x1f\x7f]/u.test(item))) {
           throw new Error('Each list item needs at most 120 characters without control characters.');
+        }
+      } else if (key === 'segments') {
+        if (!Array.isArray(value) || value.length < 2 || value.length > 4) throw new Error('A comparison needs 2–4 segments.');
+        for (const segment of value) {
+          if (!segment || typeof segment !== 'object' || Array.isArray(segment)) throw new Error('Each segment needs a label, value and share.');
+          for (const [field, limit] of [['label', 24], ['value', 16]]) {
+            if (typeof segment[field] !== 'string' || [...segment[field]].length > limit || /[\x00-\x1f\x7f]/u.test(segment[field])) {
+              throw new Error(`Segment ${field} needs at most ${limit} characters without control characters.`);
+            }
+          }
+          if (typeof segment.fraction !== 'number' || !Number.isFinite(segment.fraction) || segment.fraction < 0 || segment.fraction > 1) {
+            throw new Error('Each segment share must be a number from 0 to 1.');
+          }
+          if (segment.tone !== undefined && !OVERLAY_TONES.includes(segment.tone)) throw new Error('Choose a valid segment colour.');
+        }
+      } else if (key === 'points') {
+        if (!Array.isArray(value) || value.length < 3 || value.length > 24) throw new Error('A small bar chart needs 3–24 points.');
+        if (value.some(point => typeof point !== 'number' || !Number.isFinite(point) || point < -1 || point > 1)) {
+          throw new Error('Each chart point must be a number from −1 to 1.');
         }
       } else if (Array.isArray(spec[1])) {
         if (!spec[1].includes(value)) throw new Error(`Choose a valid ${key} for ${node.type}.`);
@@ -892,11 +923,43 @@ function overlayNodeCount(node) {
   return 1 + (node.children || []).reduce((count, child) => count + overlayNodeCount(child), 0);
 }
 
+function overlayControls(node, fields) {
+  const controls = h('div', { class: 'pair' });
+  for (const [key, spec] of Object.entries(fields)) {
+    if (key === 'segments') continue;
+    const [label, setting, max, step] = spec;
+    let input;
+    if (Array.isArray(setting)) {
+      const fallback = { size: 'm', color: 'fg', align: 'start', weight: 'normal', style: 'bullet', tone: 'info', shape: 'square' }[key];
+      input = h('select', {}, setting.map((value) => h('option', { value, text: value || 'Default',
+        selected: value === (node[key] ?? (setting.includes('') ? '' : fallback)) })));
+    } else if (key === 'points') {
+      input = h('textarea', { rows: 2 });
+      input.value = node.points.join(', ');
+    } else if (key === 'items') {
+      input = h('textarea', { rows: 3 });
+      input.value = node.items.join('\n');
+    } else {
+      input = h('input', step !== undefined
+        ? { type: key === 'value' ? 'range' : 'number', min: setting, max, step, value: node[key] ?? (key === 'gap' ? 10 : 0) }
+        : { type: key === 'src' ? 'url' : 'text', maxlength: setting, value: node[key] ?? '' });
+    }
+    input.addEventListener('input', () => {
+      node[key] = key === 'items' ? input.value.split('\n') : key === 'points'
+        ? input.value.trim().split(/[,\s]+/u).filter(Boolean).map(Number) : step !== undefined ? Number(input.value) : input.value;
+      if ((step !== undefined && input.value === '') || (key === 'tone' && input.value === '')) delete node[key];
+      updateOverlayDraft(false);
+    });
+    controls.append(h('label', { class: 'field' }, label, input));
+  }
+  return controls;
+}
+
 function overlayBuilder(node, depth = 1, remove = null) {
-  const box = h('fieldset', { class: 'overlay-widget' }, h('legend', { text: depth === 1 ? 'Root widget' : 'Widget' }));
-  const picker = h('select', { 'aria-label': depth === 1 ? 'Root widget type' : 'Widget type' },
-    Object.keys(OVERLAY_FIELDS).map((type) => h('option', { value: type, text: type, selected: node.type === type,
-      disabled: (type === 'stack' || type === 'row') && (depth >= 4 || !node.children && overlayNodeCount(overlayRoot) >= 40) })));
+  const box = h('fieldset', { class: 'overlay-widget' }, h('legend', { text: depth === 1 ? 'Whole card' : 'Widget' }));
+  const picker = h('select', { 'aria-label': depth === 1 ? 'Whole card layout' : 'Widget type' },
+    Object.keys(OVERLAY_FIELDS).map((type) => h('option', { value: type, text: OVERLAY_NAMES[type], selected: node.type === type,
+      disabled: (type === 'stack' || type === 'row') && (depth >= 5 || !node.children && overlayNodeCount(overlayRoot) >= 60) })));
   picker.addEventListener('change', () => {
     const replacement = newOverlayNode(picker.value);
     for (const key of Object.keys(node)) delete node[key];
@@ -905,33 +968,22 @@ function overlayBuilder(node, depth = 1, remove = null) {
   });
   box.append(h('div', { class: 'row' }, h('label', { class: 'field' }, 'Type', picker),
     remove && h('button', { class: 'btn quiet', type: 'button', text: 'Remove widget', onclick: () => { remove(); updateOverlayDraft(true); } })));
-  const controls = h('div', { class: 'pair' });
-  for (const [key, spec] of Object.entries(OVERLAY_FIELDS[node.type])) {
-    const [label, setting, max, step] = spec;
-    let input;
-    if (Array.isArray(setting)) {
-      const fallback = { size: 'm', color: 'fg', align: 'start', weight: 'normal', style: 'bullet', tone: 'info' }[key];
-      input = h('select', {}, setting.map((value) => h('option', { value, text: value, selected: value === (node[key] ?? fallback) })));
-    } else if (key === 'items') {
-      input = h('textarea', { rows: 3 });
-      input.value = node.items.join('\n');
-    } else {
-      input = h('input', step !== undefined
-        ? { type: key === 'value' ? 'range' : 'number', min: setting, max, step, value: node[key] ?? 10 }
-        : { type: key === 'src' ? 'url' : 'text', maxlength: setting, value: node[key] ?? '' });
-    }
-    input.addEventListener('input', () => {
-      node[key] = key === 'items' ? input.value.split('\n') : step !== undefined ? Number(input.value) : input.value;
-      if (step !== undefined && input.value === '') delete node[key];
-      updateOverlayDraft(false);
+  box.append(overlayControls(node, OVERLAY_FIELDS[node.type]));
+  if (node.type === 'compare') {
+    node.segments.forEach((segment, i) => {
+      const row = h('fieldset', { class: 'overlay-widget overlay-segment' }, h('legend', { text: `Segment ${i + 1}` }),
+        overlayControls(segment, OVERLAY_SEGMENT_FIELDS));
+      row.append(h('button', { class: 'btn quiet', type: 'button', text: 'Remove segment', 'aria-label': `Remove segment ${i + 1}`,
+        disabled: node.segments.length <= 2, onclick: () => { node.segments.splice(i, 1); updateOverlayDraft(true); } }));
+      box.append(row);
     });
-    controls.append(h('label', { class: 'field' }, label, input));
+    box.append(h('button', { class: 'btn', type: 'button', text: 'Add segment', disabled: node.segments.length >= 4,
+      onclick: () => { node.segments.push({ label: 'Next', value: '', fraction: 0 }); updateOverlayDraft(true); } }));
   }
-  box.append(controls);
   if (node.children) {
     node.children.forEach((child, i) => box.append(overlayBuilder(child, depth + 1, () => node.children.splice(i, 1))));
     box.append(h('button', { class: 'btn', type: 'button', text: 'Add widget',
-      disabled: depth >= 4 || overlayNodeCount(overlayRoot) >= 40 || node.children.length >= (node.type === 'stack' ? 20 : 10),
+      disabled: depth >= 5 || overlayNodeCount(overlayRoot) >= 60 || node.children.length >= (node.type === 'stack' ? 20 : 10),
       onclick: () => { node.children.push(newOverlayNode('text')); updateOverlayDraft(true); } }));
   }
   return box;
@@ -939,19 +991,40 @@ function overlayBuilder(node, depth = 1, remove = null) {
 
 function previewOverlayNode(node) {
   const el = h(node.type === 'text' ? 'p' : node.type === 'divider' ? 'hr' : 'div', { class: 'w-' + node.type });
-  for (const key of ['size', 'weight', 'color', 'tone', 'align', 'style']) if (node[key]) el.dataset[key] = node[key];
+  for (const key of ['size', 'weight', 'color', 'tone', 'align', 'style', 'shape']) if (node[key]) el.dataset[key] = node[key];
   if (node.children) {
     el.style.gap = ((node.gap ?? 10) * 0.7) + 'px';
     el.append(...node.children.map(previewOverlayNode));
   } else if (node.type === 'image') {
     // The page's same-origin CSP deliberately forbids fetching arbitrary TV image URLs.
-    el.append(h('span', { text: 'Image · loads on TV' }), h('span', { class: 'hint', text: node.src }));
+    el.dataset.shape = node.shape || 'square';
+    el.append(h('span', { text: node.shape === 'circle' ? 'Image' : 'Image · loads on TV' }));
+    if (node.shape !== 'circle') el.append(h('span', { class: 'hint', text: node.src }));
+    el.setAttribute('aria-label', 'Image from ' + node.src + ' · loads on TV');
   } else if (node.type === 'progress') {
     el.append(h('progress', { class: 'w-progress-track', max: 1, value: node.value, 'aria-label': node.label || 'Progress' }));
     if (node.label) el.append(h('span', { class: 'w-progress-label', text: node.label }));
   } else if (node.type === 'countdown') {
     el.append(h('span', { class: 'w-countdown-clock', dataset: { target: node.target } }));
     if (node.label) el.append(h('span', { class: 'w-countdown-label', text: node.label }));
+  } else if (node.type === 'compare') {
+    const labels = h('div', { class: 'w-compare-labels' });
+    const bar = h('div', { class: 'w-compare-bar' });
+    for (const segment of node.segments) {
+      labels.append(h('div', { class: 'w-compare-cell' }, h('span', { class: 'w-compare-label', text: segment.label }),
+        h('span', { class: 'w-compare-value', text: segment.value, dataset: { tone: segment.tone || '' } })));
+      const part = h('span', { class: 'w-compare-seg', dataset: { tone: segment.tone || 'neutral' } });
+      part.style.width = (segment.fraction * 100) + '%';
+      bar.append(part);
+    }
+    el.append(labels, bar);
+  } else if (node.type === 'sparkline') {
+    el.dataset.tone = node.tone || 'info';
+    for (const point of node.points) {
+      const fill = h('span', { class: 'w-sparkline-fill', dataset: { sign: point < 0 ? 'neg' : 'pos' } });
+      fill.style.height = (Math.abs(point) * 50) + '%';
+      el.append(h('span', { class: 'w-sparkline-col' }, fill));
+    }
   } else if (node.type === 'list') {
     el.append(h(node.style === 'number' ? 'ol' : 'ul', {}, node.items.map((text) => h('li', { text }))));
   } else if (node.type === 'dot') {
@@ -1343,8 +1416,9 @@ const AUTOMATION = {
   scenes: { group: 'Scenes', key: 'scenes', empty: 'No scenes yet. Save your first sequence below.' },
   schedule: { group: 'Schedule', key: 'entries', empty: 'No schedules yet. Add a time for a scene below.' },
   webhooks: { group: 'Webhooks', key: 'webhooks', empty: 'No webhook links yet. Create a private link below.' },
+  addons: { group: 'Addons' },
 };
-const automationData = { scenes: null, schedule: null, webhooks: null };
+const automationData = { scenes: null, schedule: null, webhooks: null, addons: null };
 const automationBusy = new Set();
 
 async function loadAutomation(kind) {
@@ -1353,14 +1427,15 @@ async function loadAutomation(kind) {
   automationBusy.add(kind);
   const list = $(kind + '-list');
   const refresh = $(kind + '-refresh');
-  const controls = [...list.closest('.panel').querySelectorAll('button, input, textarea')].map(el => [el, el.disabled]);
+  const controls = [...list.closest('.panel').querySelectorAll('button, input, textarea, select')].map(el => [el, el.disabled]);
   for (const [el] of controls) el.disabled = true;
   refresh.disabled = true;
   refresh.dataset.state = 'loading';
   list.setAttribute('aria-busy', 'true');
   if (!automationData[kind]) list.replaceChildren(h('p', { class: 'empty', text: 'Loading…' }));
   try {
-    automationData[kind] = (await call('GET', '/api/' + kind))[config.key];
+    const reply = await call('GET', '/api/' + kind);
+    automationData[kind] = config.key ? reply[config.key] : reply;
     renderAutomation(kind);
   } catch (err) {
     list.replaceChildren(h('p', { class: 'empty', dataset: { tone: 'error' },
@@ -1376,6 +1451,7 @@ async function loadAutomation(kind) {
 }
 
 function renderAutomation(kind) {
+  if (kind === 'addons') return renderAddons();
   const entries = Object.entries(automationData[kind]);
   $(kind + '-list').replaceChildren(entries.length
     ? h('ul', { class: 'app-list automation-list' }, entries.map(([id, entry]) => automationRow(kind, id, entry)))
@@ -1385,11 +1461,65 @@ function renderAutomation(kind) {
   }
 }
 
+function renderAddons() {
+  const { catalog, installed } = automationData.addons;
+  $('addons-list').replaceChildren(catalog.length
+    ? h('ul', { class: 'app-list addon-list' }, catalog.map(addon => addonCard(addon, installed[addon.id])))
+    : h('p', { class: 'empty', text: 'No extensions are available from this server.' }));
+}
+
+function addonCard(addon, entry) {
+  const card = h('li', { class: 'app addon-card' });
+  card.append(h('div', { class: 'app-meta' }, h('h3', { text: addon.name }),
+    h('span', { text: addon.description }),
+    h('span', { text: `${addon.category} · ${entry ? entry.enabled ? 'Installed · Enabled' : 'Installed · Disabled' : 'Not installed'}` })));
+  const form = h('form', { class: 'stack-form', 'aria-label': 'Settings for ' + addon.name });
+  const fields = [];
+  for (const spec of addon.params_schema) {
+    const value = entry?.params[spec.key] ?? spec.default ?? '';
+    const input = spec.type === 'select' && spec.choices
+      ? h('select', {}, spec.choices.map(choice => h('option', {
+        value: choice.value ?? choice, text: choice.label ?? choice, selected: (choice.value ?? choice) === value,
+      })))
+      : h('input', { type: 'text', value });
+    fields.push([spec.key, input]);
+    form.append(h('label', { class: 'field' }, spec.label, input));
+  }
+  const interval = h('input', { type: 'number', min: 15, max: 3600, step: 1, required: true,
+    value: entry?.interval_seconds ?? addon.default_interval_seconds });
+  form.append(h('label', { class: 'field' }, 'Refresh every (seconds, 15–3600)', interval));
+  const params = () => Object.fromEntries(fields.map(([key, input]) => [key, input.value]));
+  const path = '/api/addons/' + encodeURIComponent(addon.id);
+  const save = h('button', { class: 'btn primary', type: 'submit', text: entry ? 'Update' : 'Install',
+    'aria-label': (entry ? 'Update ' : 'Install ') + addon.name });
+  const preview = h('button', { class: 'btn quiet', type: 'button', text: 'Preview on TV', 'aria-label': 'Preview ' + addon.name + ' on TV' });
+  preview.addEventListener('click', () => changeAutomation('addons', preview, 'POST', path + '/preview', { params: params() }));
+  form.addEventListener('submit', async event => {
+    event.preventDefault();
+    if (await changeAutomation('addons', save, 'PUT', path,
+      { ...entry, params: params(), interval_seconds: Number(interval.value), enabled: true })) await loadAutomation('addons');
+  });
+  form.append(h('div', { class: 'row' }, save, preview));
+  card.append(form);
+  if (entry) {
+    const toggle = h('button', { class: 'btn', type: 'button', text: entry.enabled ? 'Disable' : 'Enable',
+      'aria-label': (entry.enabled ? 'Disable ' : 'Enable ') + addon.name, 'aria-pressed': String(entry.enabled) });
+    toggle.addEventListener('click', async () => {
+      if (await changeAutomation('addons', toggle, 'PUT', path, { ...entry, enabled: !entry.enabled },
+        entry.enabled ? 'Extension disabled.' : 'Extension enabled.')) await loadAutomation('addons');
+    });
+    const remove = h('button', { class: 'btn danger', type: 'button', text: 'Uninstall', 'aria-label': 'Uninstall ' + addon.name });
+    remove.addEventListener('click', () => askAutomationDelete('addons', addon.id, addon.name, card, remove));
+    card.append(h('div', { class: 'row' }, toggle, remove));
+  }
+  return card;
+}
+
 async function changeAutomation(kind, btn, method, path, json, message) {
   if (automationBusy.has(kind)) return;
   automationBusy.add(kind);
   const panel = $(kind + '-list').closest('.panel');
-  const controls = [...panel.querySelectorAll('button, input, textarea')].map(el => [el, el.disabled]);
+  const controls = [...panel.querySelectorAll('button, input, textarea, select')].map(el => [el, el.disabled]);
   for (const [el] of controls) el.disabled = true;
   btn.dataset.state = 'loading';
   try {
@@ -1409,13 +1539,16 @@ function askAutomationDelete(kind, id, name, row, trigger) {
   if (automationBusy.has(kind) || row.querySelector('.app-confirm')) return;
   trigger.hidden = true;
   const keep = h('button', { class: 'btn', type: 'button', text: 'Keep it' });
-  const go = h('button', { class: 'btn danger-fill', type: 'button', text: 'Delete' });
+  const action = kind === 'addons' ? 'Uninstall' : 'Delete';
+  const go = h('button', { class: 'btn danger-fill', type: 'button', text: action });
   const consequence = kind === 'scenes' ? ' Schedules and links using it will no longer run.'
-    : kind === 'webhooks' ? ' Anyone using this link will lose access.' : '';
-  const ask = h('div', { class: 'app-confirm' }, h('p', { text: `Delete ${name}?${consequence}` }), keep, go);
+    : kind === 'webhooks' ? ' Anyone using this link will lose access.'
+      : kind === 'addons' ? ' Its automatic refresh will stop.' : '';
+  const ask = h('div', { class: 'app-confirm' }, h('p', { text: `${action} ${name}?${consequence}` }), keep, go);
   keep.addEventListener('click', () => { ask.remove(); trigger.hidden = false; trigger.focus(); });
   go.addEventListener('click', async () => {
-    if (await changeAutomation(kind, go, 'DELETE', '/api/' + kind + '/' + encodeURIComponent(id), undefined, 'Deleted ' + name + '.')) {
+    if (await changeAutomation(kind, go, 'DELETE', '/api/' + kind + '/' + encodeURIComponent(id), undefined,
+      (kind === 'addons' ? 'Uninstalled ' : 'Deleted ') + name + '.')) {
       if (kind === 'scenes' && $('scene-name').readOnly && $('scene-name').value === id) resetSceneForm();
       await loadAutomation(kind);
     }

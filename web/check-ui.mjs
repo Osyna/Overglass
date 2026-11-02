@@ -69,9 +69,10 @@ for (const m of html.matchAll(/data-goto="([^"]+)"/g)) check(viewIds.has(m[1]), 
 const views = js.match(/const VIEWS = new Set\(\[([^\]]+)\]/)[1].match(/'([\w-]+)'/g).map((s) => s.slice(1, -1));
 for (const v of views) check(viewIds.has(v), `VIEWS lists a view with no markup: ${v}`);
 check([...html.matchAll(/class="tab" data-view="(home|remote|apps|automate|show|tune)"/g)].length === 6, 'six primary navigation sections');
-for (const group of ['Scenes', 'Schedule', 'Webhooks']) has(new RegExp(`data-needs-group="${group}"`), `Automate capability gate for ${group}`);
+for (const group of ['Scenes', 'Schedule', 'Webhooks', 'Addons']) has(new RegExp(`data-needs-group="${group}"`), `Automate capability gate for ${group}`);
 for (const id of ['scene-form', 'scene-name', 'scene-json', 'scenes-list', 'scenes-msg',
-  'schedule-form', 'schedule-time', 'schedule-list', 'schedule-msg', 'webhook-form', 'webhooks-list', 'webhooks-msg']) {
+  'schedule-form', 'schedule-time', 'schedule-list', 'schedule-msg', 'webhook-form', 'webhooks-list', 'webhooks-msg',
+  'addons-list', 'addons-refresh', 'addons-msg']) {
   check(idSet.has(id), `Automate is missing #${id}`);
 }
 check([...html.matchAll(/name="day" value="(mon|tue|wed|thu|fri|sat|sun)"/g)].length === 7, 'seven schedule day choices');
