@@ -16,17 +16,26 @@ const PW = 'luna://com.webos.service.tvpower/power/';
 const MAX_CHARS = 200;
 const OVERLAY_APP = 'dev.webosfoundry.overlay';
 const CARD_KINDS = ['info', 'success', 'warning', 'alert'];
-const CARD_POSITIONS = ['top-left', 'top-right', 'bottom-left', 'bottom-right', 'center'];
+const TONES = [...CARD_KINDS, 'accent'];
+const CARD_POSITIONS = ['top-left', 'top-right', 'bottom-left', 'bottom-right', 'center', 'top', 'bottom', 'left', 'right'];
 const CARD_SIZES = ['xs', 's', 'm', 'l', 'xl', 'full'];
 const TEXT_SIZES = ['xs', 's', 'm', 'l', 'xl'];
 const TEXT_WEIGHTS = ['normal', 'strong'];
-const TEXT_COLORS = ['fg', 'fg-2', 'info', 'success', 'warning', 'alert'];
+const TEXT_COLORS = ['fg', 'fg-2', ...TONES];
 const LIST_STYLES = ['bullet', 'number', 'plain'];
 const WIDGET_TYPES = ['stack', 'row', 'text', 'image', 'badge', 'dot', 'progress', 'countdown', 'list', 'divider',
-                      'compare', 'sparkline'];
+                      'compare', 'sparkline', 'section', 'event', 'stat', 'status', 'meta', 'clock'];
 const IMAGE_SHAPES = ['square', 'circle'];
+const IMAGE_SIZES = ['s', 'm', 'l'];
+const ICONS = ['ball', 'bolt', 'chart', 'trophy', 'pulse', 'layers', 'clock', 'pin', 'sun', 'card', 'swap', 'target',
+               'info', 'bell', 'star', 'flag'];
+const STATES = ['online', 'offline', 'degraded', 'unknown'];
+const CLOCK_FORMATS = ['time', 'seconds', 'date'];
+const FONTS = ['sans', 'condensed', 'mono'];
+const THEME_COLORS = ['accent', 'surface', 'text', 'muted', 'line'];
 const MAX_TREE_DEPTH = 5;
-const MAX_TREE_NODES = 60;
+const MAX_TREE_NODES = 80;
+const MAX_REGIONS = 4;
 
 function luna(uri, payload) {
   const r = spawnSync('luna-send', ['-n', '1', '-w', '3000', uri, JSON.stringify(payload)],
@@ -94,18 +103,16 @@ function checkNode(node, depth, counter) {
     }
     out.src = node.src;
     if (node.shape !== undefined) out.shape = checkEnum(node.shape, IMAGE_SHAPES, 'shape');
+    if (node.size !== undefined) out.size = checkEnum(node.size, IMAGE_SIZES, 'size');
   } else if (kind === 'badge') {
     out.text = clean(node.text, 24, 'badge text');
-    if (node.tone !== undefined) out.tone = checkEnum(node.tone, CARD_KINDS, 'tone');
+    optionalTone(node, out);
   } else if (kind === 'dot') {
-    if (node.tone !== undefined) out.tone = checkEnum(node.tone, CARD_KINDS, 'tone');
+    optionalTone(node, out);
   } else if (kind === 'progress') {
-    if (typeof node.value !== 'number' || Number.isNaN(node.value) || node.value < 0 || node.value > 1) {
-      throw new Error('progress value must be a number 0-1');
-    }
-    out.value = node.value;
+    out.value = checkFraction(node.value, 'progress value');
     if (node.label !== undefined) out.label = clean(node.label, 40, 'label');
-    if (node.tone !== undefined) out.tone = checkEnum(node.tone, CARD_KINDS, 'tone');
+    optionalTone(node, out);
   } else if (kind === 'countdown') {
     if (typeof node.target !== 'string' || Number.isNaN(Date.parse(node.target))) {
       throw new Error('countdown target must be an ISO 8601 datetime string');
@@ -129,43 +136,132 @@ function checkNode(node, depth, counter) {
       throw new Error('sparkline points must be numbers between -1 and 1');
     }
     out.points = node.points.map(Number);
-    if (node.tone !== undefined) out.tone = checkEnum(node.tone, CARD_KINDS, 'tone');
+    if (node.axis !== undefined) {
+      if (!Array.isArray(node.axis) || node.axis.length !== 3) throw new Error('sparkline axis must be three labels: top, middle, bottom');
+      out.axis = node.axis.map((label) => clean(label, 6, 'axis label'));
+    }
+    optionalTone(node, out);
+  } else if (kind === 'section') {
+    out.title = clean(node.title, 40, 'section title');
+    if (node.icon !== undefined) out.icon = checkEnum(node.icon, ICONS, 'icon');
+    if (node.action !== undefined) out.action = clean(node.action, 24, 'section action');
+  } else if (kind === 'event') {
+    out.time = clean(node.time, 8, 'event time');
+    out.text = clean(node.text, 120, 'event text');
+    if (node.icon !== undefined) out.icon = checkEnum(node.icon, ICONS, 'icon');
+    optionalTone(node, out);
+  } else if (kind === 'stat') {
+    out.label = clean(node.label, 40, 'stat label');
+    out.left = clean(node.left, 16, 'stat left value');
+    out.right = clean(node.right, 16, 'stat right value');
+    out.fraction = checkFraction(node.fraction, 'stat fraction');
+    optionalTone(node, out);
+  } else if (kind === 'status') {
+    out.label = clean(node.label, 40, 'status label');
+    out.state = checkEnum(node.state, STATES, 'status state');
+    if (node.detail !== undefined) out.detail = clean(node.detail, 24, 'status detail');
+  } else if (kind === 'meta') {
+    if (!Array.isArray(node.items) || node.items.length < 1 || node.items.length > 4) throw new Error('meta needs 1-4 items');
+    out.items = node.items.map(checkMetaItem);
+  } else if (kind === 'clock') {
+    if (node.format !== undefined) out.format = checkEnum(node.format, CLOCK_FORMATS, 'clock format');
+    if (node.label !== undefined) out.label = clean(node.label, 40, 'label');
   } // divider has no fields
   return out;
 }
 
+function optionalTone(node, out) {
+  if (node.tone !== undefined) out.tone = checkEnum(node.tone, TONES, 'tone');
+}
+function checkFraction(value, what) {
+  if (typeof value !== 'number' || Number.isNaN(value) || value < 0 || value > 1) throw new Error(what + ' must be a number 0-1');
+  return value;
+}
+function isObject(value) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
 function checkSegment(segment) {
-  if (!segment || typeof segment !== 'object' || Array.isArray(segment)) throw new Error('Each compare segment must be a JSON object');
-  const out = {label: clean(segment.label, 24, 'segment label'), value: clean(segment.value, 16, 'segment value')};
-  if (typeof segment.fraction !== 'number' || Number.isNaN(segment.fraction) || segment.fraction < 0 || segment.fraction > 1) {
-    throw new Error('segment fraction must be a number 0-1');
-  }
-  out.fraction = segment.fraction;
-  if (segment.tone !== undefined) out.tone = checkEnum(segment.tone, CARD_KINDS, 'tone');
+  if (!isObject(segment)) throw new Error('Each compare segment must be a JSON object');
+  const out = {label: clean(segment.label, 24, 'segment label'), value: clean(segment.value, 16, 'segment value'),
+    fraction: checkFraction(segment.fraction, 'segment fraction')};
+  optionalTone(segment, out);
   return out;
 }
 
-// By the time a card reaches here it is always {hide: true} or {position?, size?, seconds?, root: <tree>}:
-// the Python server already compiled title/body/lines/image/kind into a tree before this crossed SSH.
-// Re-checked here (shape only, not re-compiled) because the dispatcher only validates size, not structure --
-// defence in depth against a crafted SSH command, same as every other verb.
+function checkMetaItem(item) {
+  if (!isObject(item)) throw new Error('Each meta item must be a JSON object');
+  const out = {label: clean(item.label, 24, 'meta label'), value: clean(item.value, 40, 'meta value')};
+  if (item.icon !== undefined) out.icon = checkEnum(item.icon, ICONS, 'icon');
+  return out;
+}
+
+function checkTheme(theme) {
+  if (!isObject(theme)) throw new Error('theme must be a JSON object');
+  const out = {};
+  for (const [key, value] of Object.entries(theme)) {
+    if (THEME_COLORS.includes(key)) {
+      if (typeof value !== 'string' || !/^#[0-9a-fA-F]{6}$/.test(value)) throw new Error('theme ' + key + ' must be a #rrggbb colour');
+      out[key] = value.toLowerCase();
+    } else if (key === 'opacity') {
+      if (typeof value !== 'number' || Number.isNaN(value) || value < 0.2 || value > 1) throw new Error('theme opacity must be a number 0.2-1');
+      out[key] = value;
+    } else if (key === 'radius') {
+      out[key] = checkInt(value, 0, 32, 'theme radius');
+    } else if (key === 'scale') {
+      if (typeof value !== 'number' || Number.isNaN(value) || value < 0.75 || value > 1.5) throw new Error('theme scale must be a number 0.75-1.5');
+      out[key] = value;
+    } else if (key === 'font') {
+      out[key] = checkEnum(value, FONTS, 'theme font');
+    } else {
+      throw new Error('Unknown theme field: ' + key);
+    }
+  }
+  return out;
+}
+
+// By the time a card reaches here it is always {hide: true}, {position?, size?, seconds?, theme?, root: <tree>}
+// or {seconds?, theme?, regions: [{position, size?, root}]}: the Python server already compiled
+// title/body/lines/image/kind into a tree before this crossed SSH. Re-checked here (shape only, not
+// re-compiled) because the dispatcher only validates size, not structure -- defence in depth against a
+// crafted SSH command, same as every other verb.
 function tree(filePath) {
   let raw;
   try { raw = JSON.parse(fs.readFileSync(filePath, 'utf8')); } catch (e) { throw new Error('Overlay card must be JSON'); }
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('Overlay card must be a JSON object');
+  if (!isObject(raw)) throw new Error('Overlay card must be a JSON object');
   if (raw.hide !== undefined) {
     if (raw.hide !== true || Object.keys(raw).length !== 1) throw new Error('Use {"hide": true} alone to hide the overlay');
     return {hide: true};
   }
-  const allowed = ['position', 'size', 'seconds', 'root'];
+  const allowed = raw.regions !== undefined ? ['seconds', 'theme', 'regions'] : ['position', 'size', 'seconds', 'theme', 'root'];
   const extra = Object.keys(raw).filter((k) => !allowed.includes(k));
   if (extra.length) throw new Error('Unknown overlay field: ' + extra.join(', '));
-  if (raw.root === undefined) throw new Error('A card needs a root widget tree');
   const out = {};
+  if (raw.seconds !== undefined) out.seconds = checkInt(raw.seconds, 0, 300, 'seconds');
+  if (raw.theme !== undefined) out.theme = checkTheme(raw.theme);
+  const counter = {n: 0};
+  if (raw.regions !== undefined) {
+    if (!Array.isArray(raw.regions) || raw.regions.length < 1 || raw.regions.length > MAX_REGIONS) {
+      throw new Error('regions needs 1-' + MAX_REGIONS + ' entries');
+    }
+    const seen = new Set();
+    out.regions = raw.regions.map((region) => {
+      if (!isObject(region) || region.root === undefined || Object.keys(region).some((k) => !['position', 'size', 'root'].includes(k))) {
+        throw new Error('Each region is {"position", "size"?, "root"}');
+      }
+      const checked = {position: checkEnum(region.position, CARD_POSITIONS, 'region position')};
+      if (seen.has(checked.position)) throw new Error('Each region needs a different position');
+      seen.add(checked.position);
+      if (region.size !== undefined) checked.size = checkEnum(region.size, CARD_SIZES, 'size');
+      checked.root = checkNode(region.root, 0, counter);
+      return checked;
+    });
+    return out;
+  }
+  if (raw.root === undefined) throw new Error('A card needs a root widget tree');
   if (raw.position !== undefined) out.position = checkEnum(raw.position, CARD_POSITIONS, 'position');
   if (raw.size !== undefined) out.size = checkEnum(raw.size, CARD_SIZES, 'size');
-  if (raw.seconds !== undefined) out.seconds = checkInt(raw.seconds, 0, 300, 'seconds');
-  out.root = checkNode(raw.root, 0, {n: 0});
+  out.root = checkNode(raw.root, 0, counter);
   return out;
 }
 
@@ -314,6 +410,21 @@ if (process.argv[2] === '--selftest') {
     {type: 'sparkline', points: [-0.2, 0.1, 0.3], tone: 'info'},
   ]}};
   assert.deepStrictEqual(treeOf(v3Card), v3Card);
+  const v4Card = {seconds: 0, theme: {accent: '#c8f542', surface: '#0b0d10', opacity: 0.92, radius: 0, scale: 1.1, font: 'condensed'},
+    regions: [
+      {position: 'top', size: 'full', root: {type: 'row', gap: 24, children: [
+        {type: 'image', src: 'https://example.com/a.png', shape: 'circle', size: 's'},
+        {type: 'text', text: '0 - 0', size: 'xl', weight: 'strong', color: 'accent'},
+        {type: 'clock', format: 'time', label: '1st half'}, {type: 'badge', text: 'LIVE', tone: 'accent'}]}},
+      {position: 'right', size: 's', root: {type: 'stack', children: [
+        {type: 'section', title: 'Live events', icon: 'bolt', action: 'All events'},
+        {type: 'event', time: '08:17', text: 'Yellow card', icon: 'card', tone: 'warning'},
+        {type: 'stat', label: 'Possession', left: '62%', right: '38%', fraction: 0.62},
+        {type: 'sparkline', points: [0.2, -0.1, 0.4], axis: ['+0.4', '0.0', '-0.4']},
+        {type: 'meta', items: [{label: 'Venue', value: 'Somewhere', icon: 'pin'}]},
+        {type: 'status', label: 'Match Data API', state: 'online', detail: '112 ms'}]}}]};
+  assert.deepStrictEqual(treeOf(v4Card), v4Card);
+  assert.deepStrictEqual(treeOf({theme: {accent: '#ABCDEF'}, root: {type: 'text', text: 'x'}}).theme, {accent: '#abcdef'});
   assert.deepStrictEqual(treeOf({hide: true}), {hide: true});
   for (const bad of [{}, {hide: true, root: {type: 'text', text: 'x'}}, {root: {type: 'text', text: 'x'}, extra: 1},
     {root: {type: 'text', text: 'x'.repeat(401)}}, {root: {type: 'text', text: 'a\u0007'}},
@@ -322,9 +433,20 @@ if (process.argv[2] === '--selftest') {
     {root: {type: 'badge', text: 'x', tone: 'red'}}, {seconds: 1.5, root: {type: 'text', text: 'x'}},
     {seconds: 301, root: {type: 'text', text: 'x'}}, {root: {type: 'nope'}}, {root: [1]},
     {root: {type: 'progress', value: 1.5}}, {root: {type: 'countdown', target: 'not a date'}},
-    {root: {type: 'image', src: 'https://x/a.png', shape: 'round'}},
+    {root: {type: 'image', src: 'https://x/a.png', shape: 'round'}}, {root: {type: 'image', src: 'https://x/a.png', size: 'xl'}},
     {root: {type: 'compare', segments: []}}, {root: {type: 'compare', segments: [{label: 'a', value: '1', fraction: 1.5}, {label: 'b', value: '2', fraction: 0.5}]}},
     {root: {type: 'sparkline', points: [0.1, 0.2]}}, {root: {type: 'sparkline', points: [2, 0.1, 0.2]}},
+    {root: {type: 'sparkline', points: [0, 0.5, 1], axis: ['a', 'b']}},
+    {theme: {accent: 'lime'}, root: {type: 'text', text: 'x'}}, {theme: {opacity: 0.1}, root: {type: 'text', text: 'x'}},
+    {theme: {radius: 40}, root: {type: 'text', text: 'x'}}, {theme: {scale: 2}, root: {type: 'text', text: 'x'}},
+    {theme: {font: 'comic'}, root: {type: 'text', text: 'x'}}, {theme: {glow: true}, root: {type: 'text', text: 'x'}},
+    {regions: []}, {regions: [{root: {type: 'text', text: 'x'}}]}, {regions: [{position: 'top', root: {type: 'text', text: 'x'}}], position: 'top'},
+    {regions: [{position: 'top', root: {type: 'text', text: 'x'}}, {position: 'top', root: {type: 'text', text: 'y'}}]},
+    {regions: Array(5).fill({position: 'top', root: {type: 'text', text: 'x'}})},
+    {regions: [{position: 'top', root: {type: 'text', text: 'x'}}, {position: 'right', root: {type: 'row', children: Array(8).fill({type: 'row', children: Array(10).fill({type: 'text', text: 'x'})})}}]},
+    {root: {type: 'section', title: 'x', icon: 'wand'}}, {root: {type: 'event', text: 'x'}}, {root: {type: 'event', time: '1', text: 'x', tone: 'pink'}},
+    {root: {type: 'stat', label: 'a', left: '1', right: '2', fraction: 1.2}}, {root: {type: 'status', label: 'api', state: 'up'}},
+    {root: {type: 'meta', items: []}}, {root: {type: 'meta', items: [{label: 'a', value: 'b', icon: 'nope'}]}}, {root: {type: 'clock', format: 'stardate'}},
     {root: {type: 'stack', children: [{type: 'stack', children: [{type: 'stack', children: [{type: 'stack', children: [{type: 'stack', children: [{type: 'stack', children: [{type: 'text', text: 'x'}]}]}]}]}]}]}}]) {
     assert.throws(() => treeOf(bad), JSON.stringify(bad));
   }

@@ -43,19 +43,28 @@ const SETTINGS = [
 ];
 const DETAIL_TYPES = {lux: 'number', panel_hours: 'number', panel_temperature_c: 'number', pixel_refresher: 'object',
   power_on_reason: 'string', power_history: 'array', signal: 'object', sleep_timer: 'string', usage_today: 'array'};
-const MAX_TREE_BYTES = 32768; // pre-flight check (dispatch.sh's CARD_MAX, the hard stdin ceiling, is more generous at 65536)
+const MAX_TREE_BYTES = 49152; // pre-flight check (dispatch.sh's CARD_MAX, the hard stdin ceiling, is more generous at 65536)
 const CARD_KINDS = ['info', 'success', 'warning', 'alert'];
-const CARD_POSITIONS = ['top-left', 'top-right', 'bottom-left', 'bottom-right', 'center'];
+const TONES = [...CARD_KINDS, 'accent'];
+const CARD_POSITIONS = ['top-left', 'top-right', 'bottom-left', 'bottom-right', 'center', 'top', 'bottom', 'left', 'right'];
 const CARD_SIZES = ['xs', 's', 'm', 'l', 'xl', 'full'];
 const TEXT_SIZES = ['xs', 's', 'm', 'l', 'xl'];
 const TEXT_WEIGHTS = ['normal', 'strong'];
-const TEXT_COLORS = ['fg', 'fg-2', 'info', 'success', 'warning', 'alert'];
+const TEXT_COLORS = ['fg', 'fg-2', ...TONES];
 const LIST_STYLES = ['bullet', 'number', 'plain'];
 const WIDGET_TYPES = ['stack', 'row', 'text', 'image', 'badge', 'dot', 'progress', 'countdown', 'list', 'divider',
-                      'compare', 'sparkline'];
+                      'compare', 'sparkline', 'section', 'event', 'stat', 'status', 'meta', 'clock'];
 const IMAGE_SHAPES = ['square', 'circle'];
+const IMAGE_SIZES = ['s', 'm', 'l'];
+const ICONS = ['ball', 'bolt', 'chart', 'trophy', 'pulse', 'layers', 'clock', 'pin', 'sun', 'card', 'swap', 'target',
+               'info', 'bell', 'star', 'flag'];
+const STATES = ['online', 'offline', 'degraded', 'unknown'];
+const CLOCK_FORMATS = ['time', 'seconds', 'date'];
+const FONTS = ['sans', 'condensed', 'mono'];
+const THEME_COLORS = ['accent', 'surface', 'text', 'muted', 'line'];
 const MAX_TREE_DEPTH = 5;
-const MAX_TREE_NODES = 60;
+const MAX_TREE_NODES = 80;
+const MAX_REGIONS = 4;
 const SHORTHAND_FIELDS = ['title', 'body', 'lines', 'image', 'kind'];
 const TYPES = {
   '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
@@ -326,18 +335,16 @@ function checkNode(node, depth, counter) {
     }
     out.src = node.src;
     if ('shape' in node) out.shape = checkEnum(node.shape, IMAGE_SHAPES, 'shape');
+    if ('size' in node) out.size = checkEnum(node.size, IMAGE_SIZES, 'size');
   } else if (kind === 'badge') {
     out.text = clean(node.text, 24, 'badge text');
-    if ('tone' in node) out.tone = checkEnum(node.tone, CARD_KINDS, 'tone');
+    optionalTone(node, out);
   } else if (kind === 'dot') {
-    if ('tone' in node) out.tone = checkEnum(node.tone, CARD_KINDS, 'tone');
+    optionalTone(node, out);
   } else if (kind === 'progress') {
-    if (typeof node.value !== 'number' || Number.isNaN(node.value) || node.value < 0 || node.value > 1) {
-      throw bad('progress value must be a number 0-1');
-    }
-    out.value = node.value;
+    out.value = checkFraction(node.value, 'progress value');
     if ('label' in node) out.label = clean(node.label, 40, 'label');
-    if ('tone' in node) out.tone = checkEnum(node.tone, CARD_KINDS, 'tone');
+    optionalTone(node, out);
   } else if (kind === 'countdown') {
     if (typeof node.target !== 'string' || Number.isNaN(Date.parse(node.target))) {
       throw bad('countdown target must be an ISO 8601 datetime string');
@@ -361,19 +368,84 @@ function checkNode(node, depth, counter) {
       throw bad('sparkline points must be numbers between -1 and 1');
     }
     out.points = node.points.map(Number);
-    if ('tone' in node) out.tone = checkEnum(node.tone, CARD_KINDS, 'tone');
+    if ('axis' in node) {
+      if (!Array.isArray(node.axis) || node.axis.length !== 3) throw bad('sparkline axis must be three labels: top, middle, bottom');
+      out.axis = node.axis.map((label) => clean(label, 6, 'axis label'));
+    }
+    optionalTone(node, out);
+  } else if (kind === 'section') {
+    out.title = clean(node.title, 40, 'section title');
+    if ('icon' in node) out.icon = checkEnum(node.icon, ICONS, 'icon');
+    if ('action' in node) out.action = clean(node.action, 24, 'section action');
+  } else if (kind === 'event') {
+    out.time = clean(node.time, 8, 'event time');
+    out.text = clean(node.text, 120, 'event text');
+    if ('icon' in node) out.icon = checkEnum(node.icon, ICONS, 'icon');
+    optionalTone(node, out);
+  } else if (kind === 'stat') {
+    out.label = clean(node.label, 40, 'stat label');
+    out.left = clean(node.left, 16, 'stat left value');
+    out.right = clean(node.right, 16, 'stat right value');
+    out.fraction = checkFraction(node.fraction, 'stat fraction');
+    optionalTone(node, out);
+  } else if (kind === 'status') {
+    out.label = clean(node.label, 40, 'status label');
+    out.state = checkEnum(node.state, STATES, 'status state');
+    if ('detail' in node) out.detail = clean(node.detail, 24, 'status detail');
+  } else if (kind === 'meta') {
+    if (!Array.isArray(node.items) || node.items.length < 1 || node.items.length > 4) throw bad('meta needs 1-4 items');
+    out.items = node.items.map(checkMetaItem);
+  } else if (kind === 'clock') {
+    if ('format' in node) out.format = checkEnum(node.format, CLOCK_FORMATS, 'clock format');
+    if ('label' in node) out.label = clean(node.label, 40, 'label');
   } // divider has no fields
   return out;
 }
 
+function optionalTone(node, out) {
+  if ('tone' in node) out.tone = checkEnum(node.tone, TONES, 'tone');
+}
+function checkFraction(value, what) {
+  if (typeof value !== 'number' || Number.isNaN(value) || value < 0 || value > 1) throw bad(what + ' must be a number 0-1');
+  return value;
+}
+
 function checkSegment(segment) {
   if (!isObject(segment)) throw bad('Each compare segment must be a JSON object');
-  const out = {label: clean(segment.label, 24, 'segment label'), value: clean(segment.value, 16, 'segment value')};
-  if (typeof segment.fraction !== 'number' || Number.isNaN(segment.fraction) || segment.fraction < 0 || segment.fraction > 1) {
-    throw bad('segment fraction must be a number 0-1');
+  const out = {label: clean(segment.label, 24, 'segment label'), value: clean(segment.value, 16, 'segment value'),
+    fraction: checkFraction(segment.fraction, 'segment fraction')};
+  optionalTone(segment, out);
+  return out;
+}
+
+function checkMetaItem(item) {
+  if (!isObject(item)) throw bad('Each meta item must be a JSON object');
+  const out = {label: clean(item.label, 24, 'meta label'), value: clean(item.value, 40, 'meta value')};
+  if ('icon' in item) out.icon = checkEnum(item.icon, ICONS, 'icon');
+  return out;
+}
+
+function checkTheme(theme) {
+  if (!isObject(theme)) throw bad('theme must be a JSON object');
+  const out = {};
+  for (const [key, value] of Object.entries(theme)) {
+    if (THEME_COLORS.includes(key)) {
+      if (typeof value !== 'string' || !/^#[0-9a-fA-F]{6}$/.test(value)) throw bad('theme ' + key + ' must be a #rrggbb colour');
+      out[key] = value.toLowerCase();
+    } else if (key === 'opacity') {
+      if (typeof value !== 'number' || Number.isNaN(value) || value < 0.2 || value > 1) throw bad('theme opacity must be a number 0.2-1');
+      out[key] = value;
+    } else if (key === 'radius') {
+      out[key] = checkInt(value, 0, 32, 'theme radius');
+    } else if (key === 'scale') {
+      if (typeof value !== 'number' || Number.isNaN(value) || value < 0.75 || value > 1.5) throw bad('theme scale must be a number 0.75-1.5');
+      out[key] = value;
+    } else if (key === 'font') {
+      out[key] = checkEnum(value, FONTS, 'theme font');
+    } else {
+      throw bad('Unknown theme field: ' + key);
+    }
   }
-  out.fraction = segment.fraction;
-  if ('tone' in segment) out.tone = checkEnum(segment.tone, CARD_KINDS, 'tone');
   return out;
 }
 
@@ -417,30 +489,53 @@ function compileCard(card) {
 }
 
 function checkOverlayRequest(body) {
-  // Validate a POST /api/overlay body. Either {"hide": true} alone, or a card: {"position"?,
-  // "size"?, "seconds"?, "root": <widget tree>} for the general case, or the shorthand {"title"?,
-  // "body"?, "lines"?, "image"?, "kind"?, "position"?, "size"?, "seconds"?} compiled into an
-  // equivalent tree here -- the dispatcher and the TV only ever see a tree.
+  // Validate a POST /api/overlay body. Either {"hide": true} alone, a card {"position"?, "size"?,
+  // "seconds"?, "theme"?, "root": <widget tree>}, a multi-region card {"seconds"?, "theme"?,
+  // "regions": [{"position", "size"?, "root"}]}, or the shorthand {"title"?, "body"?, "lines"?,
+  // "image"?, "kind"?, "position"?, "size"?, "seconds"?} compiled into an equivalent tree here --
+  // the dispatcher and the TV only ever see trees.
   if (!isObject(body)) throw bad('The card must be a JSON object');
   if (body.hide === true) {
     if (Object.keys(body).length !== 1) throw bad('Use {"hide": true} alone to hide the overlay');
     return {hide: true};
   }
   const out = {};
-  if ('position' in body) out.position = checkEnum(body.position, CARD_POSITIONS, 'position');
-  if ('size' in body) out.size = checkEnum(body.size, CARD_SIZES, 'size');
   if ('seconds' in body) out.seconds = checkInt(body.seconds, 0, 300, 'seconds');
-  const extras = ['position', 'size', 'seconds'];
-  if ('root' in body) {
-    const unknown = Object.keys(body).filter((k) => !extras.includes(k) && k !== 'root');
+  if ('theme' in body) out.theme = checkTheme(body.theme);
+  const counter = {n: 0};
+  if ('regions' in body) {
+    const unknown = Object.keys(body).filter((k) => !['seconds', 'theme', 'regions'].includes(k));
     if (unknown.length) throw bad('Unknown overlay field: ' + unknown.join(', '));
-    out.root = checkNode(body.root, 0, {n: 0});
+    if (!Array.isArray(body.regions) || body.regions.length < 1 || body.regions.length > MAX_REGIONS) {
+      throw bad('regions needs 1-' + MAX_REGIONS + ' entries');
+    }
+    const seen = new Set();
+    out.regions = body.regions.map((region) => {
+      if (!isObject(region) || !('root' in region) || Object.keys(region).some((k) => !['position', 'size', 'root'].includes(k))) {
+        throw bad('Each region is {"position", "size"?, "root"}');
+      }
+      const checked = {position: checkEnum(region.position, CARD_POSITIONS, 'region position')};
+      if (seen.has(checked.position)) throw bad('Each region needs a different position');
+      seen.add(checked.position);
+      if ('size' in region) checked.size = checkEnum(region.size, CARD_SIZES, 'size');
+      checked.root = checkNode(region.root, 0, counter);
+      return checked;
+    });
   } else {
-    const unknown = Object.keys(body).filter((k) => !extras.includes(k) && !SHORTHAND_FIELDS.includes(k));
-    if (unknown.length) throw bad('Unknown overlay field: ' + unknown.join(', '));
-    const card = {};
-    SHORTHAND_FIELDS.forEach((key) => { if (key in body) card[key] = body[key]; });
-    out.root = checkNode(compileCard(cleanShorthand(card)), 0, {n: 0});
+    if ('position' in body) out.position = checkEnum(body.position, CARD_POSITIONS, 'position');
+    if ('size' in body) out.size = checkEnum(body.size, CARD_SIZES, 'size');
+    const extras = ['position', 'size', 'seconds', 'theme'];
+    if ('root' in body) {
+      const unknown = Object.keys(body).filter((k) => !extras.includes(k) && k !== 'root');
+      if (unknown.length) throw bad('Unknown overlay field: ' + unknown.join(', '));
+      out.root = checkNode(body.root, 0, counter);
+    } else {
+      const unknown = Object.keys(body).filter((k) => !extras.includes(k) && !SHORTHAND_FIELDS.includes(k));
+      if (unknown.length) throw bad('Unknown overlay field: ' + unknown.join(', '));
+      const card = {};
+      SHORTHAND_FIELDS.forEach((key) => { if (key in body) card[key] = body[key]; });
+      out.root = checkNode(compileCard(cleanShorthand(card)), 0, counter);
+    }
   }
   const encoded = Buffer.from(JSON.stringify(out), 'utf8');
   if (encoded.length > MAX_TREE_BYTES) throw bad('Card is too large (at most ' + MAX_TREE_BYTES + ' bytes of JSON)');

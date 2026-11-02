@@ -147,8 +147,32 @@ def test_overlay_hide():
         {"type": "stack", "children": [{"type": "stack", "children": [{"type": "stack", "children": [
             {"type": "text", "text": "x"}]}]}]}]}]}]}},  # depth 6
     {"root": {"type": "stack", "children": [{"type": "text", "text": "x"}] * 21}},  # over the 20-children-per-stack cap
-    {"root": {"type": "row", "children": [  # 67 nodes via nested rows: exceeds the 60-widget-total cap
-        {"type": "row", "children": [{"type": "text", "text": "x"}] * 10}] * 6}},
+    {"root": {"type": "row", "children": [  # 89 nodes via nested rows: exceeds the 80-widget-total cap
+        {"type": "row", "children": [{"type": "text", "text": "x"}] * 10}] * 8}},
+    {"root": {"type": "section", "title": ""}, "theme": {"accent": "lime"}},  # theme colours are #rrggbb only
+    {"root": {"type": "text", "text": "x"}, "theme": {"opacity": 0.1}},
+    {"root": {"type": "text", "text": "x"}, "theme": {"radius": 40}},
+    {"root": {"type": "text", "text": "x"}, "theme": {"scale": 2}},
+    {"root": {"type": "text", "text": "x"}, "theme": {"font": "comic"}},
+    {"root": {"type": "text", "text": "x"}, "theme": {"glow": True}},
+    {"root": {"type": "text", "text": "x"}, "theme": []},
+    {"regions": []}, {"regions": [{"position": "top", "root": {"type": "text", "text": "x"}}] * 5},
+    {"regions": [{"position": "top", "root": {"type": "text", "text": "x"}},
+                 {"position": "top", "root": {"type": "text", "text": "y"}}]},  # duplicate position
+    {"regions": [{"root": {"type": "text", "text": "x"}}]},  # position required per region
+    {"regions": [{"position": "top", "root": {"type": "text", "text": "x"}}], "position": "top"},  # not both
+    {"regions": [{"position": "top", "root": {"type": "text", "text": "x"}}, {"position": "right", "root": {
+        "type": "row", "children": [{"type": "row", "children": [{"type": "text", "text": "x"}] * 10}] * 8}}]},  # 80 cap spans regions
+    {"root": {"type": "section", "icon": "wand", "title": "x"}}, {"root": {"type": "section", "title": "x" * 41}},
+    {"root": {"type": "event", "time": "1", "text": "x", "tone": "pink"}}, {"root": {"type": "event", "text": "x"}},
+    {"root": {"type": "stat", "label": "a", "left": "1", "right": "2", "fraction": 1.2}},
+    {"root": {"type": "stat", "label": "a", "left": "1", "fraction": 0.5}},
+    {"root": {"type": "status", "label": "api", "state": "up"}},
+    {"root": {"type": "meta", "items": []}}, {"root": {"type": "meta", "items": [{"label": "a"}]}},
+    {"root": {"type": "meta", "items": [{"label": "a", "value": "b", "icon": "nope"}]}},
+    {"root": {"type": "clock", "format": "stardate"}},
+    {"root": {"type": "sparkline", "points": [0, 0.5, 1], "axis": ["+1", "0"]}},
+    {"root": {"type": "image", "src": "https://x/a.png", "size": "xl"}},
 ])
 def test_overlay_rejects_bad_cards_before_transport(card):
     fake = FakeTransport()
@@ -166,7 +190,34 @@ def test_overlay_limits_accepted_at_boundary():
 def test_overlay_too_large_for_grammar():
     fake = FakeTransport()
     one_list = {"type": "list", "items": ["x" * 120] * 10}
-    group = {"type": "stack", "children": [one_list] * 18}
+    group = {"type": "stack", "children": [one_list] * 20}
     with pytest.raises(ValidationError, match="too large"):
         notify.overlay_show(fake, {"root": {"type": "stack", "children": [group, group]}})
     assert fake.calls == []
+
+
+def test_overlay_v4_theme_regions_and_widgets_pass_through():
+    fake = FakeTransport({"notify-overlay": json.dumps({"returnValue": True, "overlay": "shown"})})
+    card = {"seconds": 0, "theme": {"accent": "#C8F542", "surface": "#0b0d10", "opacity": 0.92, "radius": 0,
+                                     "scale": 1.1, "font": "condensed"},
+            "regions": [
+                {"position": "top", "size": "full", "root": {"type": "row", "gap": 24, "children": [
+                    {"type": "image", "src": "https://example.com/a.png", "shape": "circle", "size": "s"},
+                    {"type": "text", "text": "0 - 0", "size": "xl", "weight": "strong", "color": "accent"},
+                    {"type": "clock", "format": "time", "label": "1st half"},
+                    {"type": "badge", "text": "LIVE", "tone": "accent"}]}},
+                {"position": "right", "size": "s", "root": {"type": "stack", "children": [
+                    {"type": "section", "title": "Live events", "icon": "bolt", "action": "All events"},
+                    {"type": "event", "time": "08:17", "text": "Yellow card", "icon": "card", "tone": "warning"},
+                    {"type": "stat", "label": "Possession", "left": "62%", "right": "38%", "fraction": 0.62},
+                    {"type": "sparkline", "points": [0.2, -0.1, 0.4], "axis": ["+0.4", "0.0", "-0.4"]},
+                    {"type": "meta", "items": [{"label": "Venue", "value": "Somewhere", "icon": "pin"}]},
+                    {"type": "status", "label": "Match Data API", "state": "online", "detail": "112 ms"}]}}]}
+    notify.overlay_show(fake, card)
+    sent = json.loads(fake.calls[0].data)
+    assert sent["theme"]["accent"] == "#c8f542"  # normalised to lower case
+    assert [r["position"] for r in sent["regions"]] == ["top", "right"]
+    assert sent["regions"][1]["root"]["children"][2] == {"type": "stat", "label": "Possession", "left": "62%",
+                                                         "right": "38%", "fraction": 0.62}
+    assert sent["regions"][1]["root"]["children"][3]["axis"] == ["+0.4", "0.0", "-0.4"]
+    assert "position" not in sent and "root" not in sent

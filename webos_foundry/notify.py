@@ -9,22 +9,32 @@ from .errors import ValidationError
 
 MAX_CHARS = 200
 MAX_B64_TEXT = 400  # the dispatcher grammar's limit for toast/say payloads
-MAX_TREE_BYTES = 32768  # pre-flight check (dispatch.sh's CARD_MAX, the hard stdin ceiling, is more generous at 65536)
+MAX_TREE_BYTES = 49152  # pre-flight check (dispatch.sh's CARD_MAX, the hard stdin ceiling, is more generous at 65536)
 KINDS = ("info", "success", "warning", "alert")
-POSITIONS = ("top-left", "top-right", "bottom-left", "bottom-right", "center")
+TONES = KINDS + ("accent",)  # widget tones: the four semantic kinds plus the theme's accent colour
+POSITIONS = ("top-left", "top-right", "bottom-left", "bottom-right", "center", "top", "bottom", "left", "right")
 SIZES = ("xs", "s", "m", "l", "xl", "full")
 TEXT_SIZES = ("xs", "s", "m", "l", "xl")
 WEIGHTS = ("normal", "strong")
-COLORS = ("fg", "fg-2", "info", "success", "warning", "alert")
+COLORS = ("fg", "fg-2") + TONES
 LIST_STYLES = ("bullet", "number", "plain")
 WIDGET_TYPES = ("stack", "row", "text", "image", "badge", "dot", "progress", "countdown", "list", "divider",
-                "compare", "sparkline")
+                "compare", "sparkline", "section", "event", "stat", "status", "meta", "clock")
 IMAGE_SHAPES = ("square", "circle")
+IMAGE_SIZES = ("s", "m", "l")
+ICONS = ("ball", "bolt", "chart", "trophy", "pulse", "layers", "clock", "pin", "sun", "card", "swap", "target",
+         "info", "bell", "star", "flag")
+STATES = ("online", "offline", "degraded", "unknown")
+CLOCK_FORMATS = ("time", "seconds", "date")
+FONTS = ("sans", "condensed", "mono")
+THEME_COLORS = ("accent", "surface", "text", "muted", "line")
 MAX_TREE_DEPTH = 5
-MAX_TREE_NODES = 60
+MAX_TREE_NODES = 80  # across every region of one card
+MAX_REGIONS = 4
 SHORTHAND_FIELDS = ("title", "body", "lines", "image", "kind")
 _CONTROL = re.compile("[\x00-\x1f\x7f]")
 _URL = re.compile(r"https?://[^\s\"'<>]+")
+_HEX = re.compile(r"#[0-9a-fA-F]{6}")
 
 
 def _b64(text):
@@ -110,22 +120,18 @@ def _check_node(node, depth, counter) -> dict:
         out["src"] = src
         if "shape" in node:
             out["shape"] = _check_enum(node["shape"], IMAGE_SHAPES, "shape")
+        if "size" in node:
+            out["size"] = _check_enum(node["size"], IMAGE_SIZES, "size")
     elif kind == "badge":
         out["text"] = _clean(node.get("text"), 24, "badge text")
-        if "tone" in node:
-            out["tone"] = _check_enum(node["tone"], KINDS, "tone")
+        _optional_tone(node, out)
     elif kind == "dot":
-        if "tone" in node:
-            out["tone"] = _check_enum(node["tone"], KINDS, "tone")
+        _optional_tone(node, out)
     elif kind == "progress":
-        value = node.get("value")
-        if type(value) not in (int, float) or isinstance(value, bool) or not 0 <= value <= 1:
-            raise ValidationError("progress value must be a number 0-1")
-        out["value"] = float(value)
+        out["value"] = _check_fraction(node.get("value"), "progress value")
         if "label" in node:
             out["label"] = _clean(node["label"], 40, "label")
-        if "tone" in node:
-            out["tone"] = _check_enum(node["tone"], KINDS, "tone")
+        _optional_tone(node, out)
     elif kind == "countdown":
         target = node.get("target")
         if not isinstance(target, str):
@@ -157,23 +163,103 @@ def _check_node(node, depth, counter) -> dict:
                    for point in points):
             raise ValidationError("sparkline points must be numbers between -1 and 1")
         out["points"] = [float(point) for point in points]
-        if "tone" in node:
-            out["tone"] = _check_enum(node["tone"], KINDS, "tone")
+        if "axis" in node:
+            axis = node["axis"]
+            if not isinstance(axis, list) or len(axis) != 3:
+                raise ValidationError("sparkline axis must be three labels: top, middle, bottom")
+            out["axis"] = [_clean(label, 6, "axis label") for label in axis]
+        _optional_tone(node, out)
+    elif kind == "section":
+        out["title"] = _clean(node.get("title"), 40, "section title")
+        if "icon" in node:
+            out["icon"] = _check_enum(node["icon"], ICONS, "icon")
+        if "action" in node:
+            out["action"] = _clean(node["action"], 24, "section action")
+    elif kind == "event":
+        out["time"] = _clean(node.get("time"), 8, "event time")
+        out["text"] = _clean(node.get("text"), 120, "event text")
+        if "icon" in node:
+            out["icon"] = _check_enum(node["icon"], ICONS, "icon")
+        _optional_tone(node, out)
+    elif kind == "stat":
+        out["label"] = _clean(node.get("label"), 40, "stat label")
+        out["left"] = _clean(node.get("left"), 16, "stat left value")
+        out["right"] = _clean(node.get("right"), 16, "stat right value")
+        out["fraction"] = _check_fraction(node.get("fraction"), "stat fraction")
+        _optional_tone(node, out)
+    elif kind == "status":
+        out["label"] = _clean(node.get("label"), 40, "status label")
+        out["state"] = _check_enum(node.get("state"), STATES, "status state")
+        if "detail" in node:
+            out["detail"] = _clean(node["detail"], 24, "status detail")
+    elif kind == "meta":
+        items = node.get("items")
+        if not isinstance(items, list) or not 1 <= len(items) <= 4:
+            raise ValidationError("meta needs 1-4 items")
+        out["items"] = [_check_meta_item(item) for item in items]
+    elif kind == "clock":
+        if "format" in node:
+            out["format"] = _check_enum(node["format"], CLOCK_FORMATS, "clock format")
+        if "label" in node:
+            out["label"] = _clean(node["label"], 40, "label")
     # divider has no fields
     return out
+
+
+def _optional_tone(node, out):
+    if "tone" in node:
+        out["tone"] = _check_enum(node["tone"], TONES, "tone")
+
+
+def _check_fraction(value, what):
+    if type(value) not in (int, float) or isinstance(value, bool) or not 0 <= value <= 1:
+        raise ValidationError("%s must be a number 0-1" % what)
+    return float(value)
 
 
 def _check_segment(segment):
     if not isinstance(segment, dict):
         raise ValidationError("Each compare segment must be a JSON object")
     out = {"label": _clean(segment.get("label"), 24, "segment label"),
-           "value": _clean(segment.get("value"), 16, "segment value")}
-    fraction = segment.get("fraction")
-    if type(fraction) not in (int, float) or isinstance(fraction, bool) or not 0 <= fraction <= 1:
-        raise ValidationError("segment fraction must be a number 0-1")
-    out["fraction"] = float(fraction)
-    if "tone" in segment:
-        out["tone"] = _check_enum(segment["tone"], KINDS, "tone")
+           "value": _clean(segment.get("value"), 16, "segment value"),
+           "fraction": _check_fraction(segment.get("fraction"), "segment fraction")}
+    _optional_tone(segment, out)
+    return out
+
+
+def _check_meta_item(item):
+    if not isinstance(item, dict):
+        raise ValidationError("Each meta item must be a JSON object")
+    out = {"label": _clean(item.get("label"), 24, "meta label"), "value": _clean(item.get("value"), 40, "meta value")}
+    if "icon" in item:
+        out["icon"] = _check_enum(item["icon"], ICONS, "icon")
+    return out
+
+
+def _check_theme(theme):
+    """Card colours and typography: hex colours only, bounded numbers, nothing the TV could misread."""
+    if not isinstance(theme, dict):
+        raise ValidationError("theme must be a JSON object")
+    out = {}
+    for key, value in theme.items():
+        if key in THEME_COLORS:
+            if not isinstance(value, str) or not _HEX.fullmatch(value):
+                raise ValidationError("theme %s must be a #rrggbb colour" % key)
+            out[key] = value.lower()
+        elif key == "opacity":
+            if type(value) not in (int, float) or isinstance(value, bool) or not 0.2 <= value <= 1:
+                raise ValidationError("theme opacity must be a number 0.2-1")
+            out[key] = float(value)
+        elif key == "radius":
+            out[key] = _check_int(value, 0, 32, "theme radius")
+        elif key == "scale":
+            if type(value) not in (int, float) or isinstance(value, bool) or not 0.75 <= value <= 1.5:
+                raise ValidationError("theme scale must be a number 0.75-1.5")
+            out[key] = float(value)
+        elif key == "font":
+            out[key] = _check_enum(value, FONTS, "theme font")
+        else:
+            raise ValidationError("Unknown theme field: %s" % key)
     return out
 
 
@@ -223,9 +309,12 @@ def _compile_card(card) -> dict:
 
 def check_overlay_request(body) -> dict:
     """Validate a POST /api/overlay body. Either {"hide": true} alone, or a card: {"position"?,
-    "size"?, "seconds"?, "root": <widget tree>} for the general case, or the shorthand {"title"?,
-    "body"?, "lines"?, "image"?, "kind"?, "position"?, "size"?, "seconds"?} which is compiled into an
-    equivalent tree right here (see _compile_card) -- the dispatcher and the TV only ever see a tree."""
+    "size"?, "seconds"?, "theme"?, "root": <widget tree>} for the general case, {"seconds"?, "theme"?,
+    "regions": [{"position", "size"?, "root"}, ...]} for a multi-region layout (a top bar plus a side
+    panel, say -- several cards in the one overlay window, since only one such window can ever be
+    visible), or the shorthand {"title"?, "body"?, "lines"?, "image"?, "kind"?, "position"?, "size"?,
+    "seconds"?} which is compiled into an equivalent tree right here (see _compile_card) -- the
+    dispatcher and the TV only ever see trees."""
     if not isinstance(body, dict):
         raise ValidationError("The card must be a JSON object")
     if body.get("hide") is True:
@@ -233,24 +322,47 @@ def check_overlay_request(body) -> dict:
             raise ValidationError('Use {"hide": true} alone to hide the overlay')
         return {"hide": True}
     out = {}
-    if "position" in body:
-        out["position"] = _check_enum(body["position"], POSITIONS, "position")
-    if "size" in body:
-        out["size"] = _check_enum(body["size"], SIZES, "size")
     if "seconds" in body:
         out["seconds"] = _check_int(body["seconds"], 0, 300, "seconds")
-    extras = ("position", "size", "seconds")
-    if "root" in body:
-        unknown = [key for key in body if key not in extras + ("root",)]
+    if "theme" in body:
+        out["theme"] = _check_theme(body["theme"])
+    counter = [0]
+    if "regions" in body:
+        unknown = [key for key in body if key not in ("seconds", "theme", "regions")]
         if unknown:
             raise ValidationError("Unknown overlay field: " + ", ".join(map(str, unknown)))
-        out["root"] = _check_node(body["root"], 0, [0])
+        regions = body["regions"]
+        if not isinstance(regions, list) or not 1 <= len(regions) <= MAX_REGIONS:
+            raise ValidationError("regions needs 1-%d entries" % MAX_REGIONS)
+        out["regions"], seen = [], set()
+        for region in regions:
+            if not isinstance(region, dict) or set(region) - {"position", "size", "root"} or "root" not in region:
+                raise ValidationError("Each region is {\"position\", \"size\"?, \"root\"}")
+            checked = {"position": _check_enum(region.get("position"), POSITIONS, "region position")}
+            if checked["position"] in seen:
+                raise ValidationError("Each region needs a different position")
+            seen.add(checked["position"])
+            if "size" in region:
+                checked["size"] = _check_enum(region["size"], SIZES, "size")
+            checked["root"] = _check_node(region["root"], 0, counter)
+            out["regions"].append(checked)
     else:
-        unknown = [key for key in body if key not in extras + SHORTHAND_FIELDS]
-        if unknown:
-            raise ValidationError("Unknown overlay field: " + ", ".join(map(str, unknown)))
-        card = {key: body[key] for key in SHORTHAND_FIELDS if key in body}
-        out["root"] = _check_node(_compile_card(_clean_shorthand(card)), 0, [0])
+        if "position" in body:
+            out["position"] = _check_enum(body["position"], POSITIONS, "position")
+        if "size" in body:
+            out["size"] = _check_enum(body["size"], SIZES, "size")
+        extras = ("position", "size", "seconds", "theme")
+        if "root" in body:
+            unknown = [key for key in body if key not in extras + ("root",)]
+            if unknown:
+                raise ValidationError("Unknown overlay field: " + ", ".join(map(str, unknown)))
+            out["root"] = _check_node(body["root"], 0, counter)
+        else:
+            unknown = [key for key in body if key not in extras + SHORTHAND_FIELDS]
+            if unknown:
+                raise ValidationError("Unknown overlay field: " + ", ".join(map(str, unknown)))
+            card = {key: body[key] for key in SHORTHAND_FIELDS if key in body}
+            out["root"] = _check_node(_compile_card(_clean_shorthand(card)), 0, counter)
     encoded = json.dumps(out, ensure_ascii=False, separators=(",", ":")).encode()
     if len(encoded) > MAX_TREE_BYTES:
         raise ValidationError("Card is too large (at most %d bytes of JSON)" % MAX_TREE_BYTES)
