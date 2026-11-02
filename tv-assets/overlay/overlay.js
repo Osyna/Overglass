@@ -522,6 +522,17 @@
     return out;
   }
 
+  // Left/right panels start below a top bar and end above a bottom bar, like a broadcast sidebar.
+  function fitPanels() {
+    var top = stage.querySelector('.card[data-pos="top"]');
+    var bottom = stage.querySelector('.card[data-pos="bottom"]');
+    var inset = {top: top ? top.offsetHeight + 'px' : '', bottom: bottom ? bottom.offsetHeight + 'px' : ''};
+    ['left', 'right'].forEach(function (side) {
+      var panel = stage.querySelector('.card[data-pos="' + side + '"]');
+      if (panel) { panel.style.top = inset.top; panel.style.bottom = inset.bottom; }
+    });
+  }
+
   function render(p) {
     if (p.hide === true) return close();
     var regions = regionsOf(p);
@@ -533,6 +544,7 @@
     applyTheme(checkTheme(p.theme));
     var seconds = typeof p.seconds === 'number' && p.seconds >= 0 && p.seconds <= 300 ? p.seconds : 8;
     regions.forEach(function (region) { makeCard(region.position, region.size, region.tree, seconds); });
+    fitPanels();
     passThrough();
     if (seconds) hideTimer = setTimeout(close, seconds * 1000);
   }

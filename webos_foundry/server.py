@@ -783,12 +783,16 @@ ROUTES = (
     route("POST", "/api/overlay", "Notify",
           "Show a custom card on the TV, built from your own JSON layout of widgets, or hide it.",
           post_overlay,
-          body='Either {"hide": true} alone, or {"position"?, "size"?, "seconds"?, "root": <widget tree>}, or the '
-               'shorthand {"title"?, "body"?, "lines"?, "image"?, "kind"?, "position"?, "size"?, "seconds"?} compiled '
-               'into an equivalent tree. position: top-left|top-right|bottom-left|bottom-right|center (default '
-               'top-right). size: xs|s|m|l|xl|full (default m). seconds: 0-300, 0 = stays until hidden (default 8). '
-               'A widget node is {"type": stack|row|text|image|badge|dot|progress|countdown|list|divider, '
-               '...fields, "children"?: [...] for stack/row}; depth ≤ 4, ≤ 40 widgets total, ≤ 32768 bytes of JSON. '
+          body='Either {"hide": true} alone, or {"position"?, "size"?, "seconds"?, "theme"?, "root": <widget tree>}, '
+               'or {"seconds"?, "theme"?, "regions": [{"position", "size"?, "root"}, ...]} (1-4 regions with distinct '
+               'positions drawn in the one overlay window), or the shorthand {"title"?, "body"?, "lines"?, "image"?, '
+               '"kind"?, "position"?, "size"?, "seconds"?} compiled into an equivalent tree. position: '
+               'top-left|top-right|bottom-left|bottom-right|center (floating, default top-right) or top|bottom|left|right '
+               '(edge bar / panel). size: xs|s|m|l|xl|full (default m). seconds: 0-300, 0 = stays until hidden (default 8). '
+               'theme: {"accent"?, "surface"?, "text"?, "muted"?, "line"?: "#rrggbb", "opacity"? 0.2-1, "radius"? 0-32, '
+               '"scale"? 0.75-1.5, "font"? sans|condensed|mono}. A widget node is {"type": stack|row|text|image|badge|dot|'
+               'progress|countdown|clock|list|divider|compare|sparkline|section|event|stat|status|meta, ...fields, '
+               '"children"?: [...] for stack/row}; depth ≤ 5, ≤ 80 widgets total, ≤ 49152 bytes of JSON. '
                'Full per-type field list: ARCHITECTURE.md section 3a.',
           returns='{"message": "Overlay card shown|hidden"}',
           tv=["dispatch verb notify-overlay → node notify.js overlay: reads the tree from stdin (not inline — a "
