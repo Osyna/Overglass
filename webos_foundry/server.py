@@ -14,6 +14,7 @@ import hashlib
 import hmac
 import ipaddress
 import json
+import os
 import re
 import secrets
 import shutil
@@ -29,7 +30,7 @@ from pathlib import Path
 from socket import AF_INET6
 from urllib.parse import parse_qs, unquote, urlsplit
 
-from webos_foundry import apps, capture, notify, process, tv
+from webos_foundry import apps, capture, notify, pairing, process, tv
 from webos_foundry.config import AUTH_MODES, Config
 from webos_foundry.errors import ConfigError, NotPairedError, TransportError, TvBusyError, WebosFoundryError
 from webos_foundry.transport import SSHTransport
@@ -44,7 +45,7 @@ TYPES = {  # extension -> content type of the files served from web/
 }
 UPLOAD_RE = re.compile(r"/uploads/([0-9a-f]{32})\.ipk")  # unguessable id = the capability the TV fetches an upload by
 PUBLIC = ("/api", "/api/health")  # no bearer token, ever
-LOCAL = PUBLIC + ("/api/config/auth",)  # answered from this server's own state; no TV or pairing needed
+LOCAL = PUBLIC + ("/api/config/auth", "/api/pair")  # answered from this server's own state; no TV or pairing needed
 NOT_PAIRED = "Not paired; run: wof pair --host <ip>"
 CSP = ("default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' blob:; "
        "font-src 'self'; media-src 'self' blob:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
@@ -562,6 +563,29 @@ def patch_auth(request, _):
     return auth_state(mode)
 
 
+def post_pair(request, _):
+    """Pair with a TV entirely from the browser: the one-time root key is written to a private temp file for the
+    single SSH exchange pairing.pair() needs, then deleted; it is never saved, logged, or kept past this request."""
+    if not request.server.loopback:
+        raise ApiError(403, "Pairing only works from this computer: open http://127.0.0.1:%d/ here, not the LAN "
+                            "address (the root key never leaves the machine running the server)" % request.server.server_address[1])
+    body = request.json_body()
+    key, port = body.get("key"), body.get("port", 22)
+    if not isinstance(key, str) or not key.strip():
+        raise ApiError(400, "Paste or upload the TV's root SSH private key")
+    fd, path = tempfile.mkstemp(prefix="webos-foundry-pair-")
+    try:
+        os.chmod(path, 0o600)
+        with os.fdopen(fd, "w") as f:
+            f.write(key if key.endswith("\n") else key + "\n")
+        config = pairing.pair(body.get("host"), path, port=port if isinstance(port, int) else 22)
+    finally:
+        os.unlink(path)
+    with request.server.transport_lock:
+        request.server.transport = None  # the next request builds a fresh SSHTransport with the new restricted key
+    return {"message": "Paired with %s" % config.tv_host, "tv_host": config.tv_host}
+
+
 def route(method, path, group, summary, handler, **doc):
     pattern = re.compile("^" + re.sub(r"\\\{(\w+)\\\}", r"(?P<\1>[^/]+)", re.escape(path)) + "$")
     return {"method": method, "path": path, "group": group, "summary": summary, **doc,
@@ -577,6 +601,16 @@ ROUTES = (
           returns='{"paired": bool, "tv_host": str | null}', tv=[],
           notes="Reads the saved config only; it never contacts the TV, so it answers while the TV is off.",
           example={"path": "/api/health"}),
+    route("POST", "/api/pair", "Setup",
+          "Pair with a TV using its root SSH key: the one-time setup step, done entirely from the browser.",
+          post_pair,
+          body='{"host": "IP or hostname", "key": "root SSH private key, PEM/OpenSSH text", "port"?: 22}',
+          returns='{"message": str, "tv_host": str}',
+          tv=["uses the pasted root key once over SSH to write dispatch.sh and append a dedicated restricted key "
+              "to /home/root/.ssh/authorized_keys, then pushes every TV script with the new restricted key"],
+          notes="Loopback only, regardless of auth_mode: the root key is accepted only from this computer, never "
+                "over the LAN, and is never saved, logged, or sent anywhere but the TV.",
+          example={"path": "/api/pair", "body": {"host": "192.168.1.50", "key": "-----BEGIN OPENSSH PRIVATE KEY-----\n...\n-----END OPENSSH PRIVATE KEY-----\n"}}),
     route("GET", "/api/status", "Status", "Power, foreground source, Luma, SoC temperature, volume and mute.", get_status,
           returns='{"power": "on|off|unknown", "raw_power_state", "source": "HDMI 1|Luma|LG Home|Off|…", "app_id", '
                   '"is_luma", "temperature_c", "temperature_source", "volume", "muted"} — volume/muted are null in standby',

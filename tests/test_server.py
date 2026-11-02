@@ -579,6 +579,79 @@ def test_login_cannot_be_turned_back_on_without_a_token_on_a_network_bind(serve)
     assert app.json("GET", "/api/config/auth")[1]["mode"] == "disabled"
 
 
+# ---- pairing
+
+def test_pair_is_refused_off_loopback_even_with_a_valid_token(serve):
+    app = serve(bind="0.0.0.0", token=TOKEN, transport=None)
+    status, body = app.json("POST", "/api/pair", {"host": "h", "key": "k"}, bearer())
+    assert status == 403 and "127.0.0.1" in body["error"]
+
+
+def test_pair_input_validation(serve):
+    app = serve(transport=None)
+    for body in ({"host": "h"}, {"host": "h", "key": ""}, {"host": "h", "key": "   "}, {"host": "h", "key": 5}, {}):
+        status, answer = app.json("POST", "/api/pair", body)
+        assert status == 400 and answer["error"], body
+
+
+def test_pair_success_writes_a_private_temp_key_then_deletes_it_and_resets_the_transport(serve, monkeypatch):
+    seen = {}
+
+    def fake_pair(host, path, port=22, **kw):
+        seen["host"], seen["port"] = host, port
+        seen["key_text"] = Path(path).read_text()
+        seen["mode"] = os.stat(path).st_mode & 0o777
+        seen["existed_during_call"] = Path(path).is_file()
+        return Config.for_dir(Path(os.environ["WEBOS_FOUNDRY_HOME"]), tv_host=host)
+
+    monkeypatch.setattr(server.pairing, "pair", fake_pair)
+    app = serve(transport="not-none-so-reset-is-observable")
+    status, body = app.json("POST", "/api/pair", {"host": "192.168.1.50", "key": "SECRET KEY TEXT", "port": 2222})
+    assert status == 200 and body == {"message": "Paired with 192.168.1.50", "tv_host": "192.168.1.50"}
+    assert seen == {"host": "192.168.1.50", "port": 2222, "key_text": "SECRET KEY TEXT\n", "mode": 0o600,
+                    "existed_during_call": True}
+    assert app.server.transport is None  # the next request builds a fresh SSHTransport with the new restricted key
+
+
+def test_pair_key_defaults_port_and_keeps_a_trailing_newline(serve, monkeypatch):
+    seen = {}
+    monkeypatch.setattr(server.pairing, "pair",
+                        lambda host, path, port=22, **kw: seen.update(port=port, text=Path(path).read_text())
+                        or Config.for_dir(Path(os.environ["WEBOS_FOUNDRY_HOME"]), tv_host=host))
+    app = serve(transport=None)
+    app.json("POST", "/api/pair", {"host": "h", "key": "k\n"})
+    assert seen == {"port": 22, "text": "k\n"}  # no double newline
+
+
+def test_pair_errors_propagate_and_still_delete_the_temp_key(serve, monkeypatch):
+    from webos_foundry.errors import ValidationError
+    paths = []
+
+    def fail(host, path, port=22, **kw):
+        paths.append(path)
+        raise ValidationError("Host must be an IP address or hostname")
+
+    monkeypatch.setattr(server.pairing, "pair", fail)
+    app = serve(transport=None)
+    status, body = app.json("POST", "/api/pair", {"host": "bad host", "key": "k"})
+    assert status == 400 and "Host must be" in body["error"]
+    assert paths and not Path(paths[0]).exists()
+
+
+def test_pair_transport_error_propagates_as_502_and_deletes_the_temp_key(serve, monkeypatch):
+    paths = []
+
+    def fail(host, path, port=22, **kw):
+        paths.append(path)
+        raise TransportError("Permission denied (publickey)")
+
+    monkeypatch.setattr(server.pairing, "pair", fail)
+    app = serve(transport=None)
+    status, body = app.json("POST", "/api/pair", {"host": "h", "key": "k"})
+    assert status == 502 and "Permission denied" in body["error"]
+    assert paths and not Path(paths[0]).exists()
+
+
 # ---- apps
 
 def test_apps_routes_call_the_apps_module(serve, monkeypatch):

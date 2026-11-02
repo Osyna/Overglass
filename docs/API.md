@@ -45,14 +45,15 @@ server's configured hosts answers `421`, and cross-origin / cross-site non-GET r
 
 | Method | Path | Group | Summary |
 | --- | --- | --- | --- |
-| `GET` | `/api` | Reference | This catalogue: TV identity, processing profiles and every route. |
-| `GET` | `/api/health` | Reference | `{"paired": bool, "tv_host": str\|null}`; no authentication. |
+| `GET` | `/api` | Reference | This catalogue: TV address, processing profiles and every route. |
+| `GET` | `/api/health` | Reference | Whether this install is paired with a TV, and its address. The only route besides GET /api that needs no token. |
+| `POST` | `/api/pair` | Setup | Pair with a TV using its root SSH key: the one-time setup step, done entirely from the browser. |
 | `GET` | `/api/status` | Status | Power, foreground source, Luma, SoC temperature, volume and mute. |
 | `GET` | `/api/details` | Status | OLED panel hours and temperature, pixel refresher runs, power-on reason and history, ambient light, input signal, sleep timer and today's app usage. |
 | `POST` | `/api/notify/toast` | Notify | Show a message on the TV screen as a toast. |
 | `POST` | `/api/notify/say` | Notify | Speak a message through the TV speaker (text to speech) at a chosen volume, then restore the TV. |
-| `POST` | `/api/overlay` | Notify | Show a custom card on the TV, or hide it. |
-| `GET` | `/api/screenshot` | Status | Capture the picture the TV shows from its HDMI input as an image. |
+| `POST` | `/api/overlay` | Notify | Show a custom card on the TV (title, text, lines, optional image, colour kind, position, duration), or hide it. |
+| `GET` | `/api/screenshot` | Status | Capture the picture the TV shows from its HDMI input (without the TV's own menus) as an image. |
 | `GET` | `/api/screen/stream` | Status | Live low-resolution view of the HDMI picture: raw RGB frames in a close-delimited binary stream. |
 | `POST` | `/api/remote/{action}` | Remote | Send one remote action and wait for the TV to confirm it. |
 | `GET` | `/api/settings` | Picture & sound | The allowed AI picture and sound settings, as the TV reports them now. |
@@ -60,9 +61,14 @@ server's configured hosts answers `421`, and cross-origin / cross-site non-GET r
 | `GET` | `/api/jobs` | Processing | Processing jobs, newest first, and the one reserving the TV. |
 | `POST` | `/api/jobs` | Processing | Upload a PNG/JPEG or WAV (raw request body) and process it on the TV. |
 | `GET` | `/api/jobs/{id}` | Processing | One job with its processor log. |
-| `POST` | `/api/jobs/{id}/cancel` | Processing | Interrupt a running job. The TV-side processor restores the TV before the job ends. |
-| `POST` | `/api/jobs/{id}/release` | Processing | Check again whether the TV was released after `release_unconfirmed`. |
+| `POST` | `/api/jobs/{id}/cancel` | Processing | Cancel a running job. The processor stops at its next step and the TV is restored before the job ends. |
+| `POST` | `/api/jobs/{id}/release` | Processing | Check again whether the TV was released after release_unconfirmed. |
 | `GET` | `/api/jobs/{id}/result` | Processing | Download the processed file of a done job. |
+| `GET` | `/api/apps` | Apps | Apps installed on the TV that can be removed (Homebrew and sideloaded apps). |
+| `POST` | `/api/apps` | Apps | Install an app (IPK): from a URL the TV downloads itself, or from an IPK uploaded as the request body. |
+| `DELETE` | `/api/apps/{id}` | Apps | Uninstall an app by its id. |
+| `GET` | `/api/config/auth` | Settings | Whether this server asks for a login token. |
+| `PATCH` | `/api/config/auth` | Settings | Turn the login token requirement off or back on (saved in the config). |
 
 <!-- ROUTES:END -->
 

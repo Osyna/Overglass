@@ -48,6 +48,9 @@ Use the key you already have from rooting the TV:
 wof pair --host 192.168.1.50 --root-key ~/.ssh/tv_root_key
 ```
 
+(Or skip this and the "serve" step below in that order: run `wof serve` first, open the page, and
+pair from the "Let's connect your TV" card — `POST /api/pair` does the same thing, loopback only.)
+
 `wof pair` (see [ARCHITECTURE.md §6](../ARCHITECTURE.md)):
 
 1. connects once with your root key and pins the TV's host key in `<config dir>/known_hosts`

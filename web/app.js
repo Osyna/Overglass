@@ -1087,8 +1087,74 @@ document.addEventListener('keydown', (event) => {
   remote(btn);
 });
 
+/* ---------- pairing (connects this server to a TV, from the browser) ---------- */
+
+let pairKey = '';  // kept out of S and the shared call() logger: never shown, never sent anywhere but POST /api/pair
+
+function syncPairForm() {
+  $('pair-go').disabled = !$('pair-host').value.trim() || !pairKey.trim();
+}
+
+async function pickPairKey(file) {
+  if (!file) return;
+  const drop = $('pair-drop');
+  pairKey = '';
+  delete drop.dataset.ready;
+  $('pair-drop-main').textContent = file.name;
+  if (file.size > 16384) {
+    $('pair-drop-sub').textContent = 'That is too large to be a private key. Choose another file.';
+  } else {
+    const text = await file.text();
+    if (!text.trim()) {
+      $('pair-drop-sub').textContent = 'That file is empty. Choose another one.';
+    } else {
+      pairKey = text;
+      drop.dataset.ready = 'true';
+      $('pair-drop-sub').textContent = 'Key loaded · choose another file to replace it';
+    }
+  }
+  syncPairForm();
+}
+
+async function submitPair(e) {
+  e.preventDefault();
+  const btn = $('pair-go');
+  const msg = $('pair-msg');
+  const host = $('pair-host').value.trim();
+  btn.disabled = true;
+  btn.dataset.state = 'loading';
+  result(msg, 'Connecting…');
+  try {
+    const headers = { 'Content-Type': 'application/json' };
+    if (S.token) headers.Authorization = 'Bearer ' + S.token;
+    const res = await fetch('/api/pair', { method: 'POST', headers, body: JSON.stringify({ host, key: pairKey }) });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    pairKey = '';
+    $('pair-key-text').value = '';
+    $('pair-file').value = '';
+    result(msg, data.message, 'ok');
+    S.paired = true;
+    $('tv-addr').textContent = tvLabel(data.tv_host);
+    $('pair-hint').hidden = true;
+    loadAll();
+  } catch (err) {
+    result(msg, err.message, 'error');
+    delete btn.dataset.state;
+    syncPairForm();
+  }
+}
+
 function wire() {
   $('token-btn').addEventListener('click', () => { S.promptDismissed = false; openToken(); });
+  $('pair-host').addEventListener('input', syncPairForm);
+  $('pair-file').addEventListener('change', (e) => pickPairKey(e.target.files[0]));
+  $('pair-key-text').addEventListener('input', (e) => { pairKey = e.target.value; syncPairForm(); });
+  $('pair-form').addEventListener('submit', submitPair);
+  { const drop = $('pair-drop');
+    drop.addEventListener('dragover', (e) => { e.preventDefault(); drop.dataset.over = 'true'; });
+    drop.addEventListener('dragleave', () => { delete drop.dataset.over; });
+    drop.addEventListener('drop', (e) => { e.preventDefault(); delete drop.dataset.over; pickPairKey(e.dataTransfer.files[0]); }); }
   $('hero-signin').addEventListener('click', () => { S.promptDismissed = false; openToken(); });
   $('token-form').addEventListener('submit', (e) => {
     e.preventDefault();

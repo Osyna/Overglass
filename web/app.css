@@ -205,7 +205,7 @@ dialog.sheet form { display: grid; gap: var(--space-4); }
 .steps { margin: 0; padding-left: 1.4em; display: grid; gap: var(--space-4); }
 .steps li { padding-left: var(--space-1); }
 .steps li > span { display: block; margin-bottom: var(--space-3); }
-.pair-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr)); gap: var(--space-3); margin-bottom: var(--space-3); }
+.mini textarea, .mini .cmd { margin-top: var(--space-2); }
 .cmd { position: relative; }
 .cmd pre { margin: 0; padding-right: calc(var(--tap) + var(--space-3)); }
 .cmd .btn { position: absolute; top: var(--space-2); right: var(--space-2); }

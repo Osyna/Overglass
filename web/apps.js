@@ -339,38 +339,6 @@ async function confirmAuthOff(event) {
   }
 }
 
-/* ---------- first run: pairing help ---------- */
-
-const quoteArg = (value) => (value.startsWith('~/') ? '~/' + shellQuote(value.slice(2)) : shellQuote(value));
-
-function pairCommand() {
-  const ip = $('pair-ip').value.trim();
-  const key = $('pair-key').value.trim();
-  return `wof pair --host ${ip ? quoteArg(ip) : '<ip>'} --root-key ${key ? quoteArg(key) : '<path>'}`;
-}
-
-async function recheckPairing(btn) {
-  btn.dataset.state = 'loading';
-  try {
-    const health = await call('GET', '/api/health');
-    S.paired = health.paired;
-    $('pair-hint').hidden = health.paired;
-    $('tv-addr').textContent = tvLabel(health.paired && health.tv_host);
-    if (health.paired) {
-      say('Connected to your TV.');
-      S.api = await call('GET', '/api');
-      applyAvailability();
-      renderApi();
-      await loadAll();
-    } else {
-      say('Still not paired. Run the command on the computer that runs this server, then check again.', 'error');
-    }
-  } catch (err) {
-    say('Could not reach the server: ' + err.message, 'error');
-  }
-  delete btn.dataset.state;
-}
-
 /* ---------- wiring ---------- */
 
 function wireExtras() {
@@ -402,14 +370,5 @@ function wireExtras() {
   $('auth-confirm').addEventListener('close', renderAuth);  // any way out other than confirming puts the choice back
   $('auth-banner-dismiss').addEventListener('click', () => { S.bannerDismissed = true; renderAuth(); });
 
-  const update = () => { $('pair-cmd').textContent = pairCommand(); };
-  $('pair-ip').addEventListener('input', update);
-  $('pair-key').addEventListener('input', update);
-  $('pair-copy').addEventListener('click', async (e) => {
-    const btn = e.currentTarget;
-    try { await copyText(pairCommand()); flash(btn, 'ok'); } catch { flash(btn, 'error'); }
-  });
-  $('pair-recheck').addEventListener('click', (e) => recheckPairing(e.currentTarget));
-  update();
   syncAppForms();
 }

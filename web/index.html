@@ -138,20 +138,32 @@
   <main id="view-home" class="view" data-view-id="home">
     <section class="panel onboard" id="pair-hint" aria-labelledby="h-pair" hidden>
       <h2 id="h-pair">Let’s connect your TV</h2>
-      <p class="lede">This server is not paired with a TV yet. Pairing takes one command, once.</p>
+      <p class="lede">This server is not paired with a TV yet. Connect it once, right here.</p>
       <ol class="steps">
         <li>Turn the TV on, on the same network as the computer running this server.</li>
         <li>
-          <span>On that computer, open a terminal and run this. Fill in the two boxes and the command updates.</span>
-          <div class="pair-fields">
-            <div class="field"><label for="pair-ip">TV address</label><input type="text" id="pair-ip" inputmode="decimal" autocomplete="off" spellcheck="false" placeholder="the TV’s IP address"></div>
-            <div class="field"><label for="pair-key">Root key file</label><input type="text" id="pair-key" autocomplete="off" spellcheck="false" placeholder="path to your TV root key"></div>
-          </div>
-          <div class="cmd"><pre id="pair-cmd">wof pair --host &lt;ip&gt; --root-key &lt;path&gt;</pre><button class="btn icon-only" id="pair-copy" type="button" aria-label="Copy the pairing command" title="Copy"><svg><use href="#i-copy"/></svg></button></div>
+          <span>Enter its address and add the root key you got when you rooted it.</span>
+          <form id="pair-form" class="stack-form">
+            <div class="field"><label for="pair-host">TV address</label><input type="text" id="pair-host" inputmode="decimal" autocomplete="off" spellcheck="false" placeholder="the TV’s IP address"></div>
+            <label class="drop" id="pair-drop">
+              <input type="file" id="pair-file">
+              <svg><use href="#i-key"/></svg>
+              <span class="drop-main" id="pair-drop-main">Choose the root key file</span>
+              <span class="drop-sub" id="pair-drop-sub">Tap here, or drop it onto this box</span>
+            </label>
+            <details class="mini">
+              <summary>Paste the key as text instead</summary>
+              <textarea id="pair-key-text" rows="4" spellcheck="false" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"></textarea>
+            </details>
+            <p class="result-msg" id="pair-msg" role="status" hidden></p>
+            <button class="btn primary wide" type="submit" id="pair-go" disabled><svg><use href="#i-link"/></svg><span>Connect</span></button>
+          </form>
         </li>
-        <li>Come back here and check again.</li>
       </ol>
-      <div class="row"><button class="btn primary" type="button" id="pair-recheck"><svg><use href="#i-refresh"/></svg><span>Check again</span></button></div>
+      <details class="mini">
+        <summary>Or use the command line</summary>
+        <div class="cmd"><pre>wof pair --host &lt;ip&gt; --root-key &lt;path&gt;</pre><button class="btn icon-only" type="button" data-copy="wof pair --host &lt;ip&gt; --root-key &lt;path&gt;" aria-label="Copy the pairing command" title="Copy"><svg><use href="#i-copy"/></svg></button></div>
+      </details>
     </section>
 
     <div class="cols cols-home">

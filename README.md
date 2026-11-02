@@ -14,12 +14,13 @@ on-screen cards, screenshots and live view, with a locked-down SSH key instead o
 ## Three steps
 
 1. **Root your TV** with the tool of your choice and keep the root SSH key it gives you.
-2. **Pair:** `wof pair --host 192.168.1.50 --root-key ~/.ssh/tv_root_key`. This uses your root key once,
-   creates a dedicated restricted key, installs the TV-side scripts and then forgets the root key.
-3. **Serve and connect:** `wof serve --host 0.0.0.0 --token "$TOKEN"`, then add the **webOS Foundry**
-   integration in Home Assistant (host, port `8765`, token), or just open the web UI. No PC to leave
-   running? `wof install --tv-server` puts the same UI and API on the TV itself instead — see
-   [docs/TV-SERVER.md](docs/TV-SERVER.md).
+2. **Run the server:** `wof serve`, then open `http://127.0.0.1:8765/`.
+3. **Connect:** the page asks for the TV's address and that root key — upload the key file or paste it,
+   click Connect, done. (Prefer the terminal? `wof pair --host 192.168.1.50 --root-key ~/.ssh/tv_root_key`
+   does the same thing in one line.) Want Home Assistant too, or another device on the LAN? Restart with
+   `wof serve --host 0.0.0.0 --token "$TOKEN"` and add the **webOS Foundry** integration (host, port
+   `8765`, token). No PC to leave running? `wof install --tv-server` puts the same UI and API on the TV
+   itself instead — see [docs/TV-SERVER.md](docs/TV-SERVER.md).
 
 ## Features
 
@@ -41,6 +42,8 @@ on-screen cards, screenshots and live view, with a locked-down SSH key instead o
   and get the result back.
 * **Install Homebrew apps:** push an IPK by URL (the TV downloads and optionally sha256-verifies it) or
   upload one straight from the web UI; list and uninstall sideloaded apps too.
+* **No terminal needed to pair:** drop in the root key your rooting tool gave you and the TV's address,
+  right in the browser, and the server does the one-time setup itself.
 * **Two ways to run it:** host the server on a PC and reach the TV over SSH (`wof serve`), or push a small
   Node server to the TV itself so any phone on the LAN can open it with no PC at all (`wof install
   --tv-server`; see [docs/TV-SERVER.md](docs/TV-SERVER.md)).
