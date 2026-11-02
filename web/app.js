@@ -362,31 +362,23 @@ function sync() {
 
 /* ---------- remote ---------- */
 
-async function sendRemote(action, value) {
-  try {
-    const result = await call('POST', '/api/remote/' + action, value === undefined ? {} : { json: { value } });
-    if (action === 'wake') {
-      say(result.message + '. Watching for the TV to turn on…');
-      watchWake();
-    }
-    return result;
-  } finally {
-    await loadStatus();
-    if (SOURCE_CHANGING.has(action) && action !== 'wake') { loadSettings(); loadDetails(); }
-  }
-}
-
 async function remote(btn) {
   const action = btn.dataset.action;
   const value = btn.dataset.value ? Number(btn.dataset.value) : undefined;
   btn.dataset.state = 'loading';
   try {
-    await sendRemote(action, value);
+    const result = await call('POST', '/api/remote/' + action, value === undefined ? {} : { json: { value } });
     flash(btn, 'ok');
+    if (action === 'wake') {
+      say(result.message + '. Watching for the TV to turn on…');
+      watchWake();
+    }
   } catch (err) {
     flash(btn, 'error');
     say(`${btn.getAttribute('aria-label') || btn.textContent.trim()}: ${err.message}`, 'error');
   }
+  await loadStatus();
+  if (SOURCE_CHANGING.has(action) && action !== 'wake') { loadSettings(); loadDetails(); }
 }
 
 async function watchWake() {
@@ -403,83 +395,6 @@ async function watchWake() {
     }
   }
   if (S.wakeUntil) say('The TV did not report power on within 40 s. It must be in network standby to wake.', 'error');
-}
-
-/* ---------- voice (push-to-talk, browser microphone, not the TV's) ---------- */
-
-const VOICE_WORD_NUM = { one: 1, two: 2, three: 3, four: 4 };
-
-function resolveVoice(text) {
-  const t = text.toLowerCase();
-  const hdmi = t.match(/(?:hdmi|input)\D*(\d|one|two|three|four)/);
-  if (hdmi) {
-    const n = Number(hdmi[1]) || VOICE_WORD_NUM[hdmi[1]];
-    if (n >= 1 && n <= 4) return { action: 'hdmi', value: n };
-  }
-  const table = [
-    [/\b(turn on|wake( up)?|power on)\b/, 'wake'],
-    [/\b(turn off|power off|standby|go to sleep)\b/, 'power_off'],
-    [/\bunmute\b/, 'unmute'],
-    [/\bmute\b/, 'mute'],
-    [/\b(volume up|louder|turn (it |the volume )?up)\b/, 'volume_up'],
-    [/\b(volume down|quieter|turn (it |the volume )?down)\b/, 'volume_down'],
-    [/\b(luma|home screen|home app|go home)\b/, 'home'],
-    [/\bback\b/, 'back'],
-    [/\b(select|enter|okay|ok)\b/, 'ok'],
-    [/\bup\b/, 'up'],
-    [/\bdown\b/, 'down'],
-    [/\bleft\b/, 'left'],
-    [/\bright\b/, 'right'],
-  ];
-  for (const [re, action] of table) if (re.test(t)) return { action };
-  return null;
-}
-
-function wireVoice() {
-  const btn = $('voice-btn');
-  const msg = $('voice-msg');
-  const Rec = window.SpeechRecognition || window.webkitSpeechRecognition;
-  if (!Rec) {
-    btn.disabled = true;
-    result(msg, 'Voice control needs a browser with speech recognition, such as Chrome, Edge or Safari.', 'error');
-    return;
-  }
-  const rec = new Rec();
-  rec.lang = navigator.language || 'en-US';
-  rec.interimResults = false;
-  let heard = false;
-  rec.onresult = (e) => {
-    heard = true;
-    const text = e.results[e.results.length - 1][0].transcript.trim();
-    const match = resolveVoice(text);
-    if (!match) return result(msg, `Heard “${text}”, but that is not a command I know.`, 'error');
-    if (S.status && !S.statusError && S.status.power === 'off' && match.action !== 'wake') {
-      return result(msg, `Heard “${text}” (${match.action.replace('_', ' ')}). The TV is in standby: turn it on first.`, 'error');
-    }
-    result(msg, `Heard “${text}” → ${match.action.replace('_', ' ')}${match.value ? ' ' + match.value : ''}…`);
-    sendRemote(match.action, match.value)
-      .then(() => result(msg, `Heard “${text}” → ${match.action.replace('_', ' ')}${match.value ? ' ' + match.value : ''}: done.`, 'ok'))
-      .catch((err) => result(msg, `Heard “${text}”: ${err.message}`, 'error'));
-  };
-  rec.onerror = (e) => {
-    if (e.error === 'no-speech') return;
-    result(msg, e.error === 'not-allowed' ? 'Microphone access was not allowed.' : 'Could not hear you: ' + e.error, 'error');
-  };
-  rec.onend = () => { btn.dataset.state = ''; btn.setAttribute('aria-pressed', 'false'); };
-  const start = (e) => {
-    e.preventDefault();
-    if (btn.disabled || btn.dataset.state === 'listening') return;
-    heard = false;
-    btn.dataset.state = 'listening';
-    btn.setAttribute('aria-pressed', 'true');
-    result(msg, 'Listening…');
-    try { rec.start(); } catch { /* already running */ }
-  };
-  const stop = () => { if (btn.dataset.state === 'listening') { rec.stop(); if (!heard) msg.hidden = true; } };
-  btn.addEventListener('pointerdown', start);
-  btn.addEventListener('pointerup', stop);
-  btn.addEventListener('pointerleave', stop);
-  btn.addEventListener('pointercancel', stop);
 }
 
 /* ---------- settings ---------- */
