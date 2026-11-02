@@ -370,6 +370,7 @@ function wireExtras() {
   $('auth-confirm').addEventListener('close', renderAuth);  // any way out other than confirming puts the choice back
   $('auth-banner-dismiss').addEventListener('click', () => { S.bannerDismissed = true; renderAuth(); });
   wireZoom();
+  wireVoice();
 
   syncAppForms();
 }

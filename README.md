@@ -28,7 +28,10 @@ on-screen cards, screenshots and live view, with a locked-down SSH key instead o
   SoC temperature, volume/mute, ambient light, OLED panel hours and temperature, Pixel Refresher
   counters, power-on reason and history, input signal (resolution, refresh, HDR, VRR, ALLM), sleep
   timer and per-app usage today.
-* **Remote:** wake (Wake-on-LAN), power off, home/back/D-pad/OK, HDMI 1-4, volume up/down, mute.
+* **Remote:** wake (Wake-on-LAN), power off, home/back/D-pad/OK, HDMI 1-4, volume up/down, mute, plus
+  push-to-talk voice commands (your browser's own microphone and speech recognition map spoken phrases
+  to the same remote actions; the TV's own microphone was tested and does not work — see
+  [docs/FINDINGS.md](docs/FINDINGS.md)).
 * **AI picture and sound settings:** read and set eight allow-listed settings (AI Picture Pro,
   AI Brightness, AI Genre, Super Resolution, Sound Mode, AI Sound, Clear Voice, AI Game Sound), with the
   TV's own scope and availability checks and read-back.

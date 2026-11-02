@@ -231,6 +231,8 @@ kbd { padding: 0 var(--space-2); margin: 0 var(--space-1); background: var(--sun
 .volume .btn.icon-only { width: 56px; min-height: 56px; }
 .volume .level { min-width: 3ch; text-align: center; font-size: var(--text-xl); font-weight: var(--weight-display); }
 .mute[aria-pressed="true"] { background: var(--accent-tint); color: var(--accent); }
+.voice-btn { margin-top: var(--space-2); touch-action: none; user-select: none; }
+.voice-btn[data-state="listening"] { background: var(--accent); color: var(--accent-ink); animation: pulse 1.2s ease-in-out infinite; }
 
 /* ---- form fields ---- */
 .field { display: grid; gap: var(--space-2); }
@@ -451,6 +453,7 @@ body[data-paired="false"] .cols-home { display: none; }
 @keyframes spin { to { transform: rotate(360deg); } }
 @keyframes wake { from { transform: scale(0.9); opacity: 0.9; } to { transform: scale(1.5); opacity: 0; } }
 @keyframes draw { to { stroke-dashoffset: 0; } }
+@keyframes pulse { 0%, 100% { box-shadow: 0 0 0 0 var(--accent-tint); } 50% { box-shadow: 0 0 0 10px transparent; } }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 1ms !important; animation-iteration-count: 1 !important; transition-duration: 1ms !important; }
   .btn:active, .seg:active, .key:active, .choice:active, .action:active { transform: none; }
