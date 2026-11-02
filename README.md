@@ -39,7 +39,9 @@ on-screen cards, screenshots and live view, with a locked-down SSH key instead o
   header, timed event, source status, key facts), a theme (accent/surface/text colours, opacity, corner
   radius, scale, font) and up to four regions in one card — a full-width top bar plus a side panel, like a
   broadcast scoreboard — with a simple shorthand for a plain title/body/image card, or visually in the
-  web UI's card studio (TV-shaped live preview, templates, no code needed).
+  web UI's card studio (TV-shaped live preview, templates, no code needed) — or describe the card to
+  ChatGPT with the studio's "Copy AI instructions", paste its answer back and get a plain verdict
+  (`GET /api/overlay/schema`, `POST /api/overlay/validate`, `wof overlay check`).
 * **Saved designs:** keep a finished card under a name (`wof design set match-day card.json`) and show it
   again from the UI, CLI, API, a scene step or Home Assistant.
 * **Scenes:** save a named sequence of remote, setting, overlay and wait steps, then run it in one call

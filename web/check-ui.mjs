@@ -46,7 +46,8 @@ const looked = new Set();
 for (const m of js.matchAll(/\$\('([\w-]+)'\)|getElementById\('([\w-]+)'\)/g)) looked.add(m[1] || m[2]);
 for (const m of js.matchAll(/for \(const id of \[([^\]]+)\]/g)) for (const i of m[1].matchAll(/'([\w-]+)'/g)) looked.add(i[1]);
 for (const e of ['top', 'bottom', 'left', 'right']) { looked.add('chip-' + e); looked.add('hex-' + e); }
-for (const id of looked) check(idSet.has(id), `current JS looks up #${id}, which index.html lacks`);
+const renderedIds = new Set([...js.matchAll(/\bh\('[\w-]+',\s*\{[^}]*\bid:\s*'([\w-]+)'/g)].map(match => match[1]));
+for (const id of looked) check(idSet.has(id) || renderedIds.has(id), `current JS looks up #${id}, with no static or rendered element`);
 
 // Selectors the old code used, in their current form.
 const has = (re, what) => check(re.test(html), `missing markup for ${what}`);
@@ -76,6 +77,48 @@ for (const id of ['scene-form', 'scene-name', 'scene-json', 'scenes-list', 'scen
   check(idSet.has(id), `Automate is missing #${id}`);
 }
 check([...html.matchAll(/name="day" value="(mon|tue|wed|thu|fri|sat|sun)"/g)].length === 7, 'seven schedule day choices');
+
+// Studio's guided workflow keeps its advanced JSON editor reachable from every step.
+const STUDIO_IDS = ['ov-templates', 'ov-paste', 'ov-paste-apply', 'ov-paste-msg', 'ov-ai', 'ov-ai-copy',
+  'ov-schema-copy', 'ov-schema-download', 'ov-ai-msg', 'design-import', 'design-import-file', 'ov-layout',
+  'ov-card-seconds', 'ov-look-form', 'ov-look-presets', 'ov-builder', 'ov-builder-msg', 'ov-json',
+  'ov-json-apply', 'ov-json-reset', 'ov-json-msg', 'ov-meter', 'ov-meter-text', 'ov-preview', 'ov-preview-dock',
+  'ov-send', 'design-form', 'design-name', 'design-save', 'design-export', 'design-copy', 'designs-list'];
+for (const id of STUDIO_IDS) check(idSet.has(id), `Studio is missing #${id}`);
+const tags = [...html.matchAll(/<\/?([a-z][\w-]*)\b[^>]*>/gi)];
+const ancestors = new Map();
+const openings = new Map();
+const stack = [];
+const voidTags = new Set(['area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link', 'meta', 'param', 'source', 'track', 'wbr']);
+for (const match of tags) {
+  const tag = match[1].toLowerCase();
+  if (match[0].startsWith('</')) {
+    const at = stack.findLastIndex(item => item.tag === tag);
+    if (at !== -1) stack.length = at;
+    continue;
+  }
+  const id = match[0].match(/\bid="([^"]+)"/)?.[1];
+  const item = { tag, id, source: match[0] };
+  if (id) { ancestors.set(id, [...stack]); openings.set(id, item); }
+  if (!voidTags.has(tag) && !match[0].endsWith('/>')) stack.push(item);
+}
+for (const step of ['start', 'design', 'finish']) {
+  const control = openings.get('ov-step-' + step);
+  const panel = openings.get('ov-panel-' + step);
+  check(control?.tag === 'button' && control.source.includes(`data-studio-step="${step}"`), `Studio ${step} needs its step button`);
+  check(control?.source.includes(`aria-controls="ov-panel-${step}"`), `Studio ${step} button must name its panel`);
+  check(panel?.source.includes(`data-studio-panel="${step}"`), `Studio ${step} needs its matching panel`);
+}
+for (const id of ['ov-json', 'ov-json-apply', 'ov-json-reset', 'ov-json-msg']) {
+  check(!ancestors.get(id)?.some(item => /\bdata-studio-panel=/.test(item.source)), `#${id} must stay outside step panels`);
+}
+check(openings.get('ov-json')?.tag === 'textarea', 'the single Studio JSON editor must remain a textarea');
+check(openings.get('ov-paste')?.tag === 'textarea', 'paste import needs a textarea');
+check(openings.get('ov-ai')?.tag === 'details', 'AI help must be a collapsible details section');
+check(openings.get('ov-preview-dock')?.tag === 'details' && /\bopen(?:\s|=|>)/.test(openings.get('ov-preview-dock').source),
+  'Studio preview must be collapsible and open by default');
+check(ancestors.get('ov-preview')?.some(item => item.id === 'ov-preview-dock'), 'preview belongs inside its mobile collapse dock');
+for (const name of ['studio-grid', 'studio-controls', 'studio-preview']) has(new RegExp(`class="[^"]*\\b${name}\\b`), '.' + name);
 
 // Capability gating: every gated panel needs a first-level .panel-head for the badge, and names a group or route.
 for (const m of html.matchAll(/<section class="panel[^"]*"([^>]*data-needs-(?:group|route)=[^>]*)>([\s\S]*?)<\/section>/g)) {

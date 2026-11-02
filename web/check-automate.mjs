@@ -4,14 +4,34 @@ import fs from 'node:fs';
 import vm from 'node:vm';
 
 class Element {
-  constructor(tag) { this.tag = tag; this.children = []; this.dataset = {}; this.listeners = {}; }
-  setAttribute(name, value) { this[name] = name === 'disabled' || name === 'selected' ? true : value; }
+  constructor(tag) {
+    this.tag = tag; this.children = []; this.dataset = {}; this.listeners = {}; this.value = '';
+    this.style = { setProperty(name, value) { this[name] = value; }, removeProperty(name) { delete this[name]; } };
+    this.classList = {
+      contains: name => (this.className || '').split(/\s+/).includes(name),
+      toggle: (name, enabled) => {
+        const names = new Set((this.className || '').split(/\s+/).filter(Boolean));
+        if (enabled ?? !names.has(name)) names.add(name); else names.delete(name);
+        this.className = [...names].join(' ');
+      },
+    };
+  }
+  setAttribute(name, value) {
+    this[name === 'class' ? 'className' : name] = name === 'disabled' || name === 'selected' ? true : value;
+    if (name === 'id') elements.set(value, this);
+  }
+  getAttribute(name) { return this[name === 'class' ? 'className' : name] ?? null; }
+  removeAttribute(name) { delete this[name]; }
   append(...nodes) {
     for (const node of nodes) {
       this.children.push(node);
       if (node instanceof Element) node.parent = this;
     }
     if (this.tag === 'select') this.value = (this.children.find(child => child.selected) || this.children[0])?.value;
+  }
+  prepend(...nodes) {
+    this.children.unshift(...nodes);
+    for (const node of nodes) if (node instanceof Element) node.parent = this;
   }
   replaceChildren(...nodes) {
     assert(nodes.every(node => !Array.isArray(node)), 'DOM children must be spread, not passed as an array');
@@ -20,24 +40,43 @@ class Element {
   }
   addEventListener(name, handler) { this.listeners[name] = handler; }
   querySelectorAll(selector) {
-    const matches = el => selector.split(',').some(part => part.trim().startsWith('.')
-      ? el.className?.split(' ').includes(part.trim().slice(1)) : el.tag === part.trim());
     return this.children.filter(child => child instanceof Element).flatMap(child =>
-      [...(matches(child) ? [child] : []), ...child.querySelectorAll(selector)]);
+      [...(child.matches(selector) ? [child] : []), ...child.querySelectorAll(selector)]);
+  }
+  matches(selector) {
+    return selector.split(',').some(part => {
+      const simple = part.trim();
+      if (simple.startsWith('.')) return this.classList.contains(simple.slice(1));
+      if (simple.startsWith('#')) return this.id === simple.slice(1);
+      const attribute = simple.match(/^\[([\w-]+)(?:=["']?([^"'\]]+)["']?)?\]$/);
+      if (attribute) return this.getAttribute(attribute[1]) !== null && (attribute[2] === undefined || this.getAttribute(attribute[1]) === attribute[2]);
+      return this.tag === simple;
+    });
   }
   querySelector(selector) { return this.querySelectorAll(selector)[0]; }
-  closest() { return this.parent; }
+  closest(selector) { return this.matches(selector) ? this : this.parent?.closest(selector); }
   focus() { this.focused = true; }
-  remove() { this.parent.children = this.parent.children.filter(child => child !== this); }
+  select() { this.selectedText = true; }
+  scrollIntoView() { this.scrolledIntoView = true; }
+  remove() { if (this.parent) this.parent.children = this.parent.children.filter(child => child !== this); }
+  insertBefore(node, before) {
+    const at = this.children.indexOf(before);
+    this.children.splice(at < 0 ? this.children.length : at, 0, node); node.parent = this;
+  }
+  before(node) { this.parent.insertBefore(node, this); }
+  get parentNode() { return this.parent; }
+  get parentElement() { return this.parent; }
+  get firstElementChild() { return this.children.find(child => child instanceof Element); }
 }
 const elements = new Map();
 const context = vm.createContext({
-  assert, location: { origin: 'http://localhost:8765' },
+  assert, TextEncoder, setTimeout() {}, clearTimeout() {}, location: { origin: 'http://localhost:8765' },
   document: {
-    addEventListener() {},
-    createElement: tag => new Element(tag), createElementNS: () => new Element(),
+    addEventListener() {}, querySelectorAll() { return []; },
+    createElement: tag => new Element(tag), createElementNS: (ns, tag) => new Element(tag),
     getElementById: id => {
-      if (!elements.has(id)) elements.set(id, new Element());
+      if (id === 'scene-builder' && !elements.has(id)) return null;
+      if (!elements.has(id)) { const el = new Element('div'); el.id = id; elements.set(id, el); }
       return elements.get(id);
     },
   },
@@ -173,7 +212,7 @@ await vm.runInContext(`(async () => {
   renderAddons();
   assert.match($('addons-list').children[0].textContent, /No extensions/);
 
-  // Saved designs (Show view): list, load, show, delete.
+  // Saved designs: real thumbnails, safe names, load/show/delete/save and rename.
   automationData.designs = {};
   renderAutomation('designs');
   assert.match($('designs-list').children[0].textContent, /No saved designs/);
@@ -184,12 +223,19 @@ await vm.runInContext(`(async () => {
   renderAutomation('designs');
   assert.equal($('design-names').children.length, 2);
   assert.equal($('design-names').children[0].value, '<match day>');
-  const designRow = $('designs-list').children[0].children[0];
-  assert.equal(designRow.children[0].children[0].textContent, '<match day>', 'design names stay plain text');
-  assert.equal(designRow.children[0].children[1].textContent, '2 regions · Top bar, Right panel · 4 widgets · stays until hidden');
-  assert.equal($('designs-list').children[0].children[1].children[0].children[1].textContent, 'Single card · Top right · 1 widget · 8 s');
+  assert.ok($('designs-list').querySelector('.design-grid'));
+  const tiles = $('designs-list').querySelectorAll('.design-tile');
+  assert.equal(tiles.length, 2);
+  const designRow = tiles[0];
+  assert.ok(walk(designRow).some(el => el.textContent === '<match day>'), 'design names stay plain text');
+  assert.ok(walk(designRow).some(el => el.textContent === '2 regions · Top bar, Right panel · 4 widgets · stays until hidden'));
+  assert.ok(walk(tiles[1]).some(el => el.textContent === 'Single card · Top right · 1 widget · 8 s'));
+  const thumbnail = walk(designRow).find(el => el.classList.contains('tv-stage') && el.classList.contains('tv-thumb'));
+  assert.ok(thumbnail, 'saved designs show their actual TV layout');
+  assert.equal(thumbnail.querySelector('.tv-screen').children.length, 2, 'thumbnail preserves both regions');
   assert(button(designRow, 'Load'));
   assert(button(designRow, 'Show on TV'));
+  assert(button(designRow, 'Rename'));
   const deleteButton = walk(designRow).find(el => el.tag === 'button' && el['aria-label'] === 'Delete <match day>');
   assert(deleteButton);
   await button(designRow, 'Show on TV').listeners.click();
@@ -244,12 +290,109 @@ await vm.runInContext(`(async () => {
   $('design-name').value = '  ';
   await saveDesign();
   assert.equal(requests.length, 0);
-  assert.equal($('designs-msg').dataset.tone, 'error');
+  assert.equal($('design-save-msg').dataset.tone, 'error');
   overlayJsonDirty = true;
   $('design-name').value = 'x';
   await saveDesign();
   assert.equal(requests.length, 0, 'unapplied JSON blocks saving');
   overlayJsonDirty = false;
+
+  // Rename asks first, copies the entire card, then removes only the old name after a successful PUT.
+  const renameRow = automationRow('designs', '<match day>', hud);
+  const reviewRename = async (row, nextName) => {
+    const form = row.querySelector('.design-rename');
+    assert.ok(form, 'rename is an inline form');
+    const nameInput = form.querySelector('input');
+    assert.equal(nameInput['aria-label'], 'New name');
+    assert(button(form, 'Review rename'));
+    nameInput.value = nextName;
+    await form.listeners.submit({ preventDefault() {} });
+    return row.querySelector('.app-confirm');
+  };
+  button(renameRow, 'Rename').listeners.click();
+  assert.equal(requests.length, 0);
+  let renameAsk = await reviewRename(renameRow, 'evening / TV');
+  assert.ok(renameAsk);
+  assert.match(renameAsk.children[0].textContent, /Rename/);
+  assert.equal(button(renameAsk, 'Keep it').focused, true);
+  assert.equal(requests.length, 0, 'review never mutates the library before confirmation');
+  button(renameAsk, 'Keep it').listeners.click();
+  assert.equal(requests.length, 0, 'cancelled rename keeps the old design');
+  renameAsk = await reviewRename(renameRow, 'evening / TV');
+  await button(renameAsk, 'Rename').listeners.click();
+  assert.equal(requests.length, 2);
+  let renamePut = requests.shift();
+  let renameDelete = requests.shift();
+  assert.equal(renamePut[2], 'PUT');
+  assert.equal(renamePut[3], '/api/designs/evening%20%2F%20TV');
+  assert.equal(JSON.stringify(renamePut[4]), JSON.stringify(hud), 'rename preserves regions, duration, and Look');
+  assert.equal(renameDelete[2], 'DELETE');
+  assert.equal(renameDelete[3], '/api/designs/%3Cmatch%20day%3E');
+  assert.equal(renameDelete[4], undefined);
+  assert.equal(JSON.stringify(automationData.designs['<match day>']), JSON.stringify(hud), 'cached design is not changed optimistically');
+  const successfulMutation = changeAutomation;
+  changeAutomation = async (...args) => { requests.push(args); return undefined; };
+  const failedRenameRow = h('li', { class: 'design-tile' });
+  renameDesign('<match day>', hud, failedRenameRow);
+  const failedRenameAsk = await reviewRename(failedRenameRow, 'Cannot save');
+  await button(failedRenameAsk, 'Rename').listeners.click();
+  assert.equal(requests.length, 1, 'a failed PUT must never delete the original');
+  assert.equal(requests.pop()[2], 'PUT');
+  changeAutomation = successfulMutation;
+
+  // Guided scenes produce the same API envelope as the advanced JSON editor.
+  const guidedSteps = [
+    { type: 'remote', action: 'home' },
+    { type: 'setting', category: 'picture', key: 'brightness', value: 50, context: {} },
+    { type: 'overlay', design: 'Movie' },
+    { type: 'overlay', card: { root: { type: 'text', text: 'Hi' } } },
+    { type: 'wait', seconds: 1.5 },
+  ];
+  const guidedScene = sceneFromSteps(guidedSteps);
+  assert.equal(JSON.stringify(guidedScene), JSON.stringify({ steps: guidedSteps }));
+  assert.notEqual(guidedScene.steps, guidedSteps);
+  assert.notEqual(guidedScene.steps[1].context, guidedSteps[1].context, 'scene output does not share editable nested values');
+  for (const type of ['remote', 'setting', 'overlay', 'wait']) {
+    const step = newSceneStep(type);
+    assert.equal(step.type, type);
+  }
+  for (const seconds of [0, 10]) assert.equal(sceneFromSteps([{ type: 'wait', seconds }]).steps[0].seconds, seconds);
+  assert.equal(sceneFromSteps(Array.from({ length: 20 }, () => ({ type: 'wait', seconds: 0 }))).steps.length, 20);
+  for (const steps of [[], Array.from({ length: 21 }, () => ({ type: 'wait', seconds: 0 })), null, {},
+    [{ type: 'unknown' }], [{ type: 'remote', action: '' }], [{ type: 'setting', category: '', key: 'brightness', value: 50 }],
+    [{ type: 'setting', category: 'picture', key: '', value: 50 }], [{ type: 'overlay', design: '' }],
+    [{ type: 'overlay', card: { root: { type: 'text' } } }],
+    ...[-0.1, 10.1, '1', NaN, true].map(seconds => [{ type: 'wait', seconds }])]) {
+    assert.throws(() => sceneFromSteps(steps), JSON.stringify(steps));
+  }
+  const sceneDetails = h('details', { open: true }, h('label', {}, $('scene-json')));
+  $('scene-form').append(sceneDetails);
+  sceneSteps = clone(guidedSteps);
+  syncSceneJson();
+  renderSceneBuilder();
+  assert.equal(sceneDetails.open, false, 'guided controls start with advanced code collapsed');
+  assert.ok($('scene-builder'));
+  assert.equal($('scene-builder').parent, $('scene-form'), 'builder is mounted beside, not inside, advanced code');
+  assert.equal($('scene-builder').querySelectorAll('.scene-step').length, 5);
+  const lastStep = $('scene-builder').querySelectorAll('.scene-step')[4];
+  const waitInput = lastStep.querySelector('input');
+  waitInput.value = '2.5'; waitInput.listeners.input();
+  assert.equal(JSON.parse($('scene-json').value).steps[4].seconds, 2.5, 'guided edits write numeric seconds to the request JSON');
+  wireAutomation();
+  $('scene-name').value = 'Movie / night';
+  await $('scene-form').listeners.submit({ preventDefault() {} });
+  request = requests.pop();
+  assert.equal(request[0], 'scenes');
+  assert.equal(request[2], 'PUT');
+  assert.equal(request[3], '/api/scenes/Movie%20%2F%20night');
+  assert.equal(JSON.stringify(request[4]), JSON.stringify({ steps: [...guidedSteps.slice(0, 4), { type: 'wait', seconds: 2.5 }] }));
+  $('scene-json').value = JSON.stringify({ steps: [{ type: 'remote', action: 'mute' }] });
+  await $('scene-form').listeners.submit({ preventDefault() {} });
+  assert.equal(JSON.stringify(requests.pop()[4]), JSON.stringify({ steps: [{ type: 'remote', action: 'mute' }] }), 'advanced edits remain authoritative when saved');
+  $('scene-json').value = '{"steps":';
+  await $('scene-form').listeners.submit({ preventDefault() {} });
+  assert.equal(requests.length, 0, 'invalid scene JSON never reaches the API');
+  assert.equal($('scenes-msg').dataset.tone, 'error');
 
   // Exercise the shared request guard with real addon loading and mutations.
   changeAutomation = realChangeAutomation;
@@ -287,4 +430,4 @@ await vm.runInContext(`(async () => {
   assert.match($('addons-msg').textContent, /paired TV/);
   assert.equal(automationBusy.has('addons'), false);
 })()`, context);
-console.log('check-automate: ok (scene suggestions, empty state, safe text, schedule toggles, private copy-only URLs, extension catalog/forms/install/preview/toggles/uninstall with placement and look, saved designs list/load/show/delete/save, busy guards and errors)');
+console.log('check-automate: ok (guided scene output, safe text, schedule toggles, private copy-only URLs, extension catalog/forms/install/preview/toggles/uninstall with placement and Look, saved-design thumbnails/load/show/delete/save/confirmed rename, busy guards and errors)');

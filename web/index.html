@@ -8,8 +8,8 @@
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <link rel="manifest" href="/manifest.json">
 <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
-<meta name="theme-color" content="#f9f4ec" media="(prefers-color-scheme: light)">
-<meta name="theme-color" content="#1a1511" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#f3f6f4" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#111a17" media="(prefers-color-scheme: dark)">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="webOS Foundry">
@@ -71,9 +71,9 @@
   <nav class="views" aria-label="Sections">
     <button type="button" class="tab" data-view="home" aria-current="page"><svg><use href="#i-home"/></svg><span>Home</span></button>
     <button type="button" class="tab" data-view="remote"><svg><use href="#i-remote"/></svg><span>Remote</span></button>
+    <button type="button" class="tab" data-view="show"><svg><use href="#i-chat"/></svg><span>Show</span></button>
     <button type="button" class="tab" data-view="apps"><svg><use href="#i-apps"/></svg><span>Apps</span></button>
     <button type="button" class="tab" data-view="automate"><svg><use href="#i-refresh"/></svg><span>Automate</span></button>
-    <button type="button" class="tab" data-view="show"><svg><use href="#i-chat"/></svg><span>Show</span></button>
     <button type="button" class="tab" data-view="tune"><svg><use href="#i-sliders"/></svg><span>Tune</span></button>
   </nav>
   <div class="top-actions">
@@ -174,6 +174,7 @@
             </label>
             <details class="mini">
               <summary>Paste the key as text instead</summary>
+              <label class="sr" for="pair-key-text">Root key as text</label>
               <textarea id="pair-key-text" rows="4" spellcheck="false" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"></textarea>
             </details>
             <p class="result-msg" id="pair-msg" role="status" hidden></p>
@@ -187,7 +188,7 @@
       </details>
     </section>
 
-    <div class="cols cols-home">
+    <div class="cols cols-home home-overview">
       <div class="col">
         <section class="hero" id="hero" aria-labelledby="hero-line">
           <div class="hero-top">
@@ -211,18 +212,18 @@
           </div>
         </section>
 
-        <section class="panel quick" aria-labelledby="h-quick">
-          <h2 id="h-quick">What would you like to do?</h2>
-          <ul class="actions">
-            <li><button type="button" class="action" data-goto="apps"><span class="ico"><svg><use href="#i-package"/></svg></span><span class="action-text"><strong>Add an app</strong><span>Put a new app on your TV, or remove one</span></span><svg class="go"><use href="#i-right"/></svg></button></li>
-            <li><button type="button" class="action" data-goto="remote"><span class="ico"><svg><use href="#i-remote"/></svg></span><span class="action-text"><strong>Use the remote</strong><span>Arrows, volume, inputs and power</span></span><svg class="go"><use href="#i-right"/></svg></button></li>
-            <li><button type="button" class="action" data-goto="show"><span class="ico"><svg><use href="#i-chat"/></svg></span><span class="action-text"><strong>Show something on the TV</strong><span>A message, a card, or a look at the screen</span></span><svg class="go"><use href="#i-right"/></svg></button></li>
-            <li><button type="button" class="action" data-goto="tune"><span class="ico"><svg><use href="#i-sliders"/></svg></span><span class="action-text"><strong>Picture &amp; sound</strong><span>Adjust how it looks and sounds</span></span><svg class="go"><use href="#i-right"/></svg></button></li>
-          </ul>
-        </section>
       </div>
 
       <div class="col">
+        <section class="panel quick" aria-labelledby="h-quick">
+          <h2 id="h-quick">Make yourself at home</h2>
+          <ul class="actions">
+            <li><button type="button" class="action" data-goto="remote"><span class="ico"><svg><use href="#i-remote"/></svg></span><span class="action-text"><strong>Pick up the remote</strong><span>Change the volume, input or what is on screen</span></span><svg class="go"><use href="#i-right"/></svg></button></li>
+            <li><button type="button" class="action" data-goto="show"><span class="ico"><svg><use href="#i-chat"/></svg></span><span class="action-text"><strong>Create a card for your TV</strong><span>Start with a template and make it your own</span></span><svg class="go"><use href="#i-right"/></svg></button></li>
+            <li><button type="button" class="action" data-goto="apps"><span class="ico"><svg><use href="#i-package"/></svg></span><span class="action-text"><strong>Add an app</strong><span>Install a TV app from a file or a link</span></span><svg class="go"><use href="#i-right"/></svg></button></li>
+            <li><button type="button" class="action" data-goto="automate"><span class="ico"><svg><use href="#i-refresh"/></svg></span><span class="action-text"><strong>Set up a routine</strong><span>Run your favourite actions together</span></span><svg class="go"><use href="#i-right"/></svg></button></li>
+          </ul>
+        </section>
         <section class="panel details" data-needs-route="/api/details" aria-labelledby="h-details">
           <header class="panel-head">
             <h2 id="h-details">TV details</h2>
@@ -236,12 +237,12 @@
 
   <!-- ============ Remote ============ -->
   <main id="view-remote" class="view" data-view-id="remote" hidden>
-    <header class="view-head"><h1>Remote</h1><p class="lede">Works like the one in your hand. Tap a button and watch the TV.</p></header>
-    <div class="narrow">
+    <header class="view-head"><h1>Remote</h1><p class="lede">The familiar controls, right here. Turn on the TV, choose an input and settle in.</p></header>
+    <div class="narrow remote-layout">
     <section class="panel remote" data-needs-group="Remote" aria-labelledby="h-remote">
       <header class="panel-head"><h2 id="h-remote">Remote control</h2><span class="hint" id="remote-hint"></span></header>
 
-      <div class="group">
+      <div class="group remote-utilities">
         <h3>Power</h3>
         <div class="row">
           <button class="btn" type="button" data-action="wake"><svg><use href="#i-power"/></svg><span>Turn on</span></button>
@@ -249,19 +250,19 @@
         </div>
       </div>
 
-      <div class="group">
-        <h3>Input</h3>
-        <div class="inputs" role="group" aria-label="Input">
+      <div class="group remote-utilities">
+        <h3>What to watch</h3>
+        <div class="inputs" role="group" aria-label="TV input">
           <button class="seg" type="button" data-action="hdmi" data-value="1" data-needs-on>HDMI 1</button>
           <button class="seg" type="button" data-action="hdmi" data-value="2" data-needs-on>HDMI 2</button>
           <button class="seg" type="button" data-action="hdmi" data-value="3" data-needs-on>HDMI 3</button>
           <button class="seg" type="button" data-action="hdmi" data-value="4" data-needs-on>HDMI 4</button>
-          <button class="seg" type="button" data-action="home" data-needs-on>Luma</button>
+          <button class="seg" type="button" data-action="home" data-needs-on>TV Home</button>
         </div>
       </div>
 
-      <div class="group">
-        <h3>Navigate</h3>
+      <div class="group remote-navigation">
+        <h3>Move around the TV</h3>
         <div class="pad" role="group" aria-label="Direction pad">
           <button class="key up" type="button" data-action="up" data-needs-on aria-label="Up"><svg><use href="#i-up"/></svg></button>
           <button class="key left" type="button" data-action="left" data-needs-on aria-label="Left"><svg><use href="#i-left"/></svg></button>
@@ -276,7 +277,7 @@
         <p class="keys">On a keyboard: <kbd>←</kbd><kbd>↑</kbd><kbd>→</kbd><kbd>↓</kbd> move · <kbd>Enter</kbd> OK · <kbd>Backspace</kbd> Back · <kbd>H</kbd> Home</p>
       </div>
 
-      <div class="group">
+      <div class="group remote-volume">
         <h3>Volume <span class="sub">TV speaker</span></h3>
         <div class="row volume">
           <button class="btn icon-only" type="button" data-action="volume_down" data-needs-on aria-label="Volume down"><svg><use href="#i-minus"/></svg></button>
@@ -291,13 +292,13 @@
 
   <!-- ============ Apps ============ -->
   <main id="view-apps" class="view" data-view-id="apps" hidden>
-    <header class="view-head"><h1>Apps</h1><p class="lede">Put a new app on your TV, or take one off. Installed apps show up on the TV’s Home screen.</p></header>
-    <div class="cols">
+    <header class="view-head"><h1>Apps</h1><p class="lede">Add something new to your TV, or manage the apps you have already installed.</p></header>
+    <div class="cols cols-apps">
       <div class="col">
         <section class="panel" id="panel-install" data-needs-group="Apps" aria-labelledby="h-install">
           <header class="panel-head"><h2 id="h-install">Add an app</h2></header>
           <div id="app-forms">
-            <p class="lede">Apps for a rooted TV come as a file ending in <strong>.ipk</strong>. Pick one from this device, or paste a link to one.</p>
+            <p class="lede">Choose a TV app file ending in <strong>.ipk</strong>. Only install files from people or sites you trust.</p>
             <form id="app-file-form" class="stack-form">
               <label class="drop" id="app-drop">
                 <input type="file" id="app-file" accept=".ipk">
@@ -314,10 +315,13 @@
                 <label for="app-url">Link to the .ipk file</label>
                 <input type="url" id="app-url" inputmode="url" autocomplete="off" spellcheck="false" autocapitalize="off" maxlength="500" placeholder="https://example.com/my-app.ipk">
               </div>
-              <div class="field">
-                <label for="app-sha">Checksum <span class="sub">optional, SHA-256, 64 characters</span></label>
-                <input type="text" id="app-sha" autocomplete="off" spellcheck="false" autocapitalize="off" maxlength="64" placeholder="Lets the TV verify the download">
-              </div>
+              <details class="mini">
+                <summary>Check the download matches the original · optional</summary>
+                <div class="field">
+                  <label for="app-sha">File fingerprint <span class="sub">SHA-256, 64 characters</span></label>
+                  <input type="text" id="app-sha" autocomplete="off" spellcheck="false" autocapitalize="off" maxlength="64" placeholder="Paste the fingerprint from the app’s publisher">
+                </div>
+              </details>
               <p class="result-msg" id="app-url-msg" role="status" hidden></p>
               <button class="btn primary wide" type="submit" id="app-url-install" disabled><svg><use href="#i-link"/></svg><span>Install from link</span></button>
             </form>
@@ -342,8 +346,8 @@
       <div class="col">
         <section class="panel" id="panel-installed" data-needs-group="Apps" aria-labelledby="h-installed">
           <header class="panel-head">
-            <h2 id="h-installed">Apps you added</h2>
-            <button class="btn quiet" type="button" id="apps-refresh"><svg><use href="#i-refresh"/></svg><span>Reload</span></button>
+            <h2 id="h-installed">Installed apps</h2>
+            <button class="btn quiet" type="button" id="apps-refresh"><svg><use href="#i-refresh"/></svg><span>Refresh list</span></button>
           </header>
           <div id="apps-list" aria-live="polite"></div>
         </section>
@@ -353,24 +357,27 @@
 
   <!-- ============ Automate ============ -->
   <main id="view-automate" class="view" data-view-id="automate" hidden>
-    <header class="view-head"><h1>Automate</h1><p class="lede">Save a sequence as a scene, give it a regular time, or run it from another app.</p></header>
-    <div class="cols">
+    <header class="view-head"><h1>Automate</h1><p class="lede">Let the TV take care of a routine. Save a few actions, then run them together or at a regular time.</p></header>
+    <div class="cols cols-automate">
       <div class="col">
         <section class="panel" data-needs-group="Scenes" aria-labelledby="h-scenes">
           <header class="panel-head">
             <h2 id="h-scenes">Scenes</h2>
             <button class="btn quiet" type="button" id="scenes-refresh"><svg><use href="#i-refresh"/></svg><span>Reload</span></button>
           </header>
-          <p class="lede">A scene runs its steps in order, stopping if one fails. Editing a scene also changes what its schedules and links run.</p>
+          <p class="lede">A scene is a set of actions, such as switching input and showing a saved card. Actions run in order and stop if one fails. Editing a scene also changes its schedules and private links.</p>
           <div id="scenes-list" aria-live="polite"><p class="empty">Loading scenes…</p></div>
           <form id="scene-form" class="stack-form group">
             <h3 id="scene-form-title">Save a scene</h3>
             <div class="field"><label for="scene-name">Scene name</label><input id="scene-name" type="text" maxlength="60" required placeholder="movie-night"></div>
-            <div class="field">
-              <label for="scene-json">Steps as JSON</label>
-              <textarea id="scene-json" class="automation-json" rows="8" required spellcheck="false" aria-describedby="scene-json-hint">{"steps":[{"type":"wait","seconds":0}]}</textarea>
-              <p class="hint" id="scene-json-hint">Use 1–20 remote, setting, overlay or wait steps. Waits are 0–10 seconds. An overlay step is {"type":"overlay","card":{…}} with the card JSON from the Show studio, or {"type":"overlay","design":"name"} to show a saved design. The server checks each step when you save.</p>
-            </div>
+            <details class="mini scene-advanced" open>
+              <summary>Scene code · advanced</summary>
+              <div class="field">
+                <label for="scene-json">Actions as JSON</label>
+                <textarea id="scene-json" class="automation-json" rows="8" required spellcheck="false" aria-describedby="scene-json-hint">{"steps":[{"type":"wait","seconds":0}]}</textarea>
+                <p class="hint" id="scene-json-hint">Use 1–20 remote, setting, overlay or wait actions. Waits can be 0–10 seconds. To show a saved card, use {"type":"overlay","design":"name"}. To include a card directly, use {"type":"overlay","card":{…}} with JSON copied from Card studio. Every action is checked when you save.</p>
+              </div>
+            </details>
             <div class="row"><button class="btn primary" id="scene-save" type="submit">Save scene</button><button class="btn quiet" id="scene-new" type="button" hidden>Cancel editing</button></div>
           </form>
           <p class="result-msg" id="scenes-msg" role="status" hidden></p>
@@ -379,10 +386,10 @@
       <div class="col">
         <section class="panel" data-needs-group="Schedule" aria-labelledby="h-schedule">
           <header class="panel-head">
-            <h2 id="h-schedule">Scheduler</h2>
+            <h2 id="h-schedule">Run on a schedule</h2>
             <button class="btn quiet" type="button" id="schedule-refresh"><svg><use href="#i-refresh"/></svg><span>Reload</span></button>
           </header>
-          <p class="lede">Times use this server’s local clock, not your phone’s. The server must stay running; missed times are not caught up.</p>
+          <p class="lede">Choose a scene, time and days. Times follow the computer running this server, not your phone. Keep the server running; a missed time will not run later.</p>
           <div id="schedule-list" aria-live="polite"><p class="empty">Loading schedules…</p></div>
           <form id="schedule-form" class="stack-form group">
             <h3>Add a schedule</h3>
@@ -405,10 +412,10 @@
         </section>
         <section class="panel" data-needs-group="Webhooks" aria-labelledby="h-webhooks">
           <header class="panel-head">
-            <h2 id="h-webhooks">Webhook links</h2>
+            <h2 id="h-webhooks">Run from another app</h2>
             <button class="btn quiet" type="button" id="webhooks-refresh"><svg><use href="#i-refresh"/></svg><span>Reload</span></button>
           </header>
-          <p class="lede">A private link lets another app run one scene. Anyone with the link can use it without signing in. Delete the link to revoke access.</p>
+          <p class="lede">Create a private link that another app can use to run one scene. Anyone with the link can run it without signing in. Delete the link here to stop it working.</p>
           <div id="webhooks-list" aria-live="polite"><p class="empty">Loading webhook links…</p></div>
           <form id="webhook-form" class="stack-form group">
             <h3>Create a link</h3>
@@ -425,20 +432,180 @@
         <h2 id="h-addons">Extensions</h2>
         <button class="btn quiet" type="button" id="addons-refresh"><svg><use href="#i-refresh"/></svg><span>Reload</span></button>
       </header>
-      <p class="lede">Extensions keep a card live on your TV while this server is running. Only one extension can be live at a time. Installing or enabling one disables any other. Preview shows it once without installing.</p>
+      <p class="lede">Keep a useful card updating on your TV. Only one extension can be live at a time; installing or turning one on replaces the current live extension. Preview shows it once without installing. Keep this server running for updates.</p>
       <div id="addons-list" aria-live="polite"><p class="empty">Loading extensions…</p></div>
       <p class="result-msg" id="addons-msg" role="status" hidden></p>
     </section>
     <datalist id="automation-scenes"></datalist>
   </main>
 
-  <!-- ============ Show: message, card, live view, screenshot ============ -->
+  <!-- ============ Show ============ -->
   <main id="view-show" class="view" data-view-id="show" hidden>
-    <header class="view-head"><h1>Show on the TV</h1><p class="lede">Send a message, put a card on the screen, or take a look at what the TV is showing.</p></header>
-    <div class="cols">
+    <header class="view-head"><h1>Show on your TV</h1><p class="lede">Make a card that feels right at home on your screen. Start with an idea, make it yours, then show it.</p></header>
+    <section class="panel studio" data-needs-group="Notify" aria-labelledby="h-studio">
+      <header class="panel-head">
+        <div><h2 id="h-studio">Card studio</h2><p class="hint">Your draft stays here as you move between steps.</p></div>
+        <span class="pill" id="ov-unsaved" hidden>Unsaved changes</span>
+      </header>
+      <div class="studio-grid">
+        <div class="studio-controls">
+          <nav class="studio-steps" aria-label="Card studio steps">
+            <button class="btn studio-step" type="button" id="ov-step-start" data-studio-step="start" aria-controls="ov-panel-start" aria-current="step"><span class="step-number" aria-hidden="true">1</span><span>Start</span></button>
+            <button class="btn studio-step" type="button" id="ov-step-design" data-studio-step="design" aria-controls="ov-panel-design"><span class="step-number" aria-hidden="true">2</span><span>Design</span></button>
+            <button class="btn studio-step" type="button" id="ov-step-finish" data-studio-step="finish" aria-controls="ov-panel-finish"><span class="step-number" aria-hidden="true">3</span><span>Finish</span></button>
+          </nav>
+
+          <section class="studio-step-panel" id="ov-panel-start" data-studio-panel="start" aria-labelledby="ov-step-start">
+            <div class="studio-section">
+              <h3>Start with a template</h3>
+              <p class="hint" id="ov-templates-label">Choose a starting point. You can change every part of it in Design.</p>
+              <div class="overlay-templates" id="ov-templates" role="group" aria-labelledby="ov-templates-label"></div>
+            </div>
+            <div class="studio-section">
+              <h3>Already have a card?</h3>
+              <div class="field">
+                <label for="ov-paste">Paste a card or an AI reply</label>
+                <p class="hint" id="ov-paste-help">Paste the card’s JSON here, including any surrounding reply text. Applying it replaces your current draft, not your saved designs.</p>
+                <textarea id="ov-paste" rows="5" spellcheck="false" autocomplete="off" aria-describedby="ov-paste-help ov-paste-msg" placeholder="Paste your card here"></textarea>
+              </div>
+              <div class="row">
+                <button class="btn primary" type="button" id="ov-paste-apply">Use pasted card</button>
+                <button class="btn" type="button" id="design-import"><svg><use href="#i-upload"/></svg><span>Import a card file</span></button>
+                <input type="file" id="design-import-file" accept=".json,application/json" hidden>
+              </div>
+              <p class="result-msg" id="ov-paste-msg" role="status" hidden></p>
+            </div>
+            <details class="help studio-section" id="ov-ai">
+              <summary>Ask an AI to make a card</summary>
+              <p>Use your own AI chat app. We will give it instructions for making a card this TV understands. Nothing is sent to an AI from this page.</p>
+              <ol>
+                <li>Copy the instructions and paste them into your AI chat.</li>
+                <li>Tell it what you want on your card, and how it should look.</li>
+                <li>Copy its reply into the box above, then choose <strong>Use pasted card</strong>.</li>
+              </ol>
+              <div class="row">
+                <button class="btn" type="button" id="ov-ai-copy"><svg><use href="#i-copy"/></svg><span>Copy AI instructions</span></button>
+              </div>
+              <details class="mini">
+                <summary>Card format reference · for advanced use</summary>
+                <p class="hint">The schema describes the card format. Share it if your AI asks for more detail, or use it when writing your own card.</p>
+                <div class="row">
+                  <button class="btn quiet" type="button" id="ov-schema-copy">Copy schema</button>
+                  <button class="btn quiet" type="button" id="ov-schema-download"><svg><use href="#i-download"/></svg><span>Download schema</span></button>
+                </div>
+              </details>
+              <p class="result-msg" id="ov-ai-msg" role="status" hidden></p>
+            </details>
+          </section>
+
+          <section class="studio-step-panel" id="ov-panel-design" data-studio-panel="design" aria-labelledby="ov-step-design" hidden>
+            <div class="studio-section">
+              <h3>Set the stage</h3>
+              <div class="pair">
+                <div class="field">
+                  <label for="ov-layout">Card layout</label>
+                  <select id="ov-layout">
+                    <option value="single" selected>One card</option>
+                    <option value="regions">Several areas of the screen</option>
+                  </select>
+                </div>
+                <div class="field">
+                  <label for="ov-card-seconds">Show for <span class="sub">seconds</span></label>
+                  <input type="number" id="ov-card-seconds" min="0" max="300" step="1" value="8" inputmode="numeric" aria-describedby="ov-duration-help">
+                  <p class="hint" id="ov-duration-help">0 keeps the card on screen until you hide it. Up to 300 seconds.</p>
+                </div>
+              </div>
+            </div>
+            <div class="studio-section">
+              <h3>Choose a look</h3>
+              <div class="look-presets" id="ov-look-presets" role="group" aria-label="Card looks"></div>
+              <details class="overlay-look" id="ov-look">
+                <summary>Adjust colours, corners and text</summary>
+                <p class="hint">Leave a colour unset to use the TV’s default.</p>
+                <div id="ov-look-form"></div>
+              </details>
+            </div>
+            <div class="studio-section">
+              <h3>Make it yours</h3>
+              <p class="hint">Choose a part of your card to edit it, or add something new below. Groups arrange their contents together.</p>
+              <div id="ov-builder"></div>
+              <p class="result-msg" id="ov-builder-msg" role="status" hidden></p>
+            </div>
+          </section>
+
+          <section class="studio-step-panel" id="ov-panel-finish" data-studio-panel="finish" aria-labelledby="ov-step-finish" hidden>
+            <div class="studio-section">
+              <h3>Ready for the big screen</h3>
+              <p>Check the preview, then send your card to the TV. Sending shows the current draft; it does not save a design.</p>
+              <div class="row">
+                <button class="btn primary" type="button" id="ov-send" disabled><svg><use href="#i-tv"/></svg><span>Send to TV</span></button>
+                <button class="btn" type="button" id="ov-hide" disabled>Hide card</button>
+              </div>
+              <p class="result-msg" id="ov-send-msg" role="status" hidden></p>
+            </div>
+            <form id="design-form" class="design-form studio-section">
+              <h3>Keep it for next time</h3>
+              <p class="hint">Save a named design on this server, or download a copy to keep on your device.</p>
+              <div class="field">
+                <label for="design-name">Design name</label>
+                <input type="text" id="design-name" maxlength="60" autocomplete="off" list="design-names" placeholder="Match day sidebar">
+              </div>
+              <div class="row">
+                <button class="btn" type="submit" id="design-save">Save design</button>
+                <button class="btn" type="button" id="design-export"><svg><use href="#i-download"/></svg><span>Download card file</span></button>
+                <button class="btn quiet" type="button" id="design-copy"><svg><use href="#i-copy"/></svg><span>Copy card JSON</span></button>
+              </div>
+            </form>
+            <p class="result-msg" id="design-save-msg" role="status" hidden></p>
+            <p class="hint">Want this card to appear as part of a routine? Save it first, then add the design to a scene in <button class="btn quiet" type="button" data-goto="automate">Automate</button>.</p>
+          </section>
+
+          <div class="studio-capacity">
+            <label class="hint" for="ov-meter">Card capacity</label>
+            <meter id="ov-meter" min="0" max="1" value="0" aria-describedby="ov-meter-text">Card capacity</meter>
+            <p class="hint" id="ov-meter-text" aria-live="polite">Up to 80 widgets, 5 levels and 48 KB per card.</p>
+          </div>
+          <details class="overlay-json">
+            <summary>Card code · view or edit JSON</summary>
+            <div class="field">
+              <label for="ov-json">The whole card as JSON</label>
+              <p class="hint" id="ov-json-help">This is the card used for sending and saving. Apply code edits to update the draft, or discard them to return to the visual editor. Unapplied edits are not sent.</p>
+              <textarea id="ov-json" rows="12" spellcheck="false" aria-describedby="ov-json-help ov-json-msg"></textarea>
+            </div>
+            <div class="row">
+              <button class="btn" type="button" id="ov-json-apply">Apply code changes</button>
+              <button class="btn quiet" type="button" id="ov-json-reset">Discard code changes</button>
+            </div>
+            <p class="result-msg" id="ov-json-msg" role="status" hidden></p>
+          </details>
+        </div>
+        <details class="studio-preview" id="ov-preview-dock" open>
+          <summary>TV preview <span class="hint">Show or hide preview</span></summary>
+          <figure class="overlay-preview">
+            <div class="tv-stage" id="ov-preview" role="img" aria-label="Your card’s position and appearance on a TV screen"></div>
+            <figcaption class="hint">A guide to how your card will look on a 16:9 screen. The TV may draw text slightly differently.</figcaption>
+          </figure>
+          <p class="hint">Images from other sites appear as placeholders here. The TV loads the image when you send the card.</p>
+        </details>
+      </div>
+    </section>
+    <section class="panel designs" data-needs-group="Designs" aria-labelledby="h-designs">
+      <header class="panel-head">
+        <div><h2 id="h-designs">My designs</h2><p class="hint">Your saved cards, ready to use again.</p></div>
+        <button class="btn quiet" type="button" id="designs-refresh"><svg><use href="#i-refresh"/></svg><span>Refresh list</span></button>
+      </header>
+      <p class="lede">Open a design to make changes, show it on the TV, or use it in a scene. Designs are saved on this server, not just this device.</p>
+      <div id="designs-list" aria-live="polite"><p class="empty">Loading your designs…</p></div>
+      <p class="result-msg" id="designs-msg" role="status" hidden></p>
+      <datalist id="design-names"></datalist>
+    </section>
+    <h2 class="show-extras-title">Quick messages &amp; screen tools</h2>
+    <div class="cols show-extras">
       <div class="col">
-        <section class="panel notify" data-needs-group="Notify" aria-labelledby="h-notify">
-          <header class="panel-head"><h2 id="h-notify">Send a message</h2><span class="hint" id="notify-hint"></span></header>
+        <details class="panel notify" data-needs-group="Notify" aria-labelledby="h-notify">
+          <summary class="panel-head" id="h-notify">Send a quick message</summary>
+          <p class="hint" id="notify-hint"></p>
+          <p class="hint">Show a short TV notification, or have the TV read your message aloud.</p>
           <form id="notify-form" class="notify-form">
             <div class="field">
               <label for="notify-text">Message</label>
@@ -454,10 +621,12 @@
             </div>
             <p class="result-msg" id="notify-msg" role="status" hidden></p>
           </form>
-        </section>
+        </details>
 
-        <section class="panel overlay" data-needs-group="Notify" aria-labelledby="h-overlay">
-          <header class="panel-head"><h2 id="h-overlay">Show a card</h2><span class="hint" id="overlay-hint"></span></header>
+        <details class="panel overlay" data-needs-group="Notify" aria-labelledby="h-overlay">
+          <summary class="panel-head" id="h-overlay">Make a simple text card</summary>
+          <p class="hint" id="overlay-hint"></p>
+          <p class="hint">Just a title and a few words. For more control over the look and layout, use Card studio above.</p>
           <form id="overlay-form" class="notify-form">
             <div class="field">
               <label for="ov-title">Title</label>
@@ -468,17 +637,17 @@
               <textarea id="ov-body" rows="2" maxlength="400" placeholder="It is ready."></textarea>
             </div>
             <div class="field">
-              <label for="ov-lines">Lines <span class="sub">one per line, up to 10</span></label>
+              <label for="ov-lines">List items <span class="sub">one per line, up to 10</span></label>
               <textarea id="ov-lines" rows="3"></textarea>
             </div>
             <div class="pair">
               <div class="field">
                 <label for="ov-kind">Style</label>
                 <select id="ov-kind">
-                  <option value="info" selected>Info</option>
-                  <option value="success">Success</option>
-                  <option value="warning">Warning</option>
-                  <option value="alert">Alert</option>
+                  <option value="info" selected>Information</option>
+                  <option value="success">Good news</option>
+                  <option value="warning">Heads up</option>
+                  <option value="alert">Important</option>
                 </select>
               </div>
               <div class="field">
@@ -492,36 +661,36 @@
                 </select>
               </div>
               <div class="field">
-                <label for="ov-seconds">Seconds <span class="sub">0 = stays</span></label>
+                <label for="ov-seconds">Show for <span class="sub">seconds · 0 keeps it on screen</span></label>
                 <input type="number" id="ov-seconds" min="0" max="300" step="1" value="8" inputmode="numeric">
               </div>
             </div>
             <div class="row">
               <button class="btn primary" type="submit" id="ov-show" disabled>Show card</button>
-              <button class="btn" type="button" id="ov-hide" disabled>Hide card</button>
               <button class="btn" type="button" id="ov-details" disabled>Show TV details on screen</button>
             </div>
             <p class="result-msg" id="overlay-msg" role="status" hidden></p>
           </form>
-        </section>
+        </details>
       </div>
 
       <div class="col">
-        <section class="panel live" data-needs-route="/api/screen/stream" aria-labelledby="h-live">
-          <header class="panel-head"><h2 id="h-live">Live view</h2><span class="hint num" id="live-stats"></span></header>
-          <p class="lede">A small live picture of the HDMI input, drawn on this page. It shows what the connected computer displays, so treat it as private. Nothing is saved, and it stops when you stop it, leave the page or close the tab.</p>
+        <details class="panel live" data-needs-route="/api/screen/stream" aria-labelledby="h-live">
+          <summary class="panel-head" id="h-live">Watch the HDMI input live</summary>
+          <p class="hint num" id="live-stats"></p>
+          <p class="lede">See a small live picture from the device connected by HDMI. It may contain private information. Nothing is saved, and the picture stops when you stop it, leave this page or close the tab. Cards from this app do not appear in the capture.</p>
           <div class="row">
-            <select id="live-size" aria-label="Size" class="inline">
+            <select id="live-size" aria-label="Live picture resolution" class="inline">
               <option value="160x90" selected>160 × 90</option>
               <option value="320x180">320 × 180</option>
             </select>
-            <select id="live-fps" aria-label="Frames per second" class="inline">
-              <option value="15">15 fps</option>
-              <option value="30" selected>30 fps</option>
-              <option value="60">60 fps</option>
+            <select id="live-fps" aria-label="Live picture smoothness" class="inline">
+              <option value="15">15 frames per second</option>
+              <option value="30" selected>30 frames per second</option>
+              <option value="60">60 frames per second</option>
             </select>
-            <button class="btn primary" type="button" id="live-start" disabled><svg><use href="#i-tv"/></svg><span>Start</span></button>
-            <button class="btn danger" type="button" id="live-stop" hidden><svg><use href="#i-stop"/></svg><span>Stop</span></button>
+            <button class="btn primary" type="button" id="live-start" disabled><svg><use href="#i-tv"/></svg><span>Start live view</span></button>
+            <button class="btn danger" type="button" id="live-stop" hidden><svg><use href="#i-stop"/></svg><span>Stop live view</span></button>
           </div>
           <p class="result-msg" id="live-msg" role="status" hidden></p>
           <div class="live-view" id="live-view" hidden>
@@ -533,13 +702,13 @@
               <li><span class="chip" id="chip-right"></span><span>Right</span><code id="hex-right"></code></li>
             </ul>
           </div>
-        </section>
+        </details>
 
-        <section class="panel screenshot" data-needs-route="/api/screenshot" aria-labelledby="h-shot">
-          <header class="panel-head"><h2 id="h-shot">Screenshot</h2></header>
-          <p class="lede">Takes a picture of the TV’s HDMI input. It shows whatever the connected computer displays, so treat it as private. This server does not keep it.</p>
+        <details class="panel screenshot" data-needs-route="/api/screenshot" aria-labelledby="h-shot">
+          <summary class="panel-head" id="h-shot">Take a screenshot</summary>
+          <p class="lede">Take a still picture of the HDMI input, then download it. It may contain private information; this server does not keep a copy. Cards from this app do not appear in the capture.</p>
           <div class="row">
-            <select id="shot-width" aria-label="Size" class="inline">
+            <select id="shot-width" aria-label="Screenshot resolution" class="inline">
               <option value="960">960 × 540</option>
               <option value="1920" selected>1920 × 1080</option>
               <option value="3840">3840 × 2160</option>
@@ -549,105 +718,34 @@
           </div>
           <p class="result-msg" id="shot-msg" role="status" hidden></p>
           <figure class="shot zoomable" id="shot-view" tabindex="0" hidden></figure>
-        </section>
+        </details>
       </div>
     </div>
-    <section class="panel studio" data-needs-group="Notify" aria-labelledby="h-studio">
-      <header class="panel-head"><h2 id="h-studio">Card studio</h2><span class="hint" id="ov-unsaved" hidden>Unsaved changes</span></header>
-      <p class="lede">Build any card the TV can draw: a single floating card, or up to four regions such as a top bar plus a side panel. Start from a template, change the look and the widgets, then send it to the TV or save it as a design.</p>
-      <div class="studio-grid">
-        <div class="studio-controls">
-          <div class="field">
-            <span class="field-label" id="ov-templates-label">Start from a template</span>
-            <div class="overlay-templates" id="ov-templates" role="group" aria-labelledby="ov-templates-label"></div>
-          </div>
-          <div class="pair">
-            <div class="field">
-              <label for="ov-layout">Layout</label>
-              <select id="ov-layout">
-                <option value="single" selected>Single card</option>
-                <option value="regions">Several regions (up to 4)</option>
-              </select>
-            </div>
-            <div class="field">
-              <label for="ov-card-seconds">Seconds <span class="sub">0 = stays until hidden</span></label>
-              <input type="number" id="ov-card-seconds" min="0" max="300" step="1" value="8" inputmode="numeric">
-            </div>
-          </div>
-          <details class="overlay-look" id="ov-look">
-            <summary>Look · colours, corners, zoom and font</summary>
-            <p class="hint">Colours you leave unset keep the TV defaults and stay out of the JSON.</p>
-            <div id="ov-look-form"></div>
-          </details>
-          <p class="hint">Add widgets in order. Vertical and side-by-side groups hold other widgets. Use up to 5 levels, 80 widgets across all regions and 48 KB of JSON.</p>
-          <div id="ov-builder"></div>
-          <p class="result-msg" id="ov-builder-msg" role="status" hidden></p>
-          <details class="overlay-json">
-            <summary>Edit raw JSON</summary>
-            <label for="ov-json">Card as JSON <span class="sub">the whole request body: look, seconds, layout and widgets</span></label>
-            <p class="hint" id="ov-json-help">Exactly what Send to TV and Save design send (POST /api/overlay and PUT /api/designs/{name}). Apply JSON to replace the draft; studio edits replace this text. Unapplied JSON is not sent.</p>
-            <textarea id="ov-json" rows="12" spellcheck="false" aria-describedby="ov-json-help"></textarea>
-            <div class="row">
-              <button class="btn" type="button" id="ov-json-apply">Apply JSON</button>
-              <button class="btn quiet" type="button" id="ov-json-reset">Discard JSON edits</button>
-            </div>
-          </details>
-        </div>
-        <figure class="overlay-preview">
-          <figcaption>TV preview <span class="hint">Approximate proportions · the card’s own colours on a 16:9 stage</span></figcaption>
-          <div class="tv-stage" id="ov-preview" aria-label="Card preview as it lands on the TV"></div>
-          <p class="hint">Images from other sites appear as placeholders here; the TV loads the actual image.</p>
-          <button class="btn primary" type="button" id="ov-send" disabled>Send to TV</button>
-        </figure>
-      </div>
-    </section>
-    <section class="panel designs" data-needs-group="Designs" aria-labelledby="h-designs">
-      <header class="panel-head">
-        <h2 id="h-designs">My designs</h2>
-        <button class="btn quiet" type="button" id="designs-refresh"><svg><use href="#i-refresh"/></svg><span>Reload</span></button>
-      </header>
-      <p class="lede">Saved designs live on this server. Load one into the studio, show it on the TV, or use it in a scene step. Export and import move a design as a JSON file.</p>
-      <form id="design-form" class="design-form">
-        <div class="field">
-          <label for="design-name">Design name</label>
-          <input type="text" id="design-name" maxlength="60" autocomplete="off" list="design-names" placeholder="Match day sidebar">
-        </div>
-        <div class="row">
-          <button class="btn primary" type="submit" id="design-save">Save design</button>
-          <button class="btn" type="button" id="design-export">Export JSON</button>
-          <button class="btn" type="button" id="design-import">Import JSON…</button>
-          <input type="file" id="design-import-file" accept=".json,application/json" hidden>
-        </div>
-      </form>
-      <div id="designs-list" aria-live="polite"><p class="empty">Loading designs…</p></div>
-      <p class="result-msg" id="designs-msg" role="status" hidden></p>
-      <datalist id="design-names"></datalist>
-    </section>
   </main>
 
   <!-- ============ Tune: picture & sound, process a file ============ -->
   <main id="view-tune" class="view" data-view-id="tune" hidden>
-    <header class="view-head"><h1>Picture &amp; sound</h1><p class="lede">Change how the TV looks and sounds, or send it a file to enhance.</p></header>
-    <div class="cols">
+    <header class="view-head"><h1>Picture &amp; sound</h1><p class="lede">Find the right picture and sound for what you are watching. Changes are made on your TV.</p></header>
+    <div class="cols cols-tune">
       <div class="col">
         <section class="panel settings" data-needs-group="Picture &amp; sound" aria-labelledby="h-settings">
           <header class="panel-head">
             <h2 id="h-settings">Picture &amp; sound</h2>
             <button class="btn quiet" type="button" id="refresh-settings"><svg><use href="#i-refresh"/></svg><span>Reload</span></button>
           </header>
-          <p class="lede">The choices come from the TV for the input and picture mode it is using right now. Changes are saved on the TV for that input and mode.</p>
+          <p class="lede">These settings belong to the input and picture mode currently in use. Your TV remembers changes for that input and mode.</p>
           <div id="settings-body" class="settings-body" aria-live="polite"></div>
         </section>
       </div>
       <div class="col">
         <section class="panel process" data-needs-group="Processing" aria-labelledby="h-process">
-          <header class="panel-head"><h2 id="h-process">Process a file</h2></header>
-          <p class="lede">Send a photo or a sound file to the TV. Its AI picture and sound engine enhances it and you download the result.</p>
+          <header class="panel-head"><h2 id="h-process">Enhance a photo or sound file</h2></header>
+          <p class="lede">Use the TV’s picture and sound engine to enhance a file, then download the result. Choose a photo or WAV audio file to get started.</p>
           <form id="job-form" class="job-form">
             <label class="drop" id="drop">
               <input type="file" id="file" accept=".png,.jpg,.jpeg,.wav,image/png,image/jpeg,audio/wav">
               <svg><use href="#i-upload"/></svg>
-              <span class="drop-main" id="drop-main">Choose an image or WAV, or drop it here</span>
+              <span class="drop-main" id="drop-main">Choose a photo or sound file</span>
               <span class="drop-sub" id="drop-sub">PNG, JPEG or WAV</span>
             </label>
             <div class="field" id="profile-field" hidden>
@@ -672,7 +770,7 @@
             </div>
             <div class="preview" id="job-preview"></div>
             <details class="job-log">
-              <summary>Processor log</summary>
+              <summary>Technical processing details</summary>
               <pre id="job-log"></pre>
             </details>
           </div>

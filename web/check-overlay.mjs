@@ -5,28 +5,68 @@ import vm from 'node:vm';
 
 class Element {
   constructor(tag) {
-    this.tag = tag; this.children = []; this.dataset = {}; this.listeners = {};
+    this.tag = tag; this.children = []; this.dataset = {}; this.listeners = {}; this.value = '';
     this.style = { setProperty(name, value) { this[name] = value; }, removeProperty(name) { delete this[name]; } };
+    this.classList = {
+      contains: name => (this.className || '').split(/\s+/).includes(name),
+      toggle: (name, force) => {
+        const names = new Set((this.className || '').split(/\s+/).filter(Boolean));
+        const enabled = force ?? !names.has(name);
+        if (enabled) names.add(name); else names.delete(name);
+        this.className = [...names].join(' ');
+        return enabled;
+      },
+      add: name => this.classList.toggle(name, true), remove: name => this.classList.toggle(name, false),
+    };
   }
-  setAttribute(name, value) { this[name] = ['disabled', 'selected'].includes(name) ? true : value; }
+  setAttribute(name, value) { this[name === 'class' ? 'className' : name] = ['disabled', 'selected'].includes(name) ? true : value; }
+  getAttribute(name) { return this[name === 'class' ? 'className' : name] ?? null; }
+  hasAttribute(name) { return this.getAttribute(name) !== null; }
   removeAttribute(name) { delete this[name]; }
-  append(...nodes) { for (const node of nodes) { this.children.push(node); if (node instanceof Element) node.parent = this; } }
+  append(...nodes) {
+    assert(nodes.every(node => !Array.isArray(node)), 'DOM children must be spread, not passed as an array');
+    for (const node of nodes) { this.children.push(node); if (node instanceof Element) node.parent = this; }
+    if (this.tag === 'select') this.value = (this.children.find(child => child.selected) || this.children[0])?.value;
+  }
   replaceChildren(...nodes) { this.children = []; this.append(...nodes); }
   remove() { if (this.parent) this.parent.children = this.parent.children.filter(child => child !== this); }
   focus() { this.focused = true; }
+  select() { this.selectedText = true; }
   addEventListener(name, handler) { this.listeners[name] = handler; }
-  querySelectorAll() { return []; }
+  matches(selector) {
+    return selector.split(',').some(part => {
+      const simple = part.trim();
+      const attr = simple.match(/^\[([\w-]+)(?:=["']?([^"'\]]+)["']?)?\]$/);
+      if (attr) {
+        const value = attr[1].startsWith('data-') ? this.dataset[attr[1].slice(5).replace(/-([a-z])/g, (_, ch) => ch.toUpperCase())] : this.getAttribute(attr[1]);
+        return value != null && (attr[2] === undefined || String(value) === attr[2]);
+      }
+      if (simple.startsWith('.')) return this.classList.contains(simple.slice(1));
+      if (simple.startsWith('#')) return this.id === simple.slice(1);
+      return this.tag === simple;
+    });
+  }
+  querySelectorAll(selector) {
+    return this.children.filter(child => child instanceof Element).flatMap(child =>
+      [...(child.matches(selector) ? [child] : []), ...child.querySelectorAll(selector)]);
+  }
+  querySelector(selector) { return this.querySelectorAll(selector)[0]; }
+  closest(selector) { return this.matches(selector) ? this : this.parent?.closest(selector); }
+  get parentNode() { return this.parent; }
+  get parentElement() { return this.parent; }
+  get firstElementChild() { return this.children.find(child => child instanceof Element); }
 }
 const elements = new Map();
 const context = vm.createContext({
-  assert, TextEncoder, URL,
+  assert, TextEncoder, URL, setInterval() {}, setTimeout() {}, clearTimeout() {},
   document: {
     addEventListener() {}, hidden: false, createElement: tag => new Element(tag), createElementNS: (ns, tag) => new Element(tag),
-    getElementById: id => { if (!elements.has(id)) elements.set(id, new Element(id)); return elements.get(id); },
+    querySelectorAll: selector => [...new Set([...elements.values()].flatMap(el => [...(el.matches(selector) ? [el] : []), ...el.querySelectorAll(selector)]))],
+    getElementById: id => { if (!elements.has(id)) { const el = new Element('div'); el.id = id; elements.set(id, el); } return elements.get(id); },
   },
 });
 vm.runInContext(fs.readFileSync(new URL('./app.js', import.meta.url), 'utf8'), context);
-vm.runInContext(`
+await vm.runInContext(`(async () => {
   const walk = el => [el, ...(el.children || []).filter(child => typeof child === 'object').flatMap(walk)];
   const buttons = el => walk(el).filter(child => child.tag === 'button');
   const button = (el, text) => buttons(el).find(child => child.textContent === text);
@@ -43,6 +83,7 @@ vm.runInContext(`
     assert.equal(checkOverlayTree(node), node);
     assert.equal(previewOverlayNode(node).className, 'w-' + type);
     assert.ok(OVERLAY_NAMES[type], type + ' has a plain-word name');
+    assert.throws(() => checkOverlayTree({ ...node, unsupported: true }), type + ' rejects unknown fields');
   }
   const nested = { type: 'stack', gap: 48, align: 'end', children: [
     { type: 'row', children: [{ type: 'badge', text: 'Ready', tone: 'accent' }, { type: 'dot', tone: 'accent' }] },
@@ -152,6 +193,23 @@ vm.runInContext(`
   checkOverlayCard({ regions: [{ position: 'top', root: forty }, { position: 'right', root: forty }] });
   assert.throws(() => checkOverlayCard({ regions: [{ position: 'top', root: forty }, { position: 'right', root: forty }, { position: 'center', root: { type: 'dot' } }] }), /80 widgets/);
   assert.equal(overlayCardCount({ regions: [{ position: 'top', root: forty }, { position: 'right', root: forty }] }), 80);
+  const byteCard = { root: { type: 'stack', children: Array.from({ length: 2 }, () => ({
+    type: 'stack', children: Array.from({ length: 16 }, () => ({ type: 'text', text: '😀'.repeat(350) })),
+  })) } };
+  const utf8Bytes = value => new TextEncoder().encode(JSON.stringify(value)).length;
+  let bytesLeft = OVERLAY_MAX_BYTES - utf8Bytes(byteCard);
+  for (const group of byteCard.root.children) for (const node of group.children) {
+    const extra = Math.min(50, Math.floor(bytesLeft / 4));
+    node.text += '😀'.repeat(extra); bytesLeft -= extra * 4;
+    if (bytesLeft > 0 && bytesLeft < 4 && 350 + extra + bytesLeft <= 400) {
+      node.text += 'x'.repeat(bytesLeft); bytesLeft = 0;
+    }
+  }
+  assert.equal(utf8Bytes(byteCard), OVERLAY_MAX_BYTES);
+  checkOverlayCard(byteCard);
+  byteCard.root.children[1].children[15].text += 'x';
+  assert.equal(utf8Bytes(byteCard), OVERLAY_MAX_BYTES + 1);
+  assert.throws(() => checkOverlayCard(byteCard), /49152/, 'the cap counts UTF-8 bytes, including the card envelope');
 
   // --- whole-card envelope: single card or regions, seconds, theme ---
   const dot = { type: 'dot' };
@@ -178,17 +236,34 @@ vm.runInContext(`
     assert.throws(() => checkOverlayTheme(bad), JSON.stringify(bad));
     assert.throws(() => checkOverlayCard({ root: dot, theme: bad }), JSON.stringify(bad));
   }
+  for (const name of ['__proto__', 'constructor']) {
+    for (const card of [{ root: dot, position: name }, { root: dot, size: name },
+      { regions: [{ position: name, root: dot }] }, { regions: [{ position: 'top', size: name, root: dot }] },
+      { root: dot, [name]: true }]) {
+      assert.throws(() => checkOverlayCard(card), 'prototype names are not envelope fields or enum values: ' + name);
+    }
+    for (const invalidTheme of [{ font: name }, { [name]: '#123456' }]) {
+      assert.throws(() => checkOverlayTheme(invalidTheme), 'prototype names are not Look settings: ' + name);
+      assert.throws(() => checkOverlayCard({ root: dot, theme: invalidTheme }));
+    }
+    assert.throws(() => checkOverlayTree({ type: 'meta', items: [{ label: 'L', value: 'V', icon: name }] }),
+      'fact icons must be own catalog entries: ' + name);
+    assert.throws(() => checkOverlayTree({ type: 'text', text: 'Safe', [name]: true }),
+      'prototype names are not widget fields: ' + name);
+  }
 
   // --- templates: every one validates, uses placeholder text only, and the broadcast one covers the HUD vocabulary ---
   const templates = overlayTemplates();
-  assert.ok(templates.length >= 5 && templates.length <= 6);
+  assert.equal(templates.length, 7);
+  assert.equal(templates.filter(template => template.name === 'Blank').length, 1, 'one explicit blank starting point');
+  assert.equal(new Set(templates.map(template => template.name)).size, 7, 'template names are unique');
   const types = (node) => [node.type, ...(node.children || []).flatMap(types)];
   for (const template of templates) {
     assert.ok(template.name && template.blurb);
     assert.equal(checkOverlayCard(template.card), template.card);
     assert.ok(overlayCardCount(template.card) <= 80);
   }
-  const broadcast = templates[0].card;
+  const broadcast = templates.find(template => template.card.regions?.some(region => region.position === 'top') && template.card.regions?.some(region => region.position === 'right')).card;
   assert.deepEqual(broadcast.regions.map(r => r.position), ['top', 'right']);
   const used = new Set(broadcast.regions.flatMap(r => types(r.root)));
   for (const type of ['image', 'text', 'clock', 'badge', 'section', 'event', 'stat', 'compare', 'sparkline', 'status']) assert.ok(used.has(type), 'broadcast uses ' + type);
@@ -258,6 +333,7 @@ vm.runInContext(`
   const screen = stage.children[0];
   assert.equal(screen.className, 'tv-screen');
   assert.equal(JSON.stringify(screen.children.map(card => [card.dataset.pos, card.dataset.size])), JSON.stringify([['top', 'full'], ['right', 'm']]));
+  assert.equal(screen.dataset.edges, 'top right', 'adjoining region seams share the edge layout');
   assert.equal(stage.style['--tv-accent'], '#e8c35a');
   assert.equal(stage.dataset.font, 'condensed');
   assert.equal(stage.style['--tv-surface'], undefined, 'unset background keeps the TV default');
@@ -272,26 +348,27 @@ vm.runInContext(`
   assert.equal(stage.style['--tv-surface'], 'rgb(25 28 34 / 0.3)', 'opacity alone keeps the default surface colour');
 
   // --- the builder ---
+  const realUpdateOverlayDraft = updateOverlayDraft;
   updateOverlayDraft = () => {};
   overlayCard = { root: newOverlayNode('compare') };
-  let builder = overlayBuilder(overlayCard.root);
+  let builder = renderOverlayInspector(overlayCard.root);
   assert.equal(walk(builder).filter(el => el.tag === 'input').length, 6, 'each segment has label, value and share inputs');
   assert.equal(button(builder, 'Remove segment').disabled, true);
   button(builder, 'Add segment').listeners.click();
-  builder = overlayBuilder(overlayCard.root);
+  builder = renderOverlayInspector(overlayCard.root);
   button(builder, 'Add segment').listeners.click();
-  builder = overlayBuilder(overlayCard.root);
+  builder = renderOverlayInspector(overlayCard.root);
   assert.equal(overlayCard.root.segments.length, 4);
   assert.equal(button(builder, 'Add segment').disabled, true);
   button(builder, 'Remove segment').listeners.click();
   assert.equal(overlayCard.root.segments.length, 3);
-  const colour = walk(overlayBuilder(overlayCard.root)).find(el => el.tag === 'select' && el.children.some(option => option.textContent === 'Default'));
+  const colour = walk(renderOverlayInspector(overlayCard.root)).find(el => el.tag === 'select' && el.children.some(option => option.textContent === 'Default'));
   colour.value = 'alert'; colour.listeners.input();
   assert.equal(overlayCard.root.segments[0].tone, 'alert');
   colour.value = ''; colour.listeners.input();
   assert.equal(overlayCard.root.segments[0].tone, undefined);
   const chart = newOverlayNode('sparkline');
-  let chartBuilder = overlayBuilder(chart);
+  let chartBuilder = renderOverlayInspector(chart);
   const points = walk(chartBuilder).find(el => el.tag === 'textarea');
   points.value = '-1, 0 1'; points.listeners.input();
   assert.equal(JSON.stringify(chart.points), '[-1,0,1]');
@@ -306,9 +383,9 @@ vm.runInContext(`
   points.value = '0, nope, 1'; points.listeners.input();
   assert.throws(() => checkOverlayTree(chart));
   const facts = newOverlayNode('meta');
-  let factBuilder = overlayBuilder(facts);
+  let factBuilder = renderOverlayInspector(facts);
   assert.equal(button(factBuilder, 'Remove fact').disabled, true, 'one fact must stay');
-  for (let i = 0; i < 3; i++) { button(factBuilder, 'Add fact').listeners.click(); factBuilder = overlayBuilder(facts); }
+  for (let i = 0; i < 3; i++) { button(factBuilder, 'Add fact').listeners.click(); factBuilder = renderOverlayInspector(facts); }
   assert.equal(facts.items.length, 4);
   assert.equal(button(factBuilder, 'Add fact').disabled, true);
   const factIcon = walk(factBuilder).find(el => el.tag === 'select' && el.children.some(option => option.textContent === 'None'));
@@ -319,51 +396,95 @@ vm.runInContext(`
   assert.equal(facts.items[0].icon, undefined);
   checkOverlayTree(facts);
   const sectionNode = newOverlayNode('section');
-  const sectionIcon = walk(overlayBuilder(sectionNode)).find(el => el.tag === 'select' && el.children.some(option => option.textContent === 'None'));
+  const sectionIcon = walk(renderOverlayInspector(sectionNode)).find(el => el.tag === 'select' && el.children.some(option => option.textContent === 'None'));
   assert.equal(sectionIcon.children.length, 17, 'none plus the 16 TV icons');
   assert.equal(sectionIcon.children.find(option => option.selected).value, 'layers');
   const statNode = newOverlayNode('stat');
-  const statInputs = inputs(overlayBuilder(statNode));
+  const statInputs = inputs(renderOverlayInspector(statNode));
   assert.equal(statInputs.find(el => el.type === 'range').value, 0.5, 'the left share is a slider');
   const statTone = statInputs.find(el => el.tag === 'select' && el.children.some(o => o.value === 'accent'));
   assert.equal(statTone.children.find(o => o.selected).value, 'accent', 'stat defaults to the accent colour');
   const statusNode = newOverlayNode('status');
-  const stateSelect = inputs(overlayBuilder(statusNode)).find(el => el.tag === 'select' && el.children.some(o => o.value === 'degraded'));
+  const stateSelect = inputs(renderOverlayInspector(statusNode)).find(el => el.tag === 'select' && el.children.some(o => o.value === 'degraded'));
   stateSelect.value = 'offline'; stateSelect.listeners.input();
   assert.equal(statusNode.state, 'offline');
-  const detail = inputs(overlayBuilder(statusNode)).find(el => el.maxlength === 24);
+  const detail = inputs(renderOverlayInspector(statusNode)).find(el => el.maxlength === 24);
   detail.value = ''; detail.listeners.input();
   assert.equal(Object.hasOwn(statusNode, 'detail'), false, 'an emptied optional field is left out');
+  const textNode = newOverlayNode('text');
+  const textInspector = renderOverlayInspector(textNode);
+  const textField = inputs(textInspector).find(el => el.maxlength === 400);
+  textField.value = ''; textField.listeners.input();
+  assert.equal(textField['aria-invalid'], 'true', 'required widget fields show their own validation state');
+  assert.ok(walk(textField.parent).some(el => el.className === 'field-error' && !el.hidden && el.textContent), 'the problem appears beside the field');
+  textField.value = 'Your message'; textField.listeners.input();
+  assert.equal(textField['aria-invalid'], undefined, 'fixing the field clears its invalid state');
 
   // move / duplicate / remove, and the 80-widget cap across regions
   overlayCard = { root: { type: 'stack', children: [{ type: 'text', text: 'A' }, { type: 'text', text: 'B' }, { type: 'dot' }] } };
   builder = overlayBuilder(overlayCard.root);
-  const widgets = walk(builder).filter(el => el.className === 'overlay-widget' && el !== builder);
+  const widgets = walk(builder).filter(el => el.classList.contains('widget-tree-row') && el !== builder);
   assert.equal(widgets.length, 3);
   assert.equal(button(widgets[0], 'Move up').disabled, true);
   assert.equal(button(widgets[2], 'Move down').disabled, true);
   button(widgets[0], 'Move down').listeners.click();
   assert.equal(JSON.stringify(overlayCard.root.children.map(c => c.text || c.type)), JSON.stringify(['B', 'A', 'dot']));
   builder = overlayBuilder(overlayCard.root);
-  button(walk(builder).filter(el => el.className === 'overlay-widget' && el !== builder)[2], 'Move up').listeners.click();
+  button(walk(builder).filter(el => el.classList.contains('widget-tree-row') && el !== builder)[2], 'Move up').listeners.click();
   assert.equal(JSON.stringify(overlayCard.root.children.map(c => c.text || c.type)), JSON.stringify(['B', 'dot', 'A']));
   builder = overlayBuilder(overlayCard.root);
-  button(walk(builder).filter(el => el.className === 'overlay-widget' && el !== builder)[0], 'Duplicate').listeners.click();
+  button(walk(builder).filter(el => el.classList.contains('widget-tree-row') && el !== builder)[0], 'Duplicate').listeners.click();
   assert.equal(JSON.stringify(overlayCard.root.children.map(c => c.text || c.type)), JSON.stringify(['B', 'B', 'dot', 'A']));
   assert.notEqual(overlayCard.root.children[0], overlayCard.root.children[1], 'a duplicate is a copy, not a shared object');
   builder = overlayBuilder(overlayCard.root);
-  button(walk(builder).filter(el => el.className === 'overlay-widget' && el !== builder)[1], 'Remove widget').listeners.click();
+  button(walk(builder).filter(el => el.classList.contains('widget-tree-row') && el !== builder)[1], 'Remove widget').listeners.click();
   assert.equal(JSON.stringify(overlayCard.root.children.map(c => c.text || c.type)), JSON.stringify(['B', 'dot', 'A']));
-  overlayCard = { regions: [{ position: 'top', root: forty }, { position: 'right', root: { type: 'stack', children: Array.from({ length: 19 }, () => ({ type: 'dot' })) } }] };
+  overlayCard = { regions: [{ position: 'top', root: forty }, { position: 'right', root: { type: 'stack', children: [
+    { type: 'stack', children: Array.from({ length: 18 }, () => ({ type: 'dot' })) },
+  ] } }] };
+  overlaySelected = overlayCard.regions[1].root.children[0];
   assert.equal(overlayCardCount(), 60);
-  assert.notEqual(button(overlayBuilder(overlayCard.regions[1].root), 'Add widget').disabled, true);
-  overlayCard.regions[1].root.children.push(...Array.from({ length: 20 }, () => ({ type: 'dot' })));
+  assert.equal(canAddOverlayWidget('dot'), true);
+  addOverlayWidget('dot');
+  assert.equal(overlayCardCount(), 61);
+  overlayCard.regions[1].root.children.push({ type: 'stack', children: Array.from({ length: 18 }, () => ({ type: 'dot' })) });
   assert.equal(overlayCardCount(), 80);
-  assert.equal(button(overlayBuilder(overlayCard.regions[1].root), 'Add widget').disabled, true, 'the cap counts every region');
+  checkOverlayCard(overlayCard);
+  assert.equal(canAddOverlayWidget('dot'), false, 'the palette cap counts every region');
+  addOverlayWidget('dot');
+  assert.equal(overlayCardCount(), 80, 'direct palette calls also enforce the cap');
   assert.equal(button(overlayBuilder(forty.children[0], 2, forty, 0), 'Duplicate').disabled, true);
   overlayCard = { root: newOverlayNode('stack') };
-  assert.notEqual(button(overlayBuilder(overlayCard.root, 4), 'Add widget').disabled, true);
-  assert.equal(button(overlayBuilder(overlayCard.root, 5), 'Add widget').disabled, true);
+  for (let i = 0; i < 2; i++) overlayCard.root = { type: 'stack', children: [overlayCard.root] };
+  overlaySelected = overlayCard.root.children[0].children[0];
+  assert.equal(canAddOverlayWidget('dot'), true, 'a depth-four leaf fits');
+  addOverlayWidget('dot');
+  overlaySelected = { type: 'stack', children: [overlaySelected] };
+  overlayCard.root.children[0].children[0].children[1] = overlaySelected;
+  assert.equal(canAddOverlayWidget('stack'), false, 'a group with its starter child cannot exceed depth five');
+  addOverlayWidget('text');
+  assert.equal(overlaySelected.type, 'text');
+  assert.equal(findOverlayNode(overlaySelected).depth, 5);
+  assert.equal(canAddOverlayWidget('stack'), false);
+  overlayCard = { root: { type: 'dot' } };
+  overlaySelected = overlayCard.root;
+  addOverlayWidget('text');
+  assert.equal(overlayCard.root.type, 'stack', 'adding beside a lone root creates a real group');
+  assert.equal(overlayCard.root.children[0].type, 'dot');
+  assert.equal(overlayCard.root.children[1], overlaySelected);
+  checkOverlayCard(overlayCard);
+  renderOverlayBuilder();
+  const workspace = $('ov-builder').querySelector('.widget-workspace');
+  assert.ok(workspace.querySelector('.widget-outline'));
+  assert.ok(workspace.querySelector('.widget-inspector'));
+  assert.ok(workspace.querySelector('.widget-select'));
+  const paletteItems = $('ov-builder').querySelectorAll('.palette-item');
+  assert.equal(paletteItems.length, Object.keys(OVERLAY_FIELDS).length);
+  for (const item of paletteItems) {
+    assert.equal(item.children[0].tag, 'svg', 'palette widgets have SVG icons');
+    assert.ok(item.querySelector('strong')?.textContent, 'palette widgets have names');
+    assert.ok(item.querySelector('small')?.textContent, 'palette widgets explain what they do');
+  }
 
   // regions: unique positions, add/remove
   overlayCard = { regions: [{ position: 'top', size: 'full', root: dot }, { position: 'right', size: 's', root: dot }] };
@@ -373,15 +494,25 @@ vm.runInContext(`
   assert.equal(positionSelect.children.find(o => o.value === 'right').disabled, undefined);
   assert.equal(positionSelect.children.find(o => o.value === 'bottom').disabled, undefined);
   assert.equal(inputs(regionBoxes[1]).find(el => el.tag === 'select' && el.children.some(o => o.value === 'full')).children.find(o => o.selected).value, 's');
+  const positionButtons = regionBoxes[1].querySelector('.position-picker').querySelectorAll('button');
+  assert.equal(positionButtons.length, 9);
+  assert.equal(positionButtons.find(el => el.dataset.position === 'top').disabled, true, 'mini-TV shares the unique-position constraint');
+  positionButtons.find(el => el.dataset.position === 'bottom').listeners.click();
+  assert.equal(overlayCard.regions[1].position, 'bottom');
   button(regionBoxes[0], 'Remove region').listeners.click();
-  assert.deepEqual(overlayCard.regions.map(r => r.position), ['right']);
+  assert.equal(overlayCard.regions.length, 2, 'removing a region asks before deleting its widgets');
+  button(regionBoxes[0].querySelector('.app-confirm'), 'Keep it').listeners.click();
+  assert.equal(overlayCard.regions.length, 2);
+  button(regionBoxes[0], 'Remove region').listeners.click();
+  button(regionBoxes[0].querySelector('.app-confirm'), 'Remove').listeners.click();
+  assert.deepEqual(overlayCard.regions.map(r => r.position), ['bottom']);
   regionBoxes = overlayRegions().map((region, i) => regionControls(region, i, overlayCard.regions));
   assert.equal(button(regionBoxes[0], 'Remove region').disabled, true, 'the last region stays');
   const single = { position: 'center', root: dot };
   overlayCard = single;
   const singleBox = regionControls(single, 0, [single]);
   assert.equal(button(singleBox, 'Remove region'), undefined);
-  assert.equal(singleBox.children[0].textContent, 'Card');
+  assert.match(singleBox.children[0].textContent, /TV/);
 
   // --- the Look form writes the card's theme object; unset values stay out of the JSON ---
   const themeState = {};
@@ -424,7 +555,118 @@ vm.runInContext(`
   assert.equal(overlayBody().theme.accent, '#ffffff');
   assert.equal(designSummary({ regions: [{ position: 'top', root: dot }, { position: 'right', root: forty }], seconds: 0 }), '2 regions · Top bar, Right panel · 41 widgets · stays until hidden');
   assert.equal(designSummary({ root: dot }), 'Single card · Top right · 1 widget · 8 s');
+
+  // Paste extraction must count braces only outside strings and retain escaped quotes/backslashes.
+  const pasted = { position: 'center', seconds: 0, root: { type: 'text',
+    text: 'He said "keep } { this" ' + String.fromCharCode(92) + ' path ends in }' } };
+  const serialized = JSON.stringify(pasted);
+  const fence = String.fromCharCode(96).repeat(3);
+  const nl = String.fromCharCode(10);
+  for (const source of [serialized, '  ' + serialized + '  ',
+    fence + 'json' + nl + serialized + nl + fence,
+    'Here is your card:' + nl + fence + 'json' + nl + serialized + nl + fence + nl + 'Use it on the TV.',
+    'Your card follows: ' + serialized + ' That is all.']) {
+    assert.equal(JSON.stringify(parseOverlayPaste(source)), serialized, 'extract complete JSON without corrupting strings');
+  }
+  for (const text of ['Ends in a backslash ' + String.fromCharCode(92), 'Backslash before quote ' + String.fromCharCode(92) + '" } still text']) {
+    const card = { root: { type: 'text', text } };
+    assert.equal(JSON.stringify(parseOverlayPaste('Result: ' + JSON.stringify(card) + ' Done.')), JSON.stringify(card));
+  }
+  const bare = { type: 'stack', children: [{ type: 'text', text: 'A } and { inside a string' }, { type: 'dot' }] };
+  assert.equal(JSON.stringify(parseOverlayPaste(JSON.stringify(bare))), JSON.stringify({ root: bare }), 'bare widget trees are wrapped once');
+  assert.equal(JSON.stringify(parseOverlayPaste('Widget: ' + JSON.stringify(bare) + ' Done.')), JSON.stringify({ root: bare }));
+  for (const source of ['', 'No JSON here', '{"root":', '{"root":{"type":"text","text":"unterminated}}',
+    '[]', 'null', JSON.stringify({ root: { type: 'text' } }), JSON.stringify({ root: dot, seconds: 301 })]) {
+    assert.throws(() => parseOverlayPaste(source), source);
+  }
+  const prompt = overlayAiPrompt();
+  for (const [type, fields] of Object.entries(OVERLAY_FIELDS)) {
+    const rule = prompt.split(nl).find(line => line.startsWith('Widget ' + type + ':'));
+    assert.ok(rule, 'AI prompt documents ' + type);
+    for (const field of Object.keys(fields)) assert.ok(rule.includes(field + ':'), type + ' prompt includes ' + field);
+  }
+  OVERLAY_FIELDS.gate_fixture = { caption: ['Caption', 12] };
+  try {
+    const dynamicPrompt = overlayAiPrompt();
+    assert.ok(dynamicPrompt.includes('Widget gate_fixture:'), 'prompt derives widget rules from the current field catalog');
+    assert.ok(dynamicPrompt.includes('caption: string, max 12 characters'));
+  } finally { delete OVERLAY_FIELDS.gate_fixture; }
+  assert.ok(prompt.includes(String(OVERLAY_MAX_NODES)), 'AI prompt states the 80-widget cap');
+  assert.ok(prompt.includes(String(OVERLAY_MAX_BYTES)), 'AI prompt states the 49152-byte cap');
+  assert.match(prompt, /region/i);
+  assert.match(prompt, /theme/i);
+  assert.match(prompt, /JSON/);
+  assert.match(prompt, /never invent statistics/i);
+  const promptExamples = prompt.split(nl).filter(line => line.startsWith('{"'));
+  assert.equal(promptExamples.length, 2, 'AI instructions include two complete example cards');
+  for (const example of promptExamples) checkOverlayCard(JSON.parse(example));
+  overlaySchema = null;
+  const schemaCalls = [];
+  const schemaFixture = { $schema: 'https://json-schema.org/draft/2020-12/schema', type: 'object' };
+  call = async (method, path) => { schemaCalls.push([method, path]); return schemaFixture; };
+  assert.equal(await fetchOverlaySchema(), schemaFixture);
+  assert.equal(await fetchOverlaySchema(), schemaFixture);
+  assert.equal(JSON.stringify(schemaCalls), JSON.stringify([['GET', '/api/overlay/schema']]), 'advanced schema comes from the server and is reused');
+
+  // The server validates imports before they can replace the studio draft.
+  updateOverlayDraft = realUpdateOverlayDraft;
+  syncNotify = () => {};
+  const validationCalls = [];
+  call = async (method, path, options) => {
+    validationCalls.push({ method, path, options });
+    return { ok: true, card: options.json, widgets: overlayCardCount(options.json),
+      bytes: new TextEncoder().encode(JSON.stringify(options.json)).length };
+  };
+  setOverlayCard({ root: { type: 'text', text: 'Previous draft' } });
+  overlayLoaded = JSON.stringify(overlayBody());
+  const validationMessage = $('ov-paste-msg');
+  await applyOverlayJson(serialized, validationMessage);
+  assert.equal(validationCalls.length, 1);
+  assert.equal(validationCalls[0].method, 'POST');
+  assert.equal(validationCalls[0].path, '/api/overlay/validate');
+  assert.equal(JSON.stringify(validationCalls[0].options), JSON.stringify({ json: pasted }), 'validation posts the extracted request envelope, not the source string');
+  assert.equal(JSON.stringify(overlayBody()), serialized);
+  assert.notEqual(validationMessage.dataset.tone, 'error');
+  const acceptedDraft = JSON.stringify(overlayBody());
+  call = async (method, path, options) => {
+    validationCalls.push({ method, path, options });
+    throw new Error('Server says this card is not supported');
+  };
+  await applyOverlayJson(JSON.stringify({ root: dot }), validationMessage);
+  assert.equal(JSON.stringify(overlayBody()), acceptedDraft, 'server rejection preserves the previous draft');
+  assert.equal(validationMessage.dataset.tone, 'error');
+  assert.match(validationMessage.textContent, /Server says this card is not supported/);
+  assert.match(validationCalls.at(-1).path, /\\/api\\/overlay\\/validate/);
+  const beforeMalformed = validationCalls.length;
+  await applyOverlayJson('not JSON', validationMessage);
+  assert.equal(validationCalls.length, beforeMalformed, 'malformed text never makes a validation request');
+  assert.equal(JSON.stringify(overlayBody()), acceptedDraft);
+  assert.equal(validationMessage.dataset.tone, 'error');
+  const invalidCandidate = { root: dot, seconds: 301 };
+  await applyOverlayJson(JSON.stringify(invalidCandidate), validationMessage);
+  assert.equal(validationCalls.length, beforeMalformed + 1, 'parsed schema errors still receive the server verdict');
+  assert.equal(JSON.stringify(validationCalls.at(-1).options.json), JSON.stringify(invalidCandidate));
+  assert.equal(JSON.stringify(overlayBody()), acceptedDraft);
+  assert.equal(validationMessage.dataset.tone, 'error');
+  call = async () => ({ ok: true, card: invalidCandidate });
+  await applyOverlayJson(JSON.stringify(invalidCandidate), validationMessage);
+  assert.equal(JSON.stringify(overlayBody()), acceptedDraft, 'a permissive server cannot bypass client schema safety');
+  assert.equal(validationMessage.dataset.tone, 'error');
+
+  // All three steps remain reversible without losing the draft or hiding advanced JSON.
+  for (const step of ['start', 'design', 'finish']) {
+    $('ov-step-' + step).dataset.studioStep = step;
+    $('ov-panel-' + step).dataset.studioPanel = step;
+  }
+  for (const active of ['finish', 'start', 'design']) {
+    showStudioStep(active);
+    for (const step of ['start', 'design', 'finish']) {
+      assert.equal($('ov-panel-' + step).hidden, step !== active);
+      assert.equal($('ov-step-' + step).getAttribute('aria-current'), step === active ? 'step' : null);
+    }
+    assert.equal(JSON.stringify(overlayBody()), acceptedDraft, 'step navigation does not replace the draft');
+  }
   consoleResult = 'check-overlay: ok (' + Object.keys(OVERLAY_FIELDS).length + ' widget types, v4 schema: regions, theme, caps depth-5/80-widget/49152-byte, '
-    + templates.length + ' templates, builder controls, Look form, TV stage, previews)';
-`, context);
+    + templates.length + ' templates, outline/inspector/palette, Look form, previews, paste extraction, AI prompt, POST validation and guided steps)';
+})()`, context);
 console.log(context.consoleResult);

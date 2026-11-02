@@ -1,151 +1,136 @@
-# DESIGN: Lamplight
+# Stillwater
 
-The committed visual world for the webOS Foundry web UI. `tokens.css` is generated from this file; `app.css` may only
-reference those tokens. A redesign replaces this file.
+The design system for the webOS Foundry browser app. This replaces Lamplight. The audience is a TV owner, not a developer: someone opening the app on the sofa with a phone, or managing their TV from a laptop.
 
-## Brief (pinned, not asked)
+The product should feel calm, modern and dependable. It shows the next useful action without hiding the existing TV controls. Its mode is **Operate**, its scope is the whole interface, and its Signet owner is **impeccable**.
 
-"Make the web UI super good looking… make it super easy for a non-technical user to push a new app, use all the
-functionality we bring."
+## Constraints
 
-- **Audience:** a non-technical person setting up or using their own smart TV, on a phone on the couch or a laptop.
-- **Use case:** see the TV's state at a glance, then one tap: remote, message, card, install an app.
-- **Tone (inferred from the brief, skipped brief gate):** soft and approachable, like a well-made smart-home app.
-  Light first with a real dark mode. The previous build was a dark operate-mode console for power users; this one
-  is the opposite on purpose.
-- **Mode:** Operate. **Scope:** system (every panel).
-- **Owner:** impeccable (existing web UI refined and rebuilt). Incumbent behaviour, ids and API calls kept.
+- Vanilla HTML, JavaScript and CSS, with no build step or external resources.
+- Strict CSP: scripts and styles are separate files; no inline event handlers or authored style attributes.
+- Existing control IDs, capability attributes and API behavior remain the integration contract.
+- All authored colors live in `tokens.css`. `app.css` uses tokens, `currentColor` and inherited color. User-selected card themes and sampled live-screen colors are runtime data, not app palette choices.
+- No font download. The local Avenir/Segoe UI/Noto Sans stack is a deliberate offline choice, including headings. Monospace is reserved for code and identifiers.
+- The TV preview has its own dark palette and font stack. Changing the browser app's appearance must not recolor a card.
 
-## World
+## Visual system
 
-Warm paper, lit by a lamp. Surfaces are cream, text is warm brown-black, and the one signal colour is a tangerine.
-Green means on or done, red means remove or failed. Nothing else carries colour except the five app-tile tints.
+### Color
 
-### Palette (OKLCH, in `tokens.css`)
+Neutral surfaces carry a slight green cast. Evergreen is the single product accent: the main action, selected navigation, selected widgets and keyboard focus. Success uses the same green family. Red and amber are reserved for errors, destructive actions and warnings; they are not decorative accents. App letter tiles use quiet variations within the neutral-green family.
 
-| Token | Light | Dark | Role |
-| --- | --- | --- | --- |
-| `--bg` | 0.97 .012 80 | 0.20 .012 60 | page |
-| `--surface` | 0.995 .004 80 | 0.25 .014 60 | cards, dialogs, inputs |
-| `--sunken` | 0.94 .014 80 | 0.17 .012 60 | default button fill, wells, code |
-| `--fg` / `--fg-2` / `--fg-3` | 0.25 / 0.42 / 0.50 | 0.95 / 0.82 / 0.72 | text; `--fg-3` is the quietest allowed (≥4.5:1) |
-| `--accent` / `--accent-ink` | 0.55 .15 45 / 0.99 | 0.76 .14 55 / 0.20 | primary action, selected, focus ring |
-| `--accent-tint` | 0.94 .04 55 | 0.32 .06 55 | selected rows, icon tiles |
-| `--ok`, `--err`, `--warn-ink` + tints | green 160, red 25, amber 85 | lifted for dark | state only |
-| `--line-strong` | 0.60 .022 70 | 0.58 .018 60 | control borders (≥3:1 on `--surface`) |
-| `--tone-1…5` | five pastel tints | muted | letter tiles for apps with no usable icon |
-| `--tv-*` | sRGB, same in both | same | the TV overlay renderer's own dark palette, used only inside the Card studio's TV stage (`tv-assets/overlay/overlay.css`) |
-
-Contrast was computed, not eyeballed: body text on `--bg` 14.7:1 light / 15.7:1 dark; `--fg-3` ≥5.0:1; accent ink on accent
-5.0:1 light / 8.2:1 dark; status text on its tint ≥5.6:1.
-
-No pure black or white. No gradients. Dark mode follows `prefers-color-scheme`; `theme.js` applies a saved manual
-choice (`data-theme="light|dark"` on `<html>`, key `webos-foundry-theme`) before first paint.
-
-### Type
-
-`--font-ui: ui-rounded, "SF Pro Rounded", system-ui, …`; `--font-mono` for commands, ids and the request log only.
-
-**Deliberate deviation from the "no system face as display" rule:** no font file is shipped. The page may only load
-same-origin files and the TV has no CDN, so a face would have to be a licensed `.woff2` committed under `web/`; none was
-available offline. Hierarchy therefore comes from size and weight only. To add one: put the `.woff2` in `web/`, add an
-`@font-face` and point `--font-ui` at it in `tokens.css`. The server CSP already allows `font-src 'self'`.
-
-Scale (ratio ≈1.25): `--text-xs` 13px · `--text-sm` 15px · `--text-base` 16px · `--text-lg` 20px · `--text-xl` 26px ·
-`--text-2xl` fluid 28→40px. Weights 400 / 600 / 700. Display tracking −0.02em, headings balanced, body measure ≤65ch,
-tabular numerals for every number that changes. Inputs are 16px so iOS never zooms.
-
-### Space, shape, depth
-
-`--space-1…7` = 4 · 8 · 12 · 16 · 24 · 32 · 48 px. Cards 16px radius, controls 14px, pills only for status chips and the
-desktop tab bar. Elevation is a soft offset shadow on cards (never border plus shadow); inputs use a border because
-they are not cards. Touch targets are ≥44px (`--tap`), checked at 360px.
-
-### Motion
-
-One authored moment: the ring that pulses around the TV orb while the app waits for a wake (transform and opacity only).
-Everything else is state: 120ms colour changes, a 180ms view fade, a drawn check mark when an install succeeds.
-No bounce, no `transition: all`, nothing animates layout. `prefers-reduced-motion` collapses all of it to ~0ms.
-
-### Voice
-
-Plain words for the action: "Turn on", "Add an app", "Show message", "Read aloud". Errors say what happened and what
-to do next. Technical terms (IPK, SHA-256, token) appear once, with a one-line explanation beside them.
-
-## Structure
-
-Phone: sticky top bar (brand, TV status chip, theme, settings) and a fixed bottom bar with six sections. Desktop
-(≥56rem): the same six as a centred pill tab bar in the header; content in a 72rem column, two columns per view.
-Phone navigation labels are 12px to keep all six on one line at 320px. Compact desktop headers hide the brand text
-and tighten tab padding so the navigation never collides with status or Settings.
-
-| View | Holds |
+| Role | Tokens |
 | --- | --- |
-| Home | first-run pairing help, TV status and power, shortcuts, TV details |
-| Remote | power, input, direction pad, volume |
-| Apps | add an app (file or link, with install progress), installed apps with uninstall |
-| Automate | saved scenes with JSON creation/editing and run results (an overlay step is a card or a saved design name); local-time schedules with day selection and enable/disable; private webhook links to copy or revoke; catalog-driven Extensions with settings, refresh intervals, position, size and a compact Look (accent, background, opacity), install/update, enable/disable, preview and uninstall |
-| Show | message and read-aloud, the simple on-screen card, live view and screenshot (both open a full-screen zoom/pan lightbox); below them the full-width Card studio (templates, layout, Look, widgets, raw JSON, TV stage, Send to TV) and My designs (save, load, show, delete, export/import JSON) |
-| Tune | picture & sound settings, process a file |
-| Settings (gear) | appearance, who can use this page (token or login off), this device's token, link to developer tools |
-| Developer (`#api`) | request log, API reference |
+| Page, panel, recessed control | `--bg`, `--surface`, `--sunken`, `--sunken-hover` |
+| Separators, input boundaries | `--line`, `--line-strong` |
+| Primary, secondary, supporting text | `--fg`, `--fg-2`, `--fg-3` |
+| Main action and selection | `--accent`, `--accent-hover`, `--accent-ink`, `--accent-tint` |
+| Success, error, warning | `--ok*`, `--err*`, `--warn-*` |
+| Temporary notice and modal veil | `--inverse*`, `--scrim` |
+| TV renderer colors | `--tv-*` |
 
-The Card studio owns one draft: the whole request body (`seconds`, `theme`, and either `position`/`size`/`root` or
-`regions`), exactly what `POST /api/overlay` and `PUT /api/designs/{name}` accept. The raw-JSON disclosure shows that
-body; Apply JSON validates and replaces the draft, studio edits refresh the JSON, unapplied JSON blocks sending and
-saving. Layout is a single card (nine positions: four corners, centre, top/bottom bars, left/right panels; six sizes)
-or 1–4 regions with unique positions, each with its own widget tree. Look is colours (unset = TV default, left out of
-the JSON), background opacity, corner radius, zoom and font. Eighteen widget types with plain-word names; groups nest
-to 5 levels; 80 widgets across all regions; 49152 bytes of JSON. Per-widget Move up / Move down / Duplicate / Remove;
-comparison bars have 2–4 segments, key facts 1–4 facts, small bar charts 3–24 numbers plus optional top/middle/bottom
-axis labels; icon pickers draw the TV glyph beside the name. Six templates use placeholder text only ("Home team",
-"Source A"); loading one, a saved design or an imported file over an edited draft confirms in place.
+Light mode is the default. Dark mode follows `prefers-color-scheme` unless `theme.js` applies a saved `data-theme="light|dark"` choice before paint. Both themes use the same hierarchy and accent role. No gradients, blur effects or decorative illustration are required.
 
-The TV stage is a 16:9 box holding a 1920×1080 screen scaled to the box, styled with the TV renderer's own pixel values
-and palette (`--tv-*` tokens) rather than page colours, so regions land where they land on the TV (side panels start
-below a top bar and end above a bottom bar, like the TV); the card's theme becomes the stage's custom properties. The
-caption keeps the approximate-proportions caveat: the floating overlay is invisible to both TV capture paths. External
-images are labelled placeholders to preserve the same-origin CSP. Countdown and clock widgets tick in the preview.
+### Type and spacing
 
-My designs is gated on the `Designs` group and reuses the Automate loader and busy guard. Saving over an existing name,
-deleting, and replacing an edited draft confirm in place. Export downloads the draft as JSON; Import validates a file
-before it replaces the draft.
+Body and input text is 16px. Supporting copy is 15px, hints 13px, section headings 20px, and page headings scale from 30px to 42px. The phone tab labels are smaller to fit six destinations without wrapping. Headings use weight and modest negative tracking rather than a separate display font. Changing values use tabular numerals.
 
-Automate keeps Scenes in the left column and Scheduler / Webhook links stacked on the right, with Extensions below
-both columns (all stacked on phones). Extension cards and their setting fields come from the server's catalog.
-Install and Update enable the extension; enabling one disables any other. The server refreshes the enabled card,
-not the page. Preview shows the current settings once without installing; uninstall confirms in place.
-Scene editing uses the server’s existing `{"steps":[...]}` JSON format, not a second visual card builder. Scene-name
-suggestions come from the saved list; names can also be entered before a scene exists. Deletes confirm in place;
-deleting a scene does not remove its schedules or links. Webhook URLs are shown as read-only text and copied,
-never opened or triggered by this page. Anyone with a link can run its scene, so the panel explains revocation.
+The spacing scale is 4, 8, 12, 16, 24, 32 and 48px. Related inputs sit close together; different tasks have a larger gap or a fine divider. Content is bounded at 1360px including gutters. Text explanations stay around 65 characters wide where practical.
 
-Capability gating: `GET /api` is the single source of truth. A panel carrying `data-needs-group` or `data-needs-route`
-that the server does not list is greyed, labelled "Not available from this server" and made inert. A remote button whose
-action is missing from `/api/remote/{action}`'s `values` (wake, on the on-TV server) is hidden. Nothing is hard-coded to
-a group name.
+Panels use one quiet border and a 16px corner radius. Controls use 8px corners. Status chips alone use pill shapes. Shadows are reserved for transient surfaces such as dialogs and notices, plus the phone navigation's separation from content. The TV stage retains the actual TV renderer's borders and shadows, independently of these app rules.
 
-## Component rules
+### Interaction and accessibility
 
-- **Buttons:** one `primary` per task area. Default is a sunken fill with no border. `danger` is outlined, `danger-fill`
-  only inside a confirmation. Loading shows a spinner and keeps width.
-- **Irreversible actions** confirm in place (uninstall: row turns into "Remove X from the TV? Keep it / Remove"; login
-  off: dialog with consequences and an "I understand" checkbox that must be ticked before the button enables).
-- **Install progress** shows only what is real: the upload fraction (file path), elapsed time, and the 90 s ceiling
-  the TV side enforces. The TV's own part has no percentage because the route answers once, at the end.
-- **Icons:** one inline SVG sprite in `index.html`, 24px grid, 2px round strokes, `currentColor`. No icon font, no emoji.
-- **States:** every control has default, hover, `:focus-visible` (3px accent ring, instant), active, disabled, loading and,
-  where it can fail, error. Status colour is never the only signal (text and icon accompany it).
-- **Sign-in** is a dialog (`#token-dialog`): token field, "Remember on this device" (localStorage; otherwise
-  sessionStorage), and a "Where do I find my token?" explainer.
+- Touch targets are at least 44px, including widget tools and icon buttons. Direction controls are larger.
+- Keyboard focus is an immediate 3px accent outline with a 3px offset.
+- Selected states use a boundary or fill as well as text color. Status keeps its visible label; color alone is not the explanation.
+- Disabled controls stay visible but subdued. Loading uses the existing busy state and spinner without replacing the action label.
+- Field errors use `aria-invalid` and the nearby status text. Result messages support success and error tones; unavailable capabilities remain labeled by the application.
+- Native details/summary provides disclosure behavior; native dialogs are retained for sign-in, security consequences and image inspection.
+- Reduced-motion preferences collapse animation and transition durations. Motion otherwise serves state: loading spinners, the existing waking indicator and an install-completion check. Panels do not animate into view.
+- Long names, identifiers, explanations and filenames can wrap. Code areas and reference tables scroll locally rather than widening the page.
 
-## Files
+## Voice
 
-`index.html` markup and icon sprite · `tokens.css` generated tokens · `app.css` components and layout · `theme.js` theme
-switch (runs in `<head>`) · `app.js` API client, status, remote, notify, card, card studio (schema v4 validation, TV stage,
-templates, Look form, saved designs), live, screenshot, zoom lightbox, pairing,
-settings, scenes, scheduler, webhooks, extensions, jobs, API reference · `apps.js` apps, login setting, auth wiring, service-worker registration and the install banner ·
-`favicon.svg` · `manifest.json`, `sw.js`, `icons/` installable app (the worker caches only the static shell, never `/api/`;
-bump `CACHE` in `sw.js` to drop old copies) · `check-ui.mjs` offline markup/capability regression gate · `check-overlay.mjs`
-v4 widget/theme/regions schema, caps, templates, builder, Look form, TV stage and preview checks · `check-automate.mjs` scene suggestions, schedule and extension toggles, catalog forms
-with placement and look, saved designs, and copy-only webhook checks (`node web/check-{ui,overlay,automate}.mjs`, no browser or TV).
+Use direct actions: **Turn on**, **Choose an app file**, **Use pasted card**, **Send to TV**, **Save design**. Use “card” for what appears on the TV, “design” for a saved card, and “scene” for a sequence of actions.
+
+Explain a technical term where it first matters. JSON and schema tools belong in labeled disclosures, not in the primary workflow. Errors should say what failed and how to recover. Do not imply that previewing sends to the TV, that sending saves a design, or that importing changes saved designs.
+
+The AI helper is copy-and-paste guidance for the owner's chosen chat app. This browser app does not call an AI service. Privacy explanations for screen capture and private webhook links stay beside the relevant controls.
+
+## Navigation and responsive layout
+
+The six main destinations remain Home, Remote, Apps, Automate, Show and Tune. Appearance and access controls are under Settings; developer tools are linked from Settings.
+
+- **Above 1099px:** brand, top navigation and TV status/settings occupy one sticky header row.
+- **641–1099px:** navigation occupies its own second header row so controls do not collide.
+- **640px and below:** navigation becomes a fixed bottom tab bar. The top header keeps the brand mark, TV status, appearance toggle and Settings. Safe-area padding protects both bars and the page content.
+- **800px and below:** ordinary two-column task layouts become one column.
+- **1000px and below:** the Studio preview moves above its editor as a collapsible dock, open initially. On wider screens it stays to the right and sticks below the header.
+- **640px and below:** the widget outline and inspector stack, and saved designs use a single thumbnail column.
+
+These are layout rules, not claims of completed browser or hardware verification.
+
+## Per-view layouts
+
+### Home
+
+TV status and power are the anchor on the left, followed by plain shortcut rows. TV details occupy the other column. Status separates power, input, volume and temperature into readable facts. First-run pairing replaces the normal home columns until a TV is paired; its key-file and paste options retain the existing behavior.
+
+### Remote
+
+The directional pad is the primary tactile control. On larger screens it sits to the left of power, input and volume; phones stack these groups in familiar reading order. The selected HDMI input and mute state remain visible. Keyboard hints appear on larger pointer-capable devices, without taking space from phone controls.
+
+### Apps
+
+Installation and installed apps are separate columns on larger screens. The file drop target is the first installation path; a link is the alternative. The upload and install phases show only real progress and elapsed time. Installed apps remain icon-and-name rows with in-place remove confirmations and visible errors.
+
+### Automate
+
+Scenes occupy one column; schedules and private webhook links share the other. Extensions span the content below. The guided scene builder uses ordered steps, labeled action fields and the shared move/duplicate/remove tool row. Raw scene JSON remains a disclosed advanced route, not a second card designer.
+
+Schedule day controls wrap naturally. Webhook links remain read-only, copyable text rather than navigable actions. Extension cards and setting fields are catalog-driven, including position, size and compact appearance controls. Their status, install/update, preview, enable/disable and remove actions retain the API's semantics.
+
+### Show: Card studio
+
+Studio comes first. It owns one draft throughout three steps:
+
+1. **Start:** seven template tiles with miniature TV previews, paste/import, and a disclosed AI helper with copyable instructions and schema tools.
+2. **Design:** layout and display time, named Look presets with optional detailed controls, then the widget editor.
+3. **Finish:** send or hide the card, save a named design, download the card file or copy its JSON.
+
+Step buttons keep the draft intact. Card capacity and the raw-JSON disclosure sit outside the step panels, so changing steps never hides access to the draft's code. JSON is applied explicitly or when its textarea loses focus. The browser checks the card and asks `POST /api/overlay/validate` for the server's verdict; an accepted, previewable response becomes the draft, with widget and byte counts from the server. Unapplied JSON or validation in progress makes the Design panel inert and visually subdued, and disables sending, saving, copying and export. Failed validation leaves the previous draft intact rather than silently replacing it.
+
+Each region has a nine-position mini-TV picker: four corners, center, top and bottom bars, and left and right panels. The widget workspace separates a nested outline from an inspector for the chosen widget. The outline exposes selection and structural actions; the inspector exposes fields. A grouped palette below offers SVG, name and a plain-language description for each widget type. It does not require the owner to know schema type names.
+
+Look presets are shortcuts into the same card theme, not a second theme system. Unset properties retain TV defaults. Layout remains one card or up to four regions; the existing limits remain 80 widgets, five nesting levels and 49152 bytes of JSON.
+
+### TV preview
+
+A 16:9 `.tv-stage` contains a scaled 1920×1080 `.tv-screen`. The preview uses the TV overlay's geometry, fonts where available, palette, widget sizes, edge margins and panel widths, not the app's control styles. Images from other origins are labeled placeholders to respect CSP. Text can differ where the browser lacks the TV's installed fonts.
+
+**The edge-presence contract is `data-edges` on `.tv-screen`.** Its space-separated values are `top bottom left right`, limited to present edge regions. JavaScript measures top/bottom bars and fits side-panel insets. CSS mirrors `tv-assets/overlay/overlay.css`: adjoining side-panel borders disappear, shared corners become square, and joined edge-bar shadows disappear. This makes multi-region HUDs read as one continuous surface rather than overlapping cards.
+
+All existing widget families remain styled: stack, row, text, image placeholder, badge, dot, progress, countdown, clock, list, divider, compare, sparkline, section, event, stat, status and meta. Their tones remain TV-specific. Comparison, statistic and sparkline tracks use separate TV tokens where the renderer does.
+
+The preview is a guide, not a screenshot of the overlay. The actual floating card is absent from the existing HDMI capture paths.
+
+### My designs and secondary screen tools
+
+Saved designs appear as a thumbnail grid with a name and action row. They can be loaded, shown, renamed, removed or exported using the existing application flow. Destructive and replacement choices confirm in place. Inline rename fields remain inside the relevant tile rather than interrupting the page with another dialog.
+
+Quick messages, simple text cards, live view and screenshots remain below My designs as native disclosures. They preserve their original forms, IDs and controls without crowding Studio. Captures keep zoom/pan inspection and the privacy explanation; the captured HDMI input does not include floating cards.
+
+### Tune
+
+Picture and sound settings share the page with file processing. Settings are grouped, with scope and availability beside each control. Processing retains the drop target, profile choice, status, cancellation, downloadable result, preview and processor log. Neither browser styling nor the studio Look controls change the TV's picture settings.
+
+### Settings and developer tools
+
+Appearance choices, access mode, the saved token and the developer entry point form a readable narrow stack. Login-off consequences and the explicit acknowledgment remain in their security dialog. The API reference and request log keep monospace methods/paths, local scrolling and copy-ready commands, using the same restrained surfaces as the rest of the app.
+
+## File responsibilities and maintenance
+
+`tokens.css` defines palette, type stacks, scale, spacing, shape, motion and TV constants. `app.css` defines layout and component states. `index.html` owns semantic structure and the icon sprite; `app.js` and `apps.js` own state and API behavior. `theme.js` sets appearance before paint. `sw.js` owns shell caching and must change its cache version with a shell redesign.
+
+For UI changes, run the offline UI, overlay and automation gates together after markup, styling and behavior changes have landed. Browser inspection should cover phone, tablet and desktop layouts in both themes, keyboard use and contrast. Preview fidelity also needs comparison with the actual TV; an offline gate cannot establish font or hardware rendering equivalence.
