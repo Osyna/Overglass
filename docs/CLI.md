@@ -23,6 +23,7 @@ Commands that talk to the TV only ever send verbs from the dispatcher grammar
 | [`wof schedule`](#wof-schedule) | Run a scene automatically at a time of day |
 | [`wof webhook`](#wof-webhook) | A private link that runs one scene |
 | [`wof connector`](#wof-connector) | Pollable data sources rendered as an overlay card |
+| [`wof addon`](#wof-addon) | Install a connector to auto-refresh on the TV with one command |
 | [`wof screenshot`](#wof-screenshot) / [`wof stream`](#wof-stream) | Capture the HDMI picture |
 | [`wof config`](#wof-config) | Show / edit the local config |
 
@@ -231,8 +232,8 @@ wof overlay hide
 ```
 
 The CLI's shorthand flags compile into an equivalent JSON widget tree before it reaches the TV
-(stack, row, text, image, badge, dot, progress, countdown, list, divider — depth ≤ 4, ≤ 40 widgets,
-≤ 32768 bytes; full schema: [ARCHITECTURE.md §3a](../ARCHITECTURE.md)). The CLI has no flags for a
+(stack, row, text, image, badge, dot, progress, countdown, list, divider, compare, sparkline — depth ≤ 5,
+≤ 60 widgets, ≤ 32768 bytes; full schema: [ARCHITECTURE.md §3a](../ARCHITECTURE.md)). The CLI has no flags for a
 custom tree; build one with the web UI's Advanced builder, `curl`/`POST /api/overlay` with a `root`
 field, or a scene's `overlay` step (`wof scene`, below).
 
@@ -308,12 +309,38 @@ wof connector football [--league bl1] [--show]
 
 Polls a built-in data source and prints the resulting overlay card as JSON; `--show` sends it to the
 TV instead (same as `wof overlay show` with a `root` tree). `football` uses the free,
-no-API-key [OpenLigaDB](https://api.openligadb.de/) API: up to 6 matches of the given league's
-current matchday (default `bl1`, Bundesliga), each match's score or kickoff time if it has not
-started yet. No API key, no TV pairing needed to preview (pairing is only needed for `--show`).
+no-API-key [OpenLigaDB](https://api.openligadb.de/) API: crests, score/status badges and goal-by-goal
+events (featured match) for up to 6 matches of the given league's current matchday (default `bl1`,
+Bundesliga). No API key, no TV pairing needed to preview (pairing is only needed for `--show`). For
+a one-click, always-refreshing version of the same data, see `wof addon` below.
 
 ```sh
 wof connector football --league bl1 --show
+```
+
+## wof addon
+
+```
+wof addon list [--json]
+wof addon install ADDON [--param KEY=VALUE ...] [--interval SECONDS] [--disabled]
+                  [--position POS] [--size SIZE]
+wof addon uninstall ADDON
+wof addon preview ADDON [--param KEY=VALUE ...] [--show]
+```
+
+Installs a connector so `wof serve` keeps it live on the TV with zero further action: a background
+thread polls it on its own `--interval` (15-3600 seconds, default the addon's own) and shows the
+result, until it is disabled or uninstalled. `ADDON` is any catalog id, including a third-party
+connector someone else dropped into `connectors/` — no CLI changes are needed to install it. Only one
+addon can be enabled at a time (only one overlay window is ever visible on the TV): installing an
+enabled addon disables every other one. `preview` polls once and prints/shows the card without
+touching install state, for trying params before installing. Requires `wof serve` running for the
+background refresh; `list`/`install`/`uninstall` work with no TV paired.
+
+```sh
+wof addon install football --param league=bl1 --interval 90
+wof addon list
+wof addon uninstall football
 ```
 
 ## wof screenshot

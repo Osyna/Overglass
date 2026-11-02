@@ -34,9 +34,9 @@ on-screen cards, screenshots and live view, with a locked-down SSH key instead o
   TV's own scope and availability checks and read-back.
 * **Notifications:** on-screen toast, spoken announcement through the TV speaker (Audio Guidance TTS,
   restored afterwards), and an overlay card drawn over HDMI without changing the foreground app, built
-  from a JSON widget tree (stack, row, text, image, badge, dot, progress bar, live countdown, list,
-  divider) with a simple shorthand for a plain title/body/image card, or visually with the web UI's
-  Advanced builder (live local preview, no code needed).
+  from a JSON widget tree (stack, row, text, image/crest, badge, dot, progress bar, live countdown,
+  list, divider, N-way comparison bar, sparkline) with a simple shorthand for a plain title/body/image
+  card, or visually with the web UI's Advanced builder (live local preview, no code needed).
 * **Scenes:** save a named sequence of remote, setting, overlay and wait steps, then run it in one call
   from the CLI, API, web UI or a Home Assistant automation.
 * **Scheduler:** run a saved scene automatically at a time of day, on chosen days of the week, as long
@@ -44,7 +44,12 @@ on-screen cards, screenshots and live view, with a locked-down SSH key instead o
 * **Webhook links:** a private URL that runs one saved scene, with no sign-in, for triggering from
   another app, a phone shortcut or a smart-home routine; revoke it any time by deleting it.
 * **Data connectors:** pluggable pollers that turn a live data source into an overlay card; ships with a
-  free, no-API-key football scoreboard (OpenLigaDB) as the first one (`wof connector football --show`).
+  free, no-API-key football scoreboard (crests, score/status, goal-by-goal events, OpenLigaDB) as the
+  first one (`wof connector football --show`).
+* **Addons:** install a connector with one command and it stays live — a background thread refreshes it
+  on its own interval and keeps showing it on the TV until you uninstall it, no further action needed
+  (`wof addon install football --interval 90`). Any connector dropped into `connectors/` is installable
+  the same way with no other code changes: the extension point for a user's own overlay add-ons.
 * **Installable web app:** the web UI is a PWA — add it to a phone or desktop home screen and open it
   like any other app, offline-capable shell included.
 * **Screenshot and live view:** HDMI screenshot (jpg/png) and an optional native fast-capture client for a

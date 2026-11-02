@@ -65,6 +65,10 @@ server's configured hosts answers `421`, and cross-origin / cross-site non-GET r
 | `POST` | `/api/schedule` | Schedule | Create a local scene schedule. |
 | `PUT` | `/api/schedule/{id}` | Schedule | Replace an existing local schedule entry. |
 | `DELETE` | `/api/schedule/{id}` | Schedule | Delete a local schedule entry. |
+| `GET` | `/api/addons` | Addons | The full addon catalog (every registered connector) and what is currently installed. |
+| `PUT` | `/api/addons/{id}` | Addons | Install (or update) an addon. wof serve polls it on interval_seconds and shows the result while enabled -- the one-click 'it just stays live' install. |
+| `DELETE` | `/api/addons/{id}` | Addons | Uninstall an addon; stops its background refresh. |
+| `POST` | `/api/addons/{id}/preview` | Addons | Poll an addon once and show it now, without installing or changing saved settings. |
 | `GET` | `/api/screenshot` | Status | Capture the picture the TV shows from its HDMI input (without the TV's own menus) as an image. |
 | `GET` | `/api/screen/stream` | Status | Live low-resolution view of the HDMI picture: raw RGB frames in a close-delimited binary stream. |
 | `POST` | `/api/remote/{action}` | Remote | Send one remote action and wait for the TV to confirm it. |
@@ -138,8 +142,8 @@ Shorthand fields are all optional but need at least one of `title`, `body`, `lin
 `top-left|top-right|bottom-left|bottom-right|center` (default `top-right`), `size`
 `xs|s|m|l|xl|full` (default `m`), `seconds` integer 0-300 (0 = until hidden, default 8) apply to both
 paths. A `root` tree replaces the shorthand entirely (the two are mutually exclusive in one request):
-a node is `{"type": stack|row|text|image|badge|dot|progress|countdown|list|divider, ...fields,
-"children"?: [...]}`, depth ≤ 4, ≤ 40 widgets total, ≤ 32768 bytes of the final JSON. Full per-type
+a node is `{"type": stack|row|text|image|badge|dot|progress|countdown|list|divider|compare|sparkline,
+...fields, "children"?: [...]}`, depth ≤ 5, ≤ 60 widgets total, ≤ 32768 bytes of the final JSON. Full per-type
 field list: [ARCHITECTURE.md §3a](../ARCHITECTURE.md). Unknown fields are refused. A TV in standby
 or an invalid card answers `502` with the TV script's message. Response `{"message": "Overlay card
 shown"}` or `"... hidden"`.

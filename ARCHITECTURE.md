@@ -157,22 +157,28 @@ place that knows both shapes — the TV never sees anything but a tree): `{"titl
 "image"?, "kind"?}`, the original fields, unchanged for every existing caller (web UI's basic card
 form, the Home Assistant `overlay_show` service, `wof overlay`).
 
-**Node** is `{"type": one of the 10 below, ...type fields, "children"?: [node, ...]}`. Depth ≤ 4,
-total nodes ≤ 40, serialised JSON ≤ 32768 bytes raw (no more base64 tax — see below; dispatch.sh's stdin
+**Node** is `{"type": one of the 12 below, ...type fields, "children"?: [node, ...]}`. Depth ≤ 5,
+total nodes ≤ 60, serialised JSON ≤ 32768 bytes raw (no more base64 tax — see below; dispatch.sh's stdin
 upload itself allows up to 65536 bytes, a more generous hard ceiling behind this pre-flight check).
+Caps were raised from the original 4/40 once `compare`/`sparkline` and richer dashboards (ARCHITECTURE.md
+§12, the addon framework) made the original ceiling too tight for a genuinely rich single card; 32768
+bytes stays the binding constraint (still well short of the achievable ~110KB at 60 nodes), so it keeps
+meaning something.
 
 | Type | Fields | Renders as |
 | --- | --- | --- |
 | `stack` | `gap`? 0-48, `align`? start\|center\|end, `children` 1-20 | vertical flex box |
 | `row` | `gap`? 0-48, `align`? start\|center\|end, `children` 1-10 | horizontal flex box |
 | `text` | `text` ≤400, `size`? xs\|s\|m\|l\|xl, `weight`? normal\|strong, `color`? fg\|fg-2\|info\|success\|warning\|alert | a line of text |
-| `image` | `src` http(s) URL ≤500 | fetched by the TV, same constraint as before |
+| `image` | `src` http(s) URL ≤500, `shape`? square\|circle | fetched by the TV; `circle` is a fixed 64px crest/avatar tile |
 | `badge` | `text` ≤24, `tone`? info\|success\|warning\|alert | a small filled pill |
 | `dot` | `tone`? info\|success\|warning\|alert | a plain coloured circle (what the old `kind` dot was) |
 | `progress` | `value` 0-1, `label`? ≤40, `tone`? | a filled bar |
 | `countdown` | `target` ISO 8601 datetime, `label`? ≤40 | a live clock ticking down to `target`, drawn client-side in the overlay app — no server polling |
 | `list` | `items` 1-10 of ≤120, `style`? bullet\|number\|plain | the old `lines` |
 | `divider` | — | a thin rule |
+| `compare` | `segments` 2-4 of `{label ≤24, value ≤16, fraction 0-1, tone?}` | an N-segment proportional bar with a label+value above each segment (possession, win probability, any real side-by-side comparison) |
+| `sparkline` | `points` 3-24 of numbers -1..1, `tone`? | a small zero-centred bar chart (momentum, any real recent-history signal); addon authors normalise their own values into -1..1 |
 
 **Three independent validators**, defence in depth exactly like every other verb: `notify.py`
 (`check_overlay_request`/`_check_node`, before the server ever contacts the TV), `notify.js` (`tree()`/
@@ -498,11 +504,15 @@ interrupted and the scheduler thread remains a daemon.
 
 ## Data connectors
 
-`webos_foundry.connectors.CONNECTORS` maps connector names to `poll(params: dict) -> dict`
-functions. Polling returns an overlay request accepted by `notify.check_overlay_request` and does
-not need TV pairing. `connectors.run(name, params, transport)` polls the registered source and
-passes the card to `notify.overlay_show`; an unknown name raises `ValidationError`. No connector
-scene step, HTTP route, persistent configuration, or background polling is added.
+`webos_foundry.connectors.CONNECTORS` maps connector ids to `poll(params: dict) -> dict` functions;
+`webos_foundry.connectors.META` maps the same ids to a catalog entry: `{"name", "description",
+"category", "params_schema": [{"key", "label", "type", "choices"?, "default"?}, ...],
+"default_interval_seconds"}`. Polling returns an overlay request accepted by
+`notify.check_overlay_request` and does not need TV pairing. `connectors.run(name, params, transport)`
+polls the registered source and passes the card to `notify.overlay_show`; an unknown name raises
+`ValidationError`. A third-party connector is one file in `connectors/` exporting `poll` and `META`
+and one line added to `CONNECTORS`/`META` — see "Addon framework" below for what turns a connector
+into something a user installs with one click rather than runs once from the CLI.
 
 | CLI | Behaviour |
 | --- | --- |
@@ -511,30 +521,79 @@ scene step, HTTP route, persistent configuration, or background polling is added
 
 The football connector uses the free, unauthenticated current-matchday endpoint
 `https://api.openligadb.de/getmatchdata/<league>`, concretely
-`https://api.openligadb.de/getmatchdata/bl1` for the default Bundesliga. `bl2` selects the second
-Bundesliga; league shortcuts must be 1-40 ASCII letters, digits, underscores or hyphens, starting
+`https://api.openligadb.de/getmatchdata/bl1` for the default Bundesliga. `bl2`/`bl3`/`dfb` are
+catalog choices; league shortcuts must be 1-40 ASCII letters, digits, underscores or hyphens, starting
 with a letter or digit. The request uses stdlib `urllib.request.urlopen` with an eight-second timeout.
 Network failures and malformed JSON/match fields raise a readable `RuntimeError`.
 
 | OpenLigaDB response field | Used for |
 | --- | --- |
 | Top-level JSON array | Matches in the current matchday, in API order |
-| `leagueName` | Scoreboard header from the first match |
-| `team1.teamName`, `team2.teamName` | Home and away team labels |
+| `leagueName`, `group.groupName` | Header: league name and matchday, from the first match |
+| `team1`/`team2.teamName`, `.shortName`, `.teamIconUrl` | Team label, goal-line short name, and crest (`image` `shape:"circle"`); a missing/invalid crest URL silently drops the image widget, it never fails the whole card |
+| `matchIsFinished` | Finished matches get a `FULL TIME` badge; unfinished matches whose kickoff has already passed get a `LIVE` badge — both are read straight from real fields, never invented. OpenLigaDB has no explicit "live" flag or running clock, so no minute is ever shown or guessed for a live match, only the last reported score |
 | `matchResults[]` | Score entries with integer `resultOrderID`, `pointsTeam1`, `pointsTeam2`; select the greatest order, not the array's last entry, so a half-time result cannot replace a later score |
-| `matchDateTimeUTC` | ISO 8601 kickoff, formatted as `08 Nov 16:30 UTC` when there are no reported results |
+| `matchDateTimeUTC` | ISO 8601 kickoff, formatted as `08 Nov 16:30 UTC` for a match that has not started |
+| `goals[].matchMinute`, `.goalGetterName`, `.scoringTeamId`, `.isPenalty`, `.isOwnGoal` | One `list` line per goal of the first (featured) match only: `"12' H. Kane — Bayern"`, with `(pen.)`/`(OG)` suffixes; the team shown is whichever team's id matches `scoringTeamId`, taken as the API reports it |
 
-The card is a large-width `stack` with a plain text header, one `row` per match (home label,
-score/kickoff `badge`, away label), and `divider` nodes between matches. At most six matches are
-shown, with an explicit “Showing 6 of N matches” line when truncated: at most 32 widgets and
-three levels, below §3a's caps. An empty array renders “No matches available”. Polling validates
-the generated tree before returning it, so preview and TV display share the same overlay contract.
-There is no invented live score when the upstream has not reported a result.
+The card is a large-width `stack`: a two-line header (league, matchday), then per match a `row` of
+(crest+name, score/status `badge`, name+crest), a `divider`, and — for the first match only — the
+goal list. At most six matches are shown, with an explicit "Showing 6 of N matches" line when
+truncated. An empty array renders "No matches available". Polling validates the generated tree
+before returning it, so preview and TV display share the same overlay contract — a real response is
+typically under 4KB, well inside §3a's 32768-byte cap.
+
+There is no possession, shots, expected goals or win-probability widget on this card: OpenLigaDB does
+not report them, and this connector never fabricates a statistic. The `compare` and `sparkline`
+widget types (§3a) exist as general framework capability for connectors that do have a real source for
+a comparison or a time series; football does not use either.
 
 Endpoint and response fields were checked against the public API and the
 [OpenLigaDB API documentation](https://github.com/OpenLigaDB/OpenLigaDB-Samples#api-schema).
 Automated connector and CLI tests replace `urllib.request.urlopen` with canned responses; they
 do not require live internet or a TV.
+
+## Addon framework
+
+An addon is a connector plus saved install state: what turns "I can poll this data source" into "this
+stays live on my TV without me doing anything again." `webos_foundry/addons.py` is pure storage and
+validation (no threading, no TV talk — the same split as `schedule.py` vs. `server.SchedulerThread`);
+`server.AddonsThread` is the background thread.
+
+`addons.json` (`config_dir()/addons.json`, mode via the same atomic-tempfile-then-`os.replace` pattern
+as every other store in this project) holds `{connector_id: {"params", "interval_seconds" 15-3600,
+"enabled", "position"?, "size"?}}`. `addons.install(id, body)` validates and upserts one entry;
+**enabling an addon disables every other installed addon**, because only one `overlay`-type window can
+be visible on this TV at a time (`docs/FINDINGS.md`, proven live by installing a second overlay app and
+watching the first one's process get torn down) — there is no silent flicker between two addons racing
+to show their card, there is exactly one live addon. `addons.uninstall(id)` removes an entry.
+`addons.catalog()` lists every registered connector's `META` (no config or network touched — it works
+even with nothing installed and nothing paired). `addons.card_for(id, entry)` polls the connector and
+applies the entry's saved `position`/`size` over whatever the connector itself chose, then the caller
+shows it exactly like any other overlay card.
+
+`server.AddonsThread` ticks every 10 seconds, mirroring `SchedulerThread`'s locking exactly: a per-addon
+in-memory `last` timestamp decides when it is due for its own `interval_seconds`; a busy TV
+(`TV_LOCK.acquire(blocking=False)` failing) or an active processing job (`server.active()`) skips that
+tick, logged to stdout, retried next tick — never raises the thread itself down. Starting/stopping
+mirrors the scheduler: `main()` starts it after `SchedulerThread` and joins it (2-second bound) in the
+same `finally` block as every other `wof serve` shutdown step.
+
+| Route | Behaviour |
+| --- | --- |
+| `GET /api/addons` | `{"catalog": [...META, "id"], "installed": {...}}`; local storage only, works unpaired |
+| `PUT /api/addons/{id}` | Install/update; body `{"params", "interval_seconds"?, "enabled"?, "position"?, "size"?}`; local storage only, works unpaired |
+| `DELETE /api/addons/{id}` | Uninstall; 404 if not installed; local storage only, works unpaired |
+| `POST /api/addons/{id}/preview` | Poll once and show now, without touching install state; needs a TV, same `reserved()`/`TV_LOCK`-free semantics as `POST /api/overlay` |
+
+CLI: `wof addon list [--json]`, `wof addon install <id> [--param KEY=VALUE ...] [--interval SECONDS]
+[--disabled] [--position ...] [--size ...]`, `wof addon uninstall <id>`, `wof addon preview <id>
+[--param KEY=VALUE ...] [--show]`. The `addon` id is a free-text positional, not a hardcoded
+per-addon subcommand (unlike the older `wof connector football` form kept for backward
+compatibility): a third-party connector dropped into `connectors/` is installable from the CLI with no
+CLI code change, which is the actual "wide for extension" contract — write `poll()` + `META` in one
+file, register it in `CONNECTORS`/`META`, and `wof addon install your-id` and the web UI's Extensions
+catalog both pick it up.
 
 
 ## Webhook quick triggers
