@@ -359,7 +359,7 @@ def test_connector_football_preview_and_show(monkeypatch, tmp_path, capsys):
     from webos_foundry import notify
 
     matches = [{"leagueName": "Bundesliga", "team1": {"teamName": "Home"},
-                "team2": {"teamName": "Away"}, "matchResults": [],
+                "team2": {"teamName": "Away"}, "matchResults": [], "matchIsFinished": False,
                 "matchDateTimeUTC": "2026-11-08T16:30:00Z"}]
     calls = []
 
@@ -396,6 +396,50 @@ def test_connector_network_error_is_cli_error(monkeypatch, capsys):
     monkeypatch.setattr(urllib.request, "urlopen", urlopen)
     assert wof("connector", "football") == 1
     assert "wof: Could not fetch OpenLigaDB football data" in capsys.readouterr().err
+
+
+def test_addon_list_install_uninstall(tmp_path, capsys):
+    args = ("--config-dir", str(tmp_path / "addons-home"))
+    assert wof(*args, "addon", "list") == 0
+    assert "not installed" in capsys.readouterr().out
+    assert wof(*args, "addon", "install", "football", "--param", "league=bl2", "--interval", "45") == 0
+    assert "installed" in capsys.readouterr().out
+    assert wof(*args, "addon", "list", "--json") == 0
+    state = json.loads(capsys.readouterr().out)
+    assert state["installed"] == {"football": {"params": {"league": "bl2"}, "interval_seconds": 45, "enabled": True}}
+    assert wof(*args, "addon", "uninstall", "football") == 0
+    assert "uninstalled" in capsys.readouterr().out
+    assert wof(*args, "addon", "list", "--json") == 0
+    assert json.loads(capsys.readouterr().out)["installed"] == {}
+
+
+def test_addon_install_rejects_bad_param_syntax(tmp_path, capsys):
+    args = ("--config-dir", str(tmp_path / "addons-home"))
+    assert wof(*args, "addon", "install", "football", "--param", "league") == 1
+    assert "KEY=VALUE" in capsys.readouterr().err
+
+
+def test_addon_uninstall_unknown_is_a_cli_error(tmp_path, capsys):
+    assert wof("--config-dir", str(tmp_path / "addons-home"), "addon", "uninstall", "football") == 1
+    assert "No such installed addon" in capsys.readouterr().err
+
+
+def test_addon_preview_prints_json_or_shows(monkeypatch, tmp_path, capsys):
+    import io
+    import urllib.request
+
+    matches = [{"leagueName": "Bundesliga", "team1": {"teamName": "Home"},
+                "team2": {"teamName": "Away"}, "matchResults": [], "matchIsFinished": False,
+                "matchDateTimeUTC": "2026-11-08T16:30:00Z"}]
+    monkeypatch.setattr(urllib.request, "urlopen", lambda url, timeout: io.BytesIO(json.dumps(matches).encode()))
+    assert wof("--config-dir", str(tmp_path / "addons-home"), "addon", "preview", "football") == 0
+    body = json.loads(capsys.readouterr().out)
+    assert body["root"]["children"][0]["children"][0]["text"] == "Bundesliga"
+
+    transport = FakeTransport({"notify-overlay": '{"returnValue": true, "overlay": "shown"}'})
+    monkeypatch.setattr(cli, "_transport", lambda args: transport)
+    assert wof("addon", "preview", "football", "--show") == 0
+    assert capsys.readouterr().out.strip() == "Overlay card shown"
 
 
 def test_schedule_set_list_update_delete(tmp_path, capsys):

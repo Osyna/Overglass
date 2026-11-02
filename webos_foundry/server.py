@@ -31,7 +31,7 @@ from pathlib import Path
 from socket import AF_INET6
 from urllib.parse import parse_qs, unquote, urlsplit
 
-from webos_foundry import apps, capture, notify, pairing, process, scenes, schedule, tv, webhooks
+from webos_foundry import addons, apps, capture, notify, pairing, process, scenes, schedule, tv, webhooks
 from webos_foundry.config import AUTH_MODES, Config
 from webos_foundry.errors import ConfigError, NotPairedError, TransportError, TvBusyError, WebosFoundryError
 from webos_foundry.transport import SSHTransport
@@ -454,6 +454,29 @@ def delete_schedule(_request, params):
     return {"message": "Schedule entry deleted"}
 
 
+def get_addons(_request, _):
+    return {"catalog": addons.catalog(), "installed": addons.load()}
+
+
+def put_addon(request, params):
+    with addons.LOCK:
+        entry = addons.install(params["id"], request.json_body())
+    return {"message": "Addon installed", "entry": entry}
+
+
+def delete_addon(_request, params):
+    with addons.LOCK:
+        if params["id"] not in addons.load():
+            raise ApiError(404, "No such installed addon")
+        addons.uninstall(params["id"])
+    return {"message": "Addon uninstalled"}
+
+
+def post_addon_preview(request, params):
+    body = request.json_body(required=False)
+    reserved()
+    return {"message": addons.preview(params["id"], body.get("params", {}), request.transport)}
+
 
 def stream_args(query):
     try:
@@ -817,6 +840,30 @@ ROUTES = (
     route("DELETE", "/api/schedule/{id}", "Schedule", "Delete a local schedule entry.", delete_schedule,
           returns='{"message": "Schedule entry deleted"}', tv=[],
           notes="404 if the entry does not exist; never contacts the TV.", example={"path": "/api/schedule/example"}),
+    route("GET", "/api/addons", "Addons",
+          "The full addon catalog (every registered connector) and what is currently installed.", get_addons,
+          returns='{"catalog": [{"id", "name", "description", "category", "params_schema", '
+                  '"default_interval_seconds"}], "installed": {id: {"params", "interval_seconds", "enabled", '
+                  '"position"?, "size"?}}}',
+          tv=[], notes="Local storage only; never contacts the TV.", example={"path": "/api/addons"}),
+    route("PUT", "/api/addons/{id}", "Addons",
+          "Install (or update) an addon. wof serve polls it on interval_seconds and shows the result while "
+          "enabled -- the one-click 'it just stays live' install.", put_addon,
+          body='{"params": {...this addon\'s params_schema}, "interval_seconds"? 15-3600, "enabled"? bool '
+               "(default true), \"position\"?, \"size\"?}",
+          returns='{"message": "Addon installed", "entry": {...}}', tv=[],
+          notes="Only one overlay window can be visible at a time: enabling this addon disables every other "
+                "installed addon. 400 for an unknown id or bad settings; never contacts the TV.",
+          example={"path": "/api/addons/football", "body": {"params": {"league": "bl1"}, "interval_seconds": 90}}),
+    route("DELETE", "/api/addons/{id}", "Addons", "Uninstall an addon; stops its background refresh.",
+          delete_addon, returns='{"message": "Addon uninstalled"}', tv=[],
+          notes="404 if it is not installed; never contacts the TV.", example={"path": "/api/addons/football"}),
+    route("POST", "/api/addons/{id}/preview", "Addons",
+          "Poll an addon once and show it now, without installing or changing saved settings.", post_addon_preview,
+          body='{"params"?: {...this addon\'s params_schema, defaults to {} }}',
+          returns='{"message": "Overlay card shown"}',
+          tv=["one dispatch call, exactly like POST /api/overlay, with the addon's generated card"],
+          notes=TV_LOCK_NOTE, example={"path": "/api/addons/football/preview", "body": {"params": {"league": "bl2"}}}),
     route("GET", "/api/screenshot", "Status",
           "Capture the picture the TV shows from its HDMI input (without the TV's own menus) as an image.", get_screenshot,
           query={"width": "64-3840, even (default 1920); the height follows the 16:9 picture",
@@ -982,7 +1029,7 @@ class Handler(BaseHTTPRequestHandler):
                 raise ApiError(*denied)
             handler, params = self.resolve(url.path)
             if (url.path not in LOCAL and not url.path.startswith("/webhook/")
-                    and not re.fullmatch(r"/api/(?:schedule|webhooks)(?:/[^/]+)?", url.path)):
+                    and not re.fullmatch(r"/api/(?:schedule|webhooks|addons)(?:/[^/]+)?", url.path)):
                 try:
                     self.transport = self.server.get_transport()
                 except NotPairedError:
@@ -1151,6 +1198,50 @@ class SchedulerThread(threading.Thread):
             self.stop.wait(20)
 
 
+class AddonsThread(threading.Thread):
+    """Polls every enabled installed addon on its own interval and pushes the result to the TV --
+    the always-on half of the addon framework (ARCHITECTURE.md section 12). Mirrors SchedulerThread's
+    locking: a busy TV or an active processing job skips that tick, logged and retried next tick."""
+    TICK = 10
+
+    def __init__(self, server):
+        super().__init__(daemon=True)
+        self.server = server
+        self.stop = threading.Event()
+        self.last = {}
+
+    def run(self):
+        while not self.stop.wait(self.TICK):
+            try:
+                installed = addons.load()
+            except Exception as error:
+                print("Addons failed: %s" % error, flush=True)
+                continue
+            now = time.monotonic()
+            for addon_id, entry in installed.items():
+                if self.stop.is_set():
+                    break
+                if not entry.get("enabled") or now < self.last.get(addon_id, 0) + entry["interval_seconds"]:
+                    continue
+                self.last[addon_id] = now
+                if not TV_LOCK.acquire(blocking=False):
+                    print("Addon %s skipped: the TV is busy" % addon_id, flush=True)
+                    continue
+                try:
+                    with LOCK:
+                        job = active()
+                        if job:
+                            print("Addon %s skipped: processing job %s (%s)" %
+                                  (addon_id, job.id, job.state.replace("_", " ")), flush=True)
+                            continue
+                    card = addons.card_for(addon_id, entry)
+                    notify.overlay_show(self.server.get_transport(), card)
+                except Exception as error:
+                    print("Addon %s failed: %s" % (addon_id, error), flush=True)
+                finally:
+                    TV_LOCK.release()
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(prog="wof serve", description="HTTP API and web UI for a rooted LG webOS TV")
     parser.add_argument("--host", "--bind", dest="host", default="127.0.0.1",
@@ -1188,6 +1279,8 @@ def main(argv=None):
           % (args.host, server.server_address[1], login), flush=True)
     scheduler = SchedulerThread(server)
     scheduler.start()
+    addons_thread = AddonsThread(server)
+    addons_thread.start()
     try:
         server.serve_forever()
     except KeyboardInterrupt:
@@ -1195,6 +1288,8 @@ def main(argv=None):
     finally:
         scheduler.stop.set()
         scheduler.join(2)
+        addons_thread.stop.set()
+        addons_thread.join(2)
         server.server_close()
         stop_stream()
         stop_jobs()

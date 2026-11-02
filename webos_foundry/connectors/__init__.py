@@ -4,6 +4,7 @@ from .. import notify
 from ..errors import ValidationError
 
 CONNECTORS = {"football": football.poll}
+META = {"football": football.META}
 
 
 def run(name, params, transport) -> str:

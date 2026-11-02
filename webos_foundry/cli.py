@@ -8,7 +8,7 @@ import time
 from dataclasses import asdict, fields
 from pathlib import Path
 
-from . import capture, connectors, dispatcher, install as install_module, notify, pairing, process, scenes, schedule, tv, webhooks
+from . import addons, capture, connectors, dispatcher, install as install_module, notify, pairing, process, scenes, schedule, tv, webhooks
 from .config import ENV, Config, config_dir
 from .errors import ConfigError, ValidationError, WebosFoundryError
 from .transport import SSHTransport
@@ -206,6 +206,55 @@ def cmd_connector(args):
         print(connectors.run(args.connector, params, _transport(args)))
     else:
         print(json.dumps(connectors.CONNECTORS[args.connector](params), indent=2))
+
+
+def _parse_params(pairs):
+    params = {}
+    for pair in pairs or ():
+        key, sep, value = pair.partition("=")
+        if not sep:
+            raise ValidationError("--param must be KEY=VALUE, got: %s" % pair)
+        params[key] = value
+    return params
+
+
+def cmd_addon_list(args):
+    catalog, installed = addons.catalog(), addons.load(args.config_dir)
+    if args.json:
+        print(json.dumps({"catalog": catalog, "installed": installed}, indent=2))
+        return
+    for entry in catalog:
+        state = installed.get(entry["id"])
+        status = ("installed, enabled" if state and state["enabled"] else "installed, disabled"
+                   if state else "not installed")
+        print("%-16s %-28s %-10s %s" % (entry["id"], entry["name"], entry["category"], status))
+
+
+def cmd_addon_install(args):
+    body = {"params": _parse_params(args.param), "enabled": not args.disabled}
+    if args.interval is not None:
+        body["interval_seconds"] = args.interval
+    if args.position:
+        body["position"] = args.position
+    if args.size:
+        body["size"] = args.size
+    addons.install(args.addon, body, args.config_dir)
+    print("Addon %s installed" % args.addon)
+
+
+def cmd_addon_uninstall(args):
+    addons.uninstall(args.addon, args.config_dir)
+    print("Addon %s uninstalled" % args.addon)
+
+
+def cmd_addon_preview(args):
+    params = _parse_params(args.param)
+    if args.show:
+        print(addons.preview(args.addon, params, _transport(args)))
+    else:
+        print(json.dumps(connectors.CONNECTORS[args.addon](params), indent=2))
+
+
 
 
 def cmd_schedule_list(args):
@@ -451,6 +500,26 @@ def build_parser():
     command = add("football", cmd_connector, "current-matchday football scores from OpenLigaDB", group)
     command.add_argument("--league", default="bl1", help="OpenLigaDB league shortcut (default bl1)")
     command.add_argument("--show", action="store_true", help="show the card on the TV instead of printing JSON")
+
+    group = add("addon", None, "install a connector to auto-refresh on the TV (requires wof serve); "
+                "any catalog entry works, including third-party connectors dropped into connectors/").add_subparsers(
+        dest="sub", required=True, metavar="SUB")
+    with_json(add("list", cmd_addon_list, "list the addon catalog and what is installed", group))
+    command = add("install", cmd_addon_install, "install (or update) an addon; enabling it disables every "
+                  "other installed addon, since only one overlay window shows at a time", group)
+    command.add_argument("addon", help="catalog id, e.g. football")
+    command.add_argument("--param", action="append", metavar="KEY=VALUE", help="repeatable; this addon's params")
+    command.add_argument("--interval", type=int, metavar="SECONDS", help="15-3600 (default the addon's own)")
+    command.add_argument("--disabled", action="store_true", help="save without starting the live refresh")
+    command.add_argument("--position", choices=("top-left", "top-right", "bottom-left", "bottom-right", "center"))
+    command.add_argument("--size", choices=("xs", "s", "m", "l", "xl", "full"))
+    command = add("uninstall", cmd_addon_uninstall, "remove an installed addon", group)
+    command.add_argument("addon")
+    command = add("preview", cmd_addon_preview, "poll an addon once; print JSON, or show it now with --show", group)
+    command.add_argument("addon", help="catalog id, e.g. football")
+    command.add_argument("--param", action="append", metavar="KEY=VALUE", help="repeatable; this addon's params")
+    command.add_argument("--show", action="store_true", help="show the card on the TV instead of printing JSON")
+
 
     command = add("screenshot", cmd_screenshot, "capture the HDMI picture")
     command.add_argument("out", metavar="OUT.jpg")

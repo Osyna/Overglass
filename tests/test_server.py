@@ -954,3 +954,92 @@ def test_schedule_storage_routes_work_unpaired_but_keep_auth(serve, monkeypatch)
     assert app.json("GET", "/api/schedule", headers=bearer())[0] == 200
     assert app.json("PUT", path, {"scene": "s", "time": "21:00"}, bearer())[0] == 200
     assert app.json("DELETE", path, headers=bearer())[0] == 200
+
+
+def _stub_football(monkeypatch, text="Preview"):
+    from webos_foundry import connectors, notify
+    monkeypatch.setattr(connectors, "CONNECTORS",
+                         {"football": lambda params: notify.check_overlay_request({"title": text, "kind": "info"})})
+
+
+def test_addons_catalog_and_install_lifecycle(serve, monkeypatch):
+    from webos_foundry import connectors as connectors_module
+    _stub_football(monkeypatch)
+    app = serve(transport=FakeTransport({}))
+    status, body = app.json("GET", "/api/addons")
+    assert status == 200
+    assert body["catalog"] == [dict(connectors_module.META["football"], id="football")]
+    assert body["installed"] == {}
+    status, saved = app.json("PUT", "/api/addons/football", {"params": {"league": "bl2"}, "interval_seconds": 30})
+    assert status == 200 and saved["message"] == "Addon installed"
+    assert saved["entry"] == {"params": {"league": "bl2"}, "interval_seconds": 30, "enabled": True}
+    assert app.json("GET", "/api/addons")[1]["installed"]["football"] == saved["entry"]
+    assert app.json("DELETE", "/api/addons/football") == (200, {"message": "Addon uninstalled"})
+    assert app.json("DELETE", "/api/addons/football")[0] == 404
+
+
+def test_addons_install_disables_other_enabled_addons(serve, monkeypatch):
+    from webos_foundry import addons, connectors, notify
+    monkeypatch.setattr(connectors, "CONNECTORS", {
+        "football": lambda params: notify.check_overlay_request({"title": "f", "kind": "info"}),
+        "weather": lambda params: notify.check_overlay_request({"title": "w", "kind": "info"}),
+    })
+    monkeypatch.setattr(connectors, "META", {
+        "football": connectors.META["football"], "weather": {"default_interval_seconds": 60},
+    })
+    app = serve(transport=FakeTransport({}))
+    addons.install("weather", {"params": {}, "enabled": True})  # pre-existing enabled addon
+    assert app.json("PUT", "/api/addons/football", {"params": {}})[0] == 200
+    installed = app.json("GET", "/api/addons")[1]["installed"]
+    assert installed["football"]["enabled"] is True
+    assert installed["weather"]["enabled"] is False
+
+
+def test_addons_install_rejects_invalid_entries(serve, monkeypatch):
+    _stub_football(monkeypatch)
+    app = serve(transport=FakeTransport({}))
+    for body in ({"params": {}, "interval_seconds": 5}, {"params": "not-a-dict"},
+                 {"params": {}, "enabled": "yes"}):
+        assert app.json("PUT", "/api/addons/football", body)[0] == 400
+    assert app.json("PUT", "/api/addons/missing", {"params": {}})[0] == 400
+
+
+def test_addons_preview_polls_and_shows_without_installing(serve, monkeypatch):
+    _stub_football(monkeypatch, text="Live preview")
+    transport = FakeTransport({"notify-overlay": '{"returnValue": true, "overlay": "shown"}'})
+    app = serve(transport=transport)
+    status, body = app.json("POST", "/api/addons/football/preview", {"params": {"league": "bl2"}})
+    assert status == 200 and body["message"] == "Overlay card shown"
+    sent = json.loads(transport.calls[0].data)
+    assert sent["root"]["children"][0]["children"][1]["text"] == "Live preview"
+    assert app.json("GET", "/api/addons")[1]["installed"] == {}  # preview never installs
+
+
+def test_addons_preview_tv_errors_are_502(serve, monkeypatch):
+    _stub_football(monkeypatch)
+    app = serve(transport=DeadTransport())
+    assert app.json("POST", "/api/addons/football/preview", {})[0] == 502
+
+
+@pytest.mark.parametrize("method,path,body", [
+    ("GET", "/api/addons", None),
+    ("PUT", "/api/addons/football", {"params": {}}),
+    ("DELETE", "/api/addons/football", None),
+])
+def test_addons_storage_routes_work_unpaired_but_keep_auth(serve, monkeypatch, method, path, body):
+    _stub_football(monkeypatch)
+
+    def no_transport(_server):
+        pytest.fail("addon storage routes must not build a TV transport")
+
+    monkeypatch.setattr(server.FoundryServer, "get_transport", no_transport)
+    app = serve(bind="0.0.0.0", token=TOKEN, transport=None)
+    assert app.json(method, path, body)[0] == 401
+    assert app.json(method, path, body, bearer())[0] in (200, 404)
+
+
+def test_addons_preview_requires_transport_even_when_unpaired(serve, monkeypatch):
+    _stub_football(monkeypatch)
+    app = serve(bind="0.0.0.0", token=TOKEN, transport=None)
+    status, body = app.json("POST", "/api/addons/football/preview", {}, bearer())
+    assert status == 503
