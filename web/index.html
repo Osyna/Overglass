@@ -72,6 +72,7 @@
     <button type="button" class="tab" data-view="home" aria-current="page"><svg><use href="#i-home"/></svg><span>Home</span></button>
     <button type="button" class="tab" data-view="remote"><svg><use href="#i-remote"/></svg><span>Remote</span></button>
     <button type="button" class="tab" data-view="apps"><svg><use href="#i-apps"/></svg><span>Apps</span></button>
+    <button type="button" class="tab" data-view="automate"><svg><use href="#i-refresh"/></svg><span>Automate</span></button>
     <button type="button" class="tab" data-view="show"><svg><use href="#i-chat"/></svg><span>Show</span></button>
     <button type="button" class="tab" data-view="tune"><svg><use href="#i-sliders"/></svg><span>Tune</span></button>
   </nav>
@@ -348,6 +349,78 @@
         </section>
       </div>
     </div>
+  </main>
+
+  <!-- ============ Automate ============ -->
+  <main id="view-automate" class="view" data-view-id="automate" hidden>
+    <header class="view-head"><h1>Automate</h1><p class="lede">Save a sequence as a scene, give it a regular time, or run it from another app.</p></header>
+    <div class="cols">
+      <div class="col">
+        <section class="panel" data-needs-group="Scenes" aria-labelledby="h-scenes">
+          <header class="panel-head">
+            <h2 id="h-scenes">Scenes</h2>
+            <button class="btn quiet" type="button" id="scenes-refresh"><svg><use href="#i-refresh"/></svg><span>Reload</span></button>
+          </header>
+          <p class="lede">A scene runs its steps in order, stopping if one fails. Editing a scene also changes what its schedules and links run.</p>
+          <div id="scenes-list" aria-live="polite"><p class="empty">Loading scenes…</p></div>
+          <form id="scene-form" class="stack-form group">
+            <h3 id="scene-form-title">Save a scene</h3>
+            <div class="field"><label for="scene-name">Scene name</label><input id="scene-name" type="text" maxlength="60" required placeholder="movie-night"></div>
+            <div class="field">
+              <label for="scene-json">Steps as JSON</label>
+              <textarea id="scene-json" class="automation-json" rows="8" required spellcheck="false" aria-describedby="scene-json-hint">{"steps":[{"type":"wait","seconds":0}]}</textarea>
+              <p class="hint" id="scene-json-hint">Use 1–20 remote, setting, overlay or wait steps. Waits are 0–10 seconds. Overlay steps take the same card JSON as Show. The server checks each step when you save.</p>
+            </div>
+            <div class="row"><button class="btn primary" id="scene-save" type="submit">Save scene</button><button class="btn quiet" id="scene-new" type="button" hidden>Cancel editing</button></div>
+          </form>
+          <p class="result-msg" id="scenes-msg" role="status" hidden></p>
+        </section>
+      </div>
+      <div class="col">
+        <section class="panel" data-needs-group="Schedule" aria-labelledby="h-schedule">
+          <header class="panel-head">
+            <h2 id="h-schedule">Scheduler</h2>
+            <button class="btn quiet" type="button" id="schedule-refresh"><svg><use href="#i-refresh"/></svg><span>Reload</span></button>
+          </header>
+          <p class="lede">Times use this server’s local clock, not your phone’s. The server must stay running; missed times are not caught up.</p>
+          <div id="schedule-list" aria-live="polite"><p class="empty">Loading schedules…</p></div>
+          <form id="schedule-form" class="stack-form group">
+            <h3>Add a schedule</h3>
+            <div class="pair">
+              <div class="field"><label for="schedule-scene">Scene name</label><input id="schedule-scene" type="text" list="automation-scenes" required placeholder="Choose or enter a scene"></div>
+              <div class="field"><label for="schedule-time">Time on the server</label><input id="schedule-time" type="time" required></div>
+            </div>
+            <fieldset class="automation-days"><legend>Days <span class="hint">— leave all clear for every day</span></legend>
+              <label class="check"><input type="checkbox" name="day" value="mon">Mon</label>
+              <label class="check"><input type="checkbox" name="day" value="tue">Tue</label>
+              <label class="check"><input type="checkbox" name="day" value="wed">Wed</label>
+              <label class="check"><input type="checkbox" name="day" value="thu">Thu</label>
+              <label class="check"><input type="checkbox" name="day" value="fri">Fri</label>
+              <label class="check"><input type="checkbox" name="day" value="sat">Sat</label>
+              <label class="check"><input type="checkbox" name="day" value="sun">Sun</label>
+            </fieldset>
+            <div><button class="btn primary" id="schedule-save" type="submit">Add schedule</button></div>
+          </form>
+          <p class="result-msg" id="schedule-msg" role="status" hidden></p>
+        </section>
+        <section class="panel" data-needs-group="Webhooks" aria-labelledby="h-webhooks">
+          <header class="panel-head">
+            <h2 id="h-webhooks">Webhook links</h2>
+            <button class="btn quiet" type="button" id="webhooks-refresh"><svg><use href="#i-refresh"/></svg><span>Reload</span></button>
+          </header>
+          <p class="lede">A private link lets another app run one scene. Anyone with the link can use it without signing in. Delete the link to revoke access.</p>
+          <div id="webhooks-list" aria-live="polite"><p class="empty">Loading webhook links…</p></div>
+          <form id="webhook-form" class="stack-form group">
+            <h3>Create a link</h3>
+            <div class="field"><label for="webhook-scene">Scene name</label><input id="webhook-scene" type="text" list="automation-scenes" maxlength="60" required placeholder="Choose or enter a scene"></div>
+            <div class="field"><label for="webhook-label">Label <span class="sub">— optional</span></label><input id="webhook-label" type="text" maxlength="60" placeholder="Living room shortcut"></div>
+            <div><button class="btn primary" id="webhook-save" type="submit">Create link</button></div>
+          </form>
+          <p class="result-msg" id="webhooks-msg" role="status" hidden></p>
+        </section>
+      </div>
+    </div>
+    <datalist id="automation-scenes"></datalist>
   </main>
 
   <!-- ============ Show: message, card, live view, screenshot ============ -->

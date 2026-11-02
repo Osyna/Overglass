@@ -1,6 +1,6 @@
 // Caches only the static shell so the app opens instantly. Everything else (every /api/ call, the TV's live
 // state) is never intercepted: no respondWith, so it always goes to the network. Bump CACHE to drop old copies.
-const CACHE = 'webos-foundry-shell-v1';
+const CACHE = 'webos-foundry-shell-v2';
 const SHELL = ['/', '/index.html', '/app.css', '/tokens.css', '/theme.js', '/app.js', '/apps.js', '/favicon.svg',
   '/manifest.json', '/icons/icon-192.png', '/icons/icon-512.png', '/icons/icon-maskable-512.png',
   '/icons/apple-touch-icon.png'];

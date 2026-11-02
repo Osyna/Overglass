@@ -73,14 +73,17 @@ to do next. Technical terms (IPK, SHA-256, token) appear once, with a one-line e
 
 ## Structure
 
-Phone: sticky top bar (brand, TV status chip, theme, settings) and a fixed bottom bar with five sections. Desktop
-(≥56rem): the same five as a centred pill tab bar in the header; content in a 72rem column, two columns per view.
+Phone: sticky top bar (brand, TV status chip, theme, settings) and a fixed bottom bar with six sections. Desktop
+(≥56rem): the same six as a centred pill tab bar in the header; content in a 72rem column, two columns per view.
+Phone navigation labels are 12px to keep all six on one line at 320px. Compact desktop headers hide the brand text
+and tighten tab padding so the navigation never collides with status or Settings.
 
 | View | Holds |
 | --- | --- |
 | Home | first-run pairing help, TV status and power, shortcuts, TV details |
 | Remote | power, input, direction pad, volume |
 | Apps | add an app (file or link, with install progress), installed apps with uninstall |
+| Automate | saved scenes with JSON creation/editing and run results; local-time schedules with day selection and enable/disable; private webhook links to copy or revoke |
 | Show | message and read-aloud, on-screen card with a collapsed Advanced builder (all ten widget types, nested stacks/rows, live local preview, Send to TV), live view and screenshot (both open a full-screen zoom/pan lightbox) |
 | Tune | picture & sound settings, process a file |
 | Settings (gear) | appearance, who can use this page (token or login off), this device's token, link to developer tools |
@@ -91,6 +94,12 @@ validates and replaces the draft, while builder edits refresh the JSON. Unapplie
 discarded without changing the draft. The preview uses the TV renderer's widget proportions with Lamplight tokens,
 not screenshot capture (the floating overlay is invisible to both TV capture paths). External images are labelled
 placeholders to preserve the same-origin CSP; Send to TV uses the existing overlay route for final by-eye confirmation.
+
+Automate keeps Scenes in the left column and Scheduler / Webhook links stacked on the right (all stacked on phones).
+Scene editing uses the server’s existing `{"steps":[...]}` JSON format, not a second visual card builder. Scene-name
+suggestions come from the saved list; names can also be entered before a scene exists. Deletes confirm in place;
+deleting a scene does not remove its schedules or links. Webhook URLs are shown as read-only text and copied,
+never opened or triggered by this page. Anyone with a link can run its scene, so the panel explains revocation.
 
 Capability gating: `GET /api` is the single source of truth. A panel carrying `data-needs-group` or `data-needs-route`
 that the server does not list is greyed, labelled "Not available from this server" and made inert. A remote button whose
@@ -115,7 +124,8 @@ a group name.
 
 `index.html` markup and icon sprite · `tokens.css` generated tokens · `app.css` components and layout · `theme.js` theme
 switch (runs in `<head>`) · `app.js` API client, status, remote, notify, card, live, screenshot, zoom lightbox, pairing,
-settings, jobs, API reference · `apps.js` apps, login setting, auth wiring, service-worker registration and the install banner ·
+settings, scenes, scheduler, webhooks, jobs, API reference · `apps.js` apps, login setting, auth wiring, service-worker registration and the install banner ·
 `favicon.svg` · `manifest.json`, `sw.js`, `icons/` installable app (the worker caches only the static shell, never `/api/`;
-bump `CACHE` in `sw.js` to drop old copies) · `check-ui.mjs` static regression gate · `check-overlay.mjs` offline
-widget-schema regression checks (`node web/check-overlay.mjs`, no browser or TV).
+bump `CACHE` in `sw.js` to drop old copies) · `check-ui.mjs` offline markup/capability regression gate · `check-overlay.mjs`
+widget-schema checks · `check-automate.mjs` scene suggestions, schedule toggles and copy-only webhook checks
+(`node web/check-{ui,overlay,automate}.mjs`, no browser or TV).

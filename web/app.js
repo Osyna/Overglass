@@ -12,7 +12,7 @@ const JOB_STATE = {
 };
 const LIMIT = { image: 16 * 1048576, audio: 8 * 1048576 };
 const TOKEN_KEY = 'webos-foundry-token';
-const VIEWS = new Set(['home', 'remote', 'apps', 'show', 'tune', 'settings', 'api']);
+const VIEWS = new Set(['home', 'remote', 'apps', 'automate', 'show', 'tune', 'settings', 'api']);
 
 const S = {
   view: 'home', api: null, status: null, statusError: null, statusBusy: false, statusAgain: false,
@@ -1337,6 +1337,180 @@ function copyButtonIcon(text) {
   return btn;
 }
 
+/* ---------- scenes, local schedules and webhook links ---------- */
+
+const AUTOMATION = {
+  scenes: { group: 'Scenes', key: 'scenes', empty: 'No scenes yet. Save your first sequence below.' },
+  schedule: { group: 'Schedule', key: 'entries', empty: 'No schedules yet. Add a time for a scene below.' },
+  webhooks: { group: 'Webhooks', key: 'webhooks', empty: 'No webhook links yet. Create a private link below.' },
+};
+const automationData = { scenes: null, schedule: null, webhooks: null };
+const automationBusy = new Set();
+
+async function loadAutomation(kind) {
+  const config = AUTOMATION[kind];
+  if (!supports({ group: config.group }) || automationBusy.has(kind)) return;
+  automationBusy.add(kind);
+  const list = $(kind + '-list');
+  const refresh = $(kind + '-refresh');
+  const controls = [...list.closest('.panel').querySelectorAll('button, input, textarea')].map(el => [el, el.disabled]);
+  for (const [el] of controls) el.disabled = true;
+  refresh.disabled = true;
+  refresh.dataset.state = 'loading';
+  list.setAttribute('aria-busy', 'true');
+  if (!automationData[kind]) list.replaceChildren(h('p', { class: 'empty', text: 'Loading…' }));
+  try {
+    automationData[kind] = (await call('GET', '/api/' + kind))[config.key];
+    renderAutomation(kind);
+  } catch (err) {
+    list.replaceChildren(h('p', { class: 'empty', dataset: { tone: 'error' },
+      text: 'Could not load this list: ' + err.message + '. ' },
+    h('button', { class: 'btn quiet', type: 'button', text: 'Try again', onclick: () => loadAutomation(kind) })));
+  } finally {
+    automationBusy.delete(kind);
+    refresh.disabled = false;
+    delete refresh.dataset.state;
+    list.setAttribute('aria-busy', 'false');
+    for (const [el, disabled] of controls) el.disabled = disabled;
+  }
+}
+
+function renderAutomation(kind) {
+  const entries = Object.entries(automationData[kind]);
+  $(kind + '-list').replaceChildren(entries.length
+    ? h('ul', { class: 'app-list automation-list' }, entries.map(([id, entry]) => automationRow(kind, id, entry)))
+    : h('p', { class: 'empty', text: AUTOMATION[kind].empty }));
+  if (kind === 'scenes') {
+    $('automation-scenes').replaceChildren(...entries.map(([name]) => h('option', { value: name })));
+  }
+}
+
+async function changeAutomation(kind, btn, method, path, json, message) {
+  if (automationBusy.has(kind)) return;
+  automationBusy.add(kind);
+  const panel = $(kind + '-list').closest('.panel');
+  const controls = [...panel.querySelectorAll('button, input, textarea')].map(el => [el, el.disabled]);
+  for (const [el] of controls) el.disabled = true;
+  btn.dataset.state = 'loading';
+  try {
+    const reply = await call(method, path, { json });
+    result($(kind + '-msg'), typeof message === 'function' ? message(reply) : message || reply.message, 'ok');
+    return reply;
+  } catch (err) {
+    result($(kind + '-msg'), err.message, 'error');
+  } finally {
+    automationBusy.delete(kind);
+    delete btn.dataset.state;
+    for (const [el, disabled] of controls) el.disabled = disabled;
+  }
+}
+
+function askAutomationDelete(kind, id, name, row, trigger) {
+  if (automationBusy.has(kind) || row.querySelector('.app-confirm')) return;
+  trigger.hidden = true;
+  const keep = h('button', { class: 'btn', type: 'button', text: 'Keep it' });
+  const go = h('button', { class: 'btn danger-fill', type: 'button', text: 'Delete' });
+  const consequence = kind === 'scenes' ? ' Schedules and links using it will no longer run.'
+    : kind === 'webhooks' ? ' Anyone using this link will lose access.' : '';
+  const ask = h('div', { class: 'app-confirm' }, h('p', { text: `Delete ${name}?${consequence}` }), keep, go);
+  keep.addEventListener('click', () => { ask.remove(); trigger.hidden = false; trigger.focus(); });
+  go.addEventListener('click', async () => {
+    if (await changeAutomation(kind, go, 'DELETE', '/api/' + kind + '/' + encodeURIComponent(id), undefined, 'Deleted ' + name + '.')) {
+      if (kind === 'scenes' && $('scene-name').readOnly && $('scene-name').value === id) resetSceneForm();
+      await loadAutomation(kind);
+    }
+  });
+  row.append(ask);
+  keep.focus();
+}
+
+function automationRow(kind, id, entry) {
+  const row = h('li', { class: 'app' });
+  const name = kind === 'scenes' ? id : kind === 'schedule' ? entry.scene : entry.label || id;
+  const summary = kind === 'scenes' ? `${entry.steps.length} step${entry.steps.length === 1 ? '' : 's'}`
+    : kind === 'schedule' ? `${entry.time} · ${entry.days.length ? entry.days.map(day => day[0].toUpperCase() + day.slice(1)).join(', ') : 'Every day'} · ${entry.enabled ? 'Enabled' : 'Disabled'}`
+      : 'Scene: ' + entry.scene;
+  row.append(h('div', { class: 'app-meta' }, h('strong', { text: name }), h('span', { text: summary })));
+  const actions = h('div', { class: 'row' });
+  if (kind === 'scenes') {
+    const run = h('button', { class: 'btn', type: 'button', text: 'Run', 'aria-label': 'Run ' + id });
+    run.addEventListener('click', () => changeAutomation(kind, run, 'POST', '/api/scenes/' + encodeURIComponent(id) + '/run', undefined,
+      reply => `${id}: ${reply.messages.join(' · ') || 'Scene finished.'}`));
+    const edit = h('button', { class: 'btn quiet', type: 'button', text: 'Edit', 'aria-label': 'Edit ' + id });
+    edit.addEventListener('click', () => {
+      $('scene-name').value = id;
+      $('scene-name').readOnly = true;
+      $('scene-json').value = JSON.stringify(entry, null, 2);
+      $('scene-form-title').textContent = 'Edit ' + id;
+      $('scene-save').textContent = 'Save changes';
+      $('scene-new').hidden = false;
+      $('scene-json').focus();
+    });
+    actions.append(run, edit);
+  } else if (kind === 'schedule') {
+    const toggle = h('button', { class: 'btn', type: 'button', text: entry.enabled ? 'Disable' : 'Enable',
+      'aria-label': (entry.enabled ? 'Disable' : 'Enable') + ' schedule for ' + entry.scene, 'aria-pressed': String(entry.enabled) });
+    toggle.addEventListener('click', async () => {
+      const { scene, time, days, enabled } = entry;
+      if (await changeAutomation(kind, toggle, 'PUT', '/api/schedule/' + encodeURIComponent(id),
+        { scene, time, days, enabled: !enabled }, enabled ? 'Schedule disabled.' : 'Schedule enabled.')) await loadAutomation(kind);
+    });
+    actions.append(toggle);
+  } else {
+    const url = location.origin + '/webhook/' + encodeURIComponent(id);
+    actions.append(copyButton('Copy link', () => url));
+    row.append(h('input', { type: 'text', class: 'automation-link', value: url, readonly: true,
+      'aria-label': 'Webhook link for ' + name }));
+  }
+  const remove = h('button', { class: 'btn danger', type: 'button', 'aria-label': 'Delete ' + name }, icon('trash'), h('span', { text: 'Delete' }));
+  remove.addEventListener('click', () => askAutomationDelete(kind, id, name, row, remove));
+  actions.append(remove);
+  row.append(actions);
+  return row;
+}
+
+function resetSceneForm() {
+  $('scene-form').reset();
+  $('scene-name').readOnly = false;
+  $('scene-form-title').textContent = 'Save a scene';
+  $('scene-save').textContent = 'Save scene';
+  $('scene-new').hidden = true;
+}
+
+function wireAutomation() {
+  for (const kind of Object.keys(AUTOMATION)) $(kind + '-refresh').addEventListener('click', () => loadAutomation(kind));
+  $('scene-new').addEventListener('click', resetSceneForm);
+  $('scene-form').addEventListener('submit', async event => {
+    event.preventDefault();
+    let scene;
+    try { scene = JSON.parse($('scene-json').value); }
+    catch { return result($('scenes-msg'), 'That is not valid JSON. Check the quotes, commas and brackets, then save again.', 'error'); }
+    if (await changeAutomation('scenes', $('scene-save'), 'PUT', '/api/scenes/' + encodeURIComponent($('scene-name').value), scene)) {
+      await loadAutomation('scenes');
+    }
+  });
+  $('schedule-form').addEventListener('submit', async event => {
+    event.preventDefault();
+    const body = { scene: $('schedule-scene').value, time: $('schedule-time').value,
+      days: [...document.querySelectorAll('#schedule-form input[name="day"]:checked')].map(el => el.value), enabled: true };
+    if (await changeAutomation('schedule', $('schedule-save'), 'POST', '/api/schedule', body)) {
+      $('schedule-form').reset();
+      await loadAutomation('schedule');
+    }
+  });
+  $('webhook-form').addEventListener('submit', async event => {
+    event.preventDefault();
+    const reply = await changeAutomation('webhooks', $('webhook-save'), 'POST', '/api/webhooks',
+      { scene: $('webhook-scene').value, label: $('webhook-label').value });
+    if (reply) {
+      $('webhook-form').reset();
+      await loadAutomation('webhooks');
+      const message = $('webhooks-msg');
+      message.append(' ', copyButton('Copy new link', () => location.origin + reply.url));
+    }
+  });
+}
+
 /* ---------- views, keyboard, startup ---------- */
 
 function showView(view) {
@@ -1349,6 +1523,7 @@ function showView(view) {
   }
   if (view !== 'show') stopLive();  // the live picture is private: it must not keep streaming into a hidden page
   if (view === 'apps' && S.api) loadApps();
+  if (view === 'automate' && S.api) for (const kind of Object.keys(AUTOMATION)) loadAutomation(kind);
   if (location.hash !== '#' + view) history.replaceState(null, '', view === 'home' ? location.pathname : '#' + view);
   window.scrollTo(0, 0);
 }
@@ -1432,6 +1607,7 @@ async function submitPair(e) {
 }
 
 function wire() {
+  wireAutomation();
   $('token-btn').addEventListener('click', () => { S.promptDismissed = false; openToken(); });
   $('pair-host').addEventListener('input', syncPairForm);
   $('pair-file').addEventListener('change', (e) => pickPairKey(e.target.files[0]));
@@ -1503,6 +1679,7 @@ function wire() {
 }
 
 async function loadAll() {
+  if (S.view === 'automate') for (const kind of Object.keys(AUTOMATION)) loadAutomation(kind);
   if (S.paired === false) { renderStatus(); loadSettings(); loadDetails(); loadAuth(); return; }
   if (supports({ route: '/api/jobs' })) {
     try {
