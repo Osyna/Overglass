@@ -31,7 +31,7 @@ Issues = "https://github.com/webos-foundry/webos-foundry/issues"
 wof = "webos_foundry.cli:main"
 
 [tool.setuptools]
-packages = ["webos_foundry"]
+packages = ["webos_foundry", "webos_foundry.connectors"]
 
 [tool.setuptools.package-data]
 webos_foundry = ["py.typed"]
