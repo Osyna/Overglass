@@ -19,7 +19,7 @@ const S = {
   settings: null, settingsBusy: false, settingsAgain: false, settingNote: null,
   job: null, jobTimer: null, reserved: false, file: null, kind: null, logPolls: false, wakeUntil: 0,
   detailsBusy: false, detailsAgain: false, details: null, historyOpen: false, notifyBusy: false, shotBusy: false, shotUrl: null,
-  overlayBusy: false, live: null, liveCooling: false,
+  overlayBusy: false, live: null, liveCooling: false, zoom: null,
   paired: null, token: '', statusUnauthorized: false, promptDismissed: false, resultFor: null, resultUrl: null,
   authMode: null, bannerDismissed: false,
 };
@@ -969,6 +969,87 @@ async function startLive() {
 
 function stopLive() {
   if (S.live) S.live.ctl.abort();
+}
+
+/* ---------- zoom lightbox ---------- */
+
+function openZoom(el, reparent) {
+  S.zoom = { scale: 1, x: 0, y: 0, reparent: reparent ? { el, parent: el.parentNode, next: el.nextSibling } : null };
+  el.style.transform = '';
+  $('zoom-stage').replaceChildren(el);
+  $('zoom-view').showModal();
+}
+
+function applyZoom() {
+  const z = S.zoom, el = $('zoom-stage').firstElementChild;
+  if (z && el) el.style.transform = `translate(${z.x}px, ${z.y}px) scale(${z.scale})`;
+}
+
+function wireZoom() {
+  const dialog = $('zoom-view');
+  const stage = $('zoom-stage');
+  const openShot = () => { const img = $('shot-view').querySelector('img'); if (img) openZoom(img.cloneNode(), false); };
+  const openLive = () => openZoom($('live-canvas'), true);
+  const onKey = (open) => (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); } };
+  $('live-canvas').addEventListener('click', openLive);
+  $('live-canvas').addEventListener('keydown', onKey(openLive));
+  $('shot-view').addEventListener('click', openShot);
+  $('shot-view').addEventListener('keydown', onKey(openShot));
+  $('zoom-close').addEventListener('click', () => dialog.close());
+  dialog.addEventListener('click', (e) => { if (e.target === dialog) dialog.close(); });
+  dialog.addEventListener('close', () => {
+    const z = S.zoom;
+    if (z && z.reparent) z.reparent.parent.insertBefore(z.reparent.el, z.reparent.next);
+    S.zoom = null;
+  });
+  stage.addEventListener('dblclick', () => {
+    const z = S.zoom;
+    if (!z) return;
+    Object.assign(z, z.scale > 1 ? { scale: 1, x: 0, y: 0 } : { scale: 2 });
+    applyZoom();
+  });
+  stage.addEventListener('wheel', (e) => {
+    const z = S.zoom;
+    if (!z) return;
+    e.preventDefault();
+    z.scale = Math.min(6, Math.max(1, z.scale * (e.deltaY < 0 ? 1.2 : 1 / 1.2)));
+    if (z.scale === 1) { z.x = 0; z.y = 0; }
+    applyZoom();
+  }, { passive: false });
+
+  const pointers = new Map();
+  let pinch = null, pan = null;  // pinch: {dist, scale}; pan: {x, y, startX, startY}
+  const pointDist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+  stage.addEventListener('pointerdown', (e) => {
+    stage.setPointerCapture(e.pointerId);
+    pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    const z = S.zoom;
+    if (!z) return;
+    if (pointers.size === 2) { pinch = { dist: pointDist(...pointers.values()), scale: z.scale }; pan = null; }
+    else if (pointers.size === 1 && z.scale > 1) { pan = { x: e.clientX, y: e.clientY, startX: z.x, startY: z.y }; stage.dataset.panning = 'true'; }
+  });
+  stage.addEventListener('pointermove', (e) => {
+    if (!pointers.has(e.pointerId)) return;
+    pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    const z = S.zoom;
+    if (!z) return;
+    if (pointers.size === 2 && pinch) {
+      z.scale = Math.min(6, Math.max(1, pinch.scale * (pointDist(...pointers.values()) / pinch.dist)));
+      if (z.scale === 1) { z.x = 0; z.y = 0; }
+      applyZoom();
+    } else if (pan) {
+      z.x = pan.startX + (e.clientX - pan.x);
+      z.y = pan.startY + (e.clientY - pan.y);
+      applyZoom();
+    }
+  });
+  const releasePointer = (e) => {
+    pointers.delete(e.pointerId);
+    if (pointers.size < 2) pinch = null;
+    if (pointers.size === 0) { pan = null; delete stage.dataset.panning; }
+  };
+  stage.addEventListener('pointerup', releasePointer);
+  stage.addEventListener('pointercancel', releasePointer);
 }
 
 /* ---------- API reference ---------- */

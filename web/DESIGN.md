@@ -81,7 +81,7 @@ Phone: sticky top bar (brand, TV status chip, theme, settings) and a fixed botto
 | Home | first-run pairing help, TV status and power, shortcuts, TV details |
 | Remote | power, input, direction pad, volume |
 | Apps | add an app (file or link, with install progress), installed apps with uninstall |
-| Show | message and read-aloud, on-screen card, live view, screenshot |
+| Show | message and read-aloud, on-screen card, live view, screenshot (both open a full-screen zoom/pan lightbox) |
 | Tune | picture & sound settings, process a file |
 | Settings (gear) | appearance, who can use this page (token or login off), this device's token, link to developer tools |
 | Developer (`#api`) | request log, API reference |
@@ -108,5 +108,6 @@ a group name.
 ## Files
 
 `index.html` markup and icon sprite · `tokens.css` generated tokens · `app.css` components and layout · `theme.js` theme
-switch (runs in `<head>`) · `app.js` API client, status, remote, notify, card, live, screenshot, settings, jobs, API
-reference · `apps.js` apps, login setting, pairing help · `favicon.svg` · `check-ui.mjs` static regression gate.
+switch (runs in `<head>`) · `app.js` API client, status, remote, notify, card, live, screenshot, zoom lightbox, pairing,
+settings, jobs, API reference · `apps.js` apps, login setting, auth wiring · `favicon.svg` · `check-ui.mjs` static
+regression gate.

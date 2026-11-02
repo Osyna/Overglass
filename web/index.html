@@ -125,6 +125,12 @@
   </form>
 </dialog>
 
+<dialog id="zoom-view" class="zoom" aria-label="Enlarged picture">
+  <button class="btn quiet icon-only zoom-close" type="button" id="zoom-close" aria-label="Close"><svg><use href="#i-x"/></svg></button>
+  <div class="zoom-stage" id="zoom-stage"></div>
+  <p class="hint zoom-hint">Scroll or pinch to zoom · drag to look around</p>
+</dialog>
+
 <div class="shell">
 <aside class="banner" id="auth-banner" role="status" hidden>
   <svg><use href="#i-unlock"/></svg>
@@ -423,7 +429,7 @@
           </div>
           <p class="result-msg" id="live-msg" role="status" hidden></p>
           <div class="live-view" id="live-view" hidden>
-            <canvas id="live-canvas" width="160" height="90" role="img" aria-label="Live picture from the TV"></canvas>
+            <canvas id="live-canvas" class="zoomable" width="160" height="90" role="img" tabindex="0" aria-label="Live picture from the TV. Press Enter for a bigger view."></canvas>
             <ul class="swatches" aria-label="Average colour of each screen edge">
               <li><span class="chip" id="chip-top"></span><span>Top</span><code id="hex-top"></code></li>
               <li><span class="chip" id="chip-bottom"></span><span>Bottom</span><code id="hex-bottom"></code></li>
@@ -446,7 +452,7 @@
             <a class="btn" id="shot-download" hidden><svg><use href="#i-download"/></svg><span>Download</span></a>
           </div>
           <p class="result-msg" id="shot-msg" role="status" hidden></p>
-          <figure class="shot" id="shot-view" hidden></figure>
+          <figure class="shot zoomable" id="shot-view" tabindex="0" hidden></figure>
         </section>
       </div>
     </div>

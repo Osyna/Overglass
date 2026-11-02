@@ -370,6 +370,22 @@ pre {
 .chip { width: 22px; height: 22px; flex: none; border-radius: var(--radius-s); background: var(--sunken); box-shadow: inset 0 0 0 1px var(--line-strong); }
 .shot { margin: var(--space-4) 0 0; display: grid; gap: var(--space-2); max-width: 60rem; }
 .shot img { display: block; width: 100%; height: auto; border-radius: var(--radius-m); background: var(--sunken); }
+.zoomable { cursor: zoom-in; }
+
+/* ---- zoom lightbox ---- */
+dialog.zoom {
+  color: var(--fg); background: var(--surface); border: 0; border-radius: var(--radius-l); box-shadow: var(--shadow);
+  width: calc(100vw - 2 * var(--space-4)); height: calc(100dvh - 2 * var(--space-4)); max-width: none; max-height: none;
+  padding: var(--space-3); gap: var(--space-2);
+}
+dialog.zoom[open] { display: grid; grid-template-rows: 1fr auto; }
+dialog.zoom::backdrop { background: var(--scrim); }
+.zoom-close { position: absolute; top: calc(var(--space-3) + var(--space-2)); right: calc(var(--space-3) + var(--space-2)); z-index: 1; }
+.zoom-stage { overflow: hidden; display: grid; place-items: center; border-radius: var(--radius-m); background: var(--sunken); cursor: grab; touch-action: none; }
+.zoom-stage[data-panning="true"] { cursor: grabbing; }
+.zoom-stage canvas, .zoom-stage img { width: 100%; height: 100%; object-fit: contain; touch-action: none; }
+.zoom-stage canvas { image-rendering: pixelated; }
+.zoom-hint { text-align: center; color: var(--fg-3); }
 
 /* ---- settings view ---- */
 .choices { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--space-2); }
