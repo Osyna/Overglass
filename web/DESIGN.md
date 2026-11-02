@@ -81,10 +81,16 @@ Phone: sticky top bar (brand, TV status chip, theme, settings) and a fixed botto
 | Home | first-run pairing help, TV status and power, shortcuts, TV details |
 | Remote | power, input, direction pad, volume |
 | Apps | add an app (file or link, with install progress), installed apps with uninstall |
-| Show | message and read-aloud, on-screen card, live view, screenshot (both open a full-screen zoom/pan lightbox) |
+| Show | message and read-aloud, on-screen card with a collapsed Advanced builder (all ten widget types, nested stacks/rows, live local preview, Send to TV), live view and screenshot (both open a full-screen zoom/pan lightbox) |
 | Tune | picture & sound settings, process a file |
 | Settings (gear) | appearance, who can use this page (token or login off), this device's token, link to developer tools |
 | Developer (`#api`) | request log, API reference |
+
+The Advanced card builder owns the draft tree. Its raw-JSON disclosure shows that exact root node; Apply JSON
+validates and replaces the draft, while builder edits refresh the JSON. Unapplied JSON blocks sending and can be
+discarded without changing the draft. The preview uses the TV renderer's widget proportions with Lamplight tokens,
+not screenshot capture (the floating overlay is invisible to both TV capture paths). External images are labelled
+placeholders to preserve the same-origin CSP; Send to TV uses the existing overlay route for final by-eye confirmation.
 
 Capability gating: `GET /api` is the single source of truth. A panel carrying `data-needs-group` or `data-needs-route`
 that the server does not list is greyed, labelled "Not available from this server" and made inert. A remote button whose
@@ -111,4 +117,5 @@ a group name.
 switch (runs in `<head>`) · `app.js` API client, status, remote, notify, card, live, screenshot, zoom lightbox, pairing,
 settings, jobs, API reference · `apps.js` apps, login setting, auth wiring, service-worker registration and the install banner ·
 `favicon.svg` · `manifest.json`, `sw.js`, `icons/` installable app (the worker caches only the static shell, never `/api/`;
-bump `CACHE` in `sw.js` to drop old copies) · `check-ui.mjs` static regression gate.
+bump `CACHE` in `sw.js` to drop old copies) · `check-ui.mjs` static regression gate · `check-overlay.mjs` offline
+widget-schema regression checks (`node web/check-overlay.mjs`, no browser or TV).

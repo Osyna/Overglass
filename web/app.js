@@ -815,10 +815,212 @@ function cardFromForm() {
   return card;
 }
 
+const OVERLAY_TONES = ['info', 'success', 'warning', 'alert'];
+const OVERLAY_FIELDS = {
+  stack: { gap: ['Gap (TV pixels)', 0, 48, 1], align: ['Align', ['start', 'center', 'end']] },
+  row: { gap: ['Gap (TV pixels)', 0, 48, 1], align: ['Align', ['start', 'center', 'end']] },
+  text: { text: ['Text', 400], size: ['Text size', ['xs', 's', 'm', 'l', 'xl']],
+    weight: ['Weight', ['normal', 'strong']], color: ['Colour', ['fg', 'fg-2', ...OVERLAY_TONES]] },
+  image: { src: ['Image URL', 500] },
+  badge: { text: ['Badge text', 24], tone: ['Tone', OVERLAY_TONES] },
+  dot: { tone: ['Tone', OVERLAY_TONES] },
+  progress: { value: ['Value (0–1)', 0, 1, 0.01], label: ['Label', 40], tone: ['Tone', OVERLAY_TONES] },
+  countdown: { target: ['Target (ISO 8601, include time zone)', 80], label: ['Label', 40] },
+  list: { items: ['Items (one per line, up to 10)', 120], style: ['List style', ['bullet', 'number', 'plain']] },
+  divider: {},
+};
+let overlayRoot = { type: 'stack', children: [{ type: 'text', text: 'Your card', size: 'l', weight: 'strong' }] };
+let overlayError = '';
+let overlayJsonDirty = false;
+
+function newOverlayNode(type) {
+  if (type === 'stack' || type === 'row') return { type, children: [{ type: 'text', text: 'Text' }] };
+  return { type, ...({
+    text: { text: 'Text' }, image: { src: 'https://example.com/image.png' }, badge: { text: 'Ready' },
+    progress: { value: 0.5 }, countdown: { target: new Date(Date.now() + 300000).toISOString() },
+    list: { items: ['First item'] },
+  }[type] || {}) };
+}
+
+function checkOverlayTree(root) {
+  let count = 0;
+  function check(node, depth) {
+    if (++count > 40 || depth > 4) throw new Error('Use at most 40 widgets and 4 levels.');
+    if (!node || typeof node !== 'object' || Array.isArray(node) || !Object.hasOwn(OVERLAY_FIELDS, node.type)) {
+      throw new Error('Each widget needs a known type.');
+    }
+    const fields = OVERLAY_FIELDS[node.type];
+    const required = { text: ['text'], image: ['src'], badge: ['text'], progress: ['value'],
+      countdown: ['target'], list: ['items'] }[node.type] || [];
+    for (const key of required) if (node[key] === undefined) throw new Error(`${node.type} needs ${key}.`);
+    for (const [key, value] of Object.entries(node)) {
+      if (key === 'type' || key === 'children' && (node.type === 'stack' || node.type === 'row')) continue;
+      const spec = fields[key];
+      if (!spec) throw new Error(`${node.type} has no field named ${key}.`);
+      if (key === 'items') {
+        if (!Array.isArray(value) || value.length < 1 || value.length > 10) throw new Error('A list needs 1–10 items.');
+        if (value.some((item) => typeof item !== 'string' || [...item].length > 120 || /[\x00-\x1f\x7f]/u.test(item))) {
+          throw new Error('Each list item needs at most 120 characters without control characters.');
+        }
+      } else if (Array.isArray(spec[1])) {
+        if (!spec[1].includes(value)) throw new Error(`Choose a valid ${key} for ${node.type}.`);
+      } else if (spec.length === 4) {
+        if (typeof value !== 'number' || !Number.isFinite(value) || value < spec[1] || value > spec[2] ||
+          key === 'gap' && !Number.isInteger(value)) throw new Error(`${key} must be ${spec[1]}–${spec[2]}${key === 'gap' ? ', a whole number' : ''}.`);
+      } else if (typeof value !== 'string' || [...value].length > spec[1] || /[\x00-\x1f\x7f]/u.test(value)) {
+        throw new Error(`${key} needs at most ${spec[1]} characters without control characters.`);
+      }
+    }
+    if (node.type === 'image' && !/^https?:\/\/[^\s"'<>]+$/u.test(node.src)) throw new Error('Use an http(s) image URL.');
+    if (node.type === 'countdown' && (!/^\d{4}-\d{2}-\d{2}T/u.test(node.target) || !Number.isFinite(Date.parse(node.target)))) {
+      throw new Error('Use an ISO datetime such as 2026-12-25T18:00:00Z.');
+    }
+    if (node.type === 'stack' || node.type === 'row') {
+      const limit = node.type === 'stack' ? 20 : 10;
+      if (!Array.isArray(node.children) || node.children.length < 1 || node.children.length > limit) {
+        throw new Error(`${node.type} needs 1–${limit} children. Add a widget.`);
+      }
+      node.children.forEach((child) => check(child, depth + 1));
+    }
+  }
+  check(root, 1);
+  if (new TextEncoder().encode(JSON.stringify({ root })).length > 32768) throw new Error('Use at most 32768 bytes of JSON.');
+  return root;
+}
+
+function overlayNodeCount(node) {
+  return 1 + (node.children || []).reduce((count, child) => count + overlayNodeCount(child), 0);
+}
+
+function overlayBuilder(node, depth = 1, remove = null) {
+  const box = h('fieldset', { class: 'overlay-widget' }, h('legend', { text: depth === 1 ? 'Root widget' : 'Widget' }));
+  const picker = h('select', { 'aria-label': depth === 1 ? 'Root widget type' : 'Widget type' },
+    Object.keys(OVERLAY_FIELDS).map((type) => h('option', { value: type, text: type, selected: node.type === type,
+      disabled: (type === 'stack' || type === 'row') && (depth >= 4 || !node.children && overlayNodeCount(overlayRoot) >= 40) })));
+  picker.addEventListener('change', () => {
+    const replacement = newOverlayNode(picker.value);
+    for (const key of Object.keys(node)) delete node[key];
+    Object.assign(node, replacement);
+    updateOverlayDraft(true);
+  });
+  box.append(h('div', { class: 'row' }, h('label', { class: 'field' }, 'Type', picker),
+    remove && h('button', { class: 'btn quiet', type: 'button', text: 'Remove widget', onclick: () => { remove(); updateOverlayDraft(true); } })));
+  const controls = h('div', { class: 'pair' });
+  for (const [key, spec] of Object.entries(OVERLAY_FIELDS[node.type])) {
+    const [label, setting, max, step] = spec;
+    let input;
+    if (Array.isArray(setting)) {
+      const fallback = { size: 'm', color: 'fg', align: 'start', weight: 'normal', style: 'bullet', tone: 'info' }[key];
+      input = h('select', {}, setting.map((value) => h('option', { value, text: value, selected: value === (node[key] ?? fallback) })));
+    } else if (key === 'items') {
+      input = h('textarea', { rows: 3 });
+      input.value = node.items.join('\n');
+    } else {
+      input = h('input', step !== undefined
+        ? { type: key === 'value' ? 'range' : 'number', min: setting, max, step, value: node[key] ?? 10 }
+        : { type: key === 'src' ? 'url' : 'text', maxlength: setting, value: node[key] ?? '' });
+    }
+    input.addEventListener('input', () => {
+      node[key] = key === 'items' ? input.value.split('\n') : step !== undefined ? Number(input.value) : input.value;
+      if (step !== undefined && input.value === '') delete node[key];
+      updateOverlayDraft(false);
+    });
+    controls.append(h('label', { class: 'field' }, label, input));
+  }
+  box.append(controls);
+  if (node.children) {
+    node.children.forEach((child, i) => box.append(overlayBuilder(child, depth + 1, () => node.children.splice(i, 1))));
+    box.append(h('button', { class: 'btn', type: 'button', text: 'Add widget',
+      disabled: depth >= 4 || overlayNodeCount(overlayRoot) >= 40 || node.children.length >= (node.type === 'stack' ? 20 : 10),
+      onclick: () => { node.children.push(newOverlayNode('text')); updateOverlayDraft(true); } }));
+  }
+  return box;
+}
+
+function previewOverlayNode(node) {
+  const el = h(node.type === 'text' ? 'p' : node.type === 'divider' ? 'hr' : 'div', { class: 'w-' + node.type });
+  for (const key of ['size', 'weight', 'color', 'tone', 'align', 'style']) if (node[key]) el.dataset[key] = node[key];
+  if (node.children) {
+    el.style.gap = ((node.gap ?? 10) * 0.7) + 'px';
+    el.append(...node.children.map(previewOverlayNode));
+  } else if (node.type === 'image') {
+    // The page's same-origin CSP deliberately forbids fetching arbitrary TV image URLs.
+    el.append(h('span', { text: 'Image · loads on TV' }), h('span', { class: 'hint', text: node.src }));
+  } else if (node.type === 'progress') {
+    el.append(h('progress', { class: 'w-progress-track', max: 1, value: node.value, 'aria-label': node.label || 'Progress' }));
+    if (node.label) el.append(h('span', { class: 'w-progress-label', text: node.label }));
+  } else if (node.type === 'countdown') {
+    el.append(h('span', { class: 'w-countdown-clock', dataset: { target: node.target } }));
+    if (node.label) el.append(h('span', { class: 'w-countdown-label', text: node.label }));
+  } else if (node.type === 'list') {
+    el.append(h(node.style === 'number' ? 'ol' : 'ul', {}, node.items.map((text) => h('li', { text }))));
+  } else if (node.type === 'dot') {
+    el.setAttribute('role', 'img');
+    el.setAttribute('aria-label', (node.tone || 'info') + ' indicator');
+  } else if (node.text !== undefined) el.textContent = node.text;
+  return el;
+}
+
+function tickOverlayPreview() {
+  if (document.hidden || !$('ov-advanced').open || S.view !== 'show') return;
+  for (const clock of $('ov-preview').querySelectorAll('[data-target]')) {
+    const seconds = Math.max(0, Math.floor((Date.parse(clock.dataset.target) - Date.now()) / 1000));
+    const days = Math.floor(seconds / 86400);
+    const hours = Math.floor(seconds % 86400 / 3600);
+    const minutes = Math.floor(seconds % 3600 / 60);
+    const pad = (value) => String(value).padStart(2, '0');
+    clock.textContent = days ? `${days}d ${pad(hours)}:${pad(minutes)}:${pad(seconds % 60)}`
+      : hours ? `${hours}:${pad(minutes)}:${pad(seconds % 60)}` : `${minutes}:${pad(seconds % 60)}`;
+  }
+}
+
+function updateOverlayDraft(rebuild) {
+  overlayJsonDirty = false;
+  $('ov-json').value = JSON.stringify(overlayRoot, null, 2);
+  $('ov-json').removeAttribute('aria-invalid');
+  try { checkOverlayTree(overlayRoot); overlayError = ''; } catch (err) { overlayError = err.message; }
+  if (rebuild) $('ov-builder').replaceChildren(overlayBuilder(overlayRoot));
+  const msg = $('ov-builder-msg');
+  if (overlayError) result(msg, overlayError, 'error'); else msg.hidden = true;
+  $('ov-preview').replaceChildren(overlayError ? h('p', { class: 'hint', text: 'Complete the widget fields to see your preview.' }) : previewOverlayNode(overlayRoot));
+  $('ov-preview').dataset.size = $('ov-size').value;
+  tickOverlayPreview();
+  syncNotify();
+}
+
+function wireOverlayBuilder() {
+  updateOverlayDraft(true);
+  $('ov-json').addEventListener('input', () => {
+    overlayJsonDirty = true;
+    result($('ov-builder-msg'), 'Apply or discard JSON edits before sending to the TV.');
+    syncNotify();
+  });
+  $('ov-json-apply').addEventListener('click', () => {
+    try {
+      const draft = checkOverlayTree(JSON.parse($('ov-json').value));
+      overlayRoot = draft;
+      updateOverlayDraft(true);
+    } catch (err) {
+      $('ov-json').setAttribute('aria-invalid', 'true');
+      result($('ov-builder-msg'), 'JSON not applied: ' + err.message, 'error');
+    }
+  });
+  $('ov-json-reset').addEventListener('click', () => updateOverlayDraft(false));
+  $('ov-size').addEventListener('change', () => { $('ov-preview').dataset.size = $('ov-size').value; });
+  $('ov-advanced').addEventListener('toggle', tickOverlayPreview);
+  setInterval(tickOverlayPreview, 1000);
+  $('ov-send').addEventListener('click', () => {
+    if ($('ov-send').disabled) return;
+    const card = cardFromForm();
+    sendOverlay({ root: overlayRoot, position: card.position, seconds: card.seconds, size: $('ov-size').value }, $('ov-send'));
+  });
+}
+
 function syncOverlay(off) {
   const card = cardFromForm();
   const blocked = off || S.reserved || S.overlayBusy;
   $('ov-show').disabled = blocked || !(card.title || card.body || card.lines);
+  $('ov-send').disabled = blocked || !!overlayError || overlayJsonDirty;
   $('ov-hide').disabled = blocked;
   $('ov-details').disabled = blocked;
   $('overlay-hint').textContent = off ? 'In standby: turn the TV on first' : S.reserved ? 'Reserved by processing' : '';
@@ -828,6 +1030,9 @@ async function sendOverlay(card, btn) {
   const msg = $('overlay-msg');
   if (card.seconds !== undefined && !(Number.isInteger(card.seconds) && card.seconds >= 0 && card.seconds <= 300)) {
     return result(msg, 'Seconds must be a whole number from 0 to 300', 'error');
+  }
+  if (card.root && new TextEncoder().encode(JSON.stringify(card)).length > 32768) {
+    return result(msg, 'Use at most 32768 bytes of JSON, including position, width and seconds.', 'error');
   }
   S.overlayBusy = true;
   syncNotify();
@@ -1290,6 +1495,7 @@ function wire() {
   $('live-start').addEventListener('click', startLive);
   $('live-stop').addEventListener('click', stopLive);
   window.addEventListener('pagehide', stopLive);
+  wireOverlayBuilder();
   $('overlay-form').addEventListener('submit', (e) => { e.preventDefault(); if (!$('ov-show').disabled) sendOverlay(cardFromForm(), $('ov-show')); });
   $('ov-hide').addEventListener('click', (e) => sendOverlay({ hide: true }, e.currentTarget));
   $('ov-details').addEventListener('click', (e) => showDetailsCard(e.currentTarget));

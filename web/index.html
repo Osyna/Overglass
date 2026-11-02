@@ -421,6 +421,39 @@
             </div>
             <p class="result-msg" id="overlay-msg" role="status" hidden></p>
           </form>
+          <details class="overlay-designer" id="ov-advanced">
+            <summary>Advanced · Build your own card</summary>
+            <div class="overlay-workspace">
+              <p class="lede">Preview below; send it to see it on the TV. This is a local preview, not a TV screenshot. Position and seconds above apply to both cards.</p>
+              <div class="field">
+                <label for="ov-size">Card width</label>
+                <select id="ov-size">
+                  <option value="xs">Extra small</option><option value="s">Small</option>
+                  <option value="m" selected>Medium</option><option value="l">Large</option>
+                  <option value="xl">Extra large</option><option value="full">Full width</option>
+                </select>
+              </div>
+              <p class="hint">Add widgets in order. Stack and row widgets can hold children. Up to 4 levels, 40 widgets and 32 KB of JSON.</p>
+              <div id="ov-builder"></div>
+              <p class="result-msg" id="ov-builder-msg" role="status" hidden></p>
+              <figure class="overlay-preview">
+                <figcaption>Live preview <span class="hint">Approximate proportions · page colours</span></figcaption>
+                <div class="overlay-preview-card" id="ov-preview" aria-label="Card preview"></div>
+                <p class="hint">Images from other sites appear as placeholders here; the TV loads the actual image.</p>
+              </figure>
+              <details class="overlay-json">
+                <summary>Edit raw JSON</summary>
+                <label for="ov-json">Widget tree <span class="sub">root node only, not the request envelope</span></label>
+                <p class="hint" id="ov-json-help">The builder is the saved draft. Apply JSON to replace it; builder edits replace this text. Unapplied JSON is not sent.</p>
+                <textarea id="ov-json" rows="12" spellcheck="false" aria-describedby="ov-json-help"></textarea>
+                <div class="row">
+                  <button class="btn" type="button" id="ov-json-apply">Apply JSON</button>
+                  <button class="btn quiet" type="button" id="ov-json-reset">Discard JSON edits</button>
+                </div>
+              </details>
+              <button class="btn primary" type="button" id="ov-send" disabled>Send to TV</button>
+            </div>
+          </details>
         </section>
       </div>
 
