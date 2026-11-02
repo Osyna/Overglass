@@ -298,3 +298,100 @@ inventing a private side channel.
     reference proved can be executed and given an LS2 role), role/manifest id `dev.webosfoundry.vtcap` under
     `/var/luna-service2-dev/{roles.d,manifests.d}`; `stream-start` execs that path.
   - `vtcap.c` is byte-identical to the reference, including the `C5F1` stream magic.
+
+## 10. App push, auth toggle, and the on-TV server (this round's addition)
+
+Three additions, built in parallel against this frozen contract. Evidence for the Homebrew install/uninstall
+calls below is a real, TV-tested exchange from this project's own session history (installing and removing
+`com.gabrielecirulli.app2048.webos` via `org.webosbrew.hbchannel.service`), not a guess.
+
+### 10.1 Config
+`Config` gets one new field: `auth_mode: str = "token"`, allowed values `"token"` (current behaviour: optional
+on loopback, required elsewhere) or `"disabled"` (never require a token, on any bind — an explicit, documented
+risk the user opts into for a trusted LAN). `Config.load()`'s validation must reject any other value.
+
+### 10.2 Dispatcher verb: `app-install`
+New verb, same grammar style as the others: `app-install <b64>` where the decoded payload is JSON
+`{"url": "http(s) URL, <=500 chars", "sha256": "64 lowercase hex chars"}`. The regex rejects anything else
+(scheme, length, charset) before the payload ever reaches `luna-send`. `tv-assets/apps.js` (new) implements:
+- `node apps.js install <b64>` — decode, validate again host-side, then subscribe to
+  `luna://org.webosbrew.hbchannel.service.install` with `{"ipkUrl": url, "ipkHash": "sha256:" + sha256}`. The
+  service streams progress lines (`{"returnValue":true,"statusText":"Downloading...", "progress":N}`, then
+  `"Verifying..."`, `"Installing..."`); print only the line whose `statusText` is `"Finished"` (success) or
+  whose `returnValue` is `false` (failure), then exit. Timeout 90 s → exit 1, `"install timed out"` on stderr.
+- `node apps.js uninstall <b64-of-app-id>` — `luna://org.webosbrew.hbchannel.service.uninstall` with
+  `{"id": appId}`; print the final `{"returnValue":...}` line.
+- `node apps.js list` — `luna://com.webos.applicationManager/listApps`; print the `apps` array filtered to
+  `removable: true` (system apps are not removable; Homebrew/sideloaded apps are) as
+  `[{"id","title","icon","version","removable"}]`. There is no confirmed dedicated "list Homebrew apps" method;
+  this is the documented heuristic, not an assumed API.
+New dispatcher-adjacent verb `app-list` and `app-uninstall <b64-of-id>` round out the set (same file, same
+streaming-until-terminal-line pattern for uninstall since hbchannel's `uninstall` was observed to behave the
+same way as `install`).
+
+### 10.3 Python/server additions
+`webos_foundry/apps.py` (new): `list_apps(transport)`, `install_app(transport, url, sha256)`,
+`uninstall_app(transport, app_id)` — thin wrappers calling the three dispatcher builders above and parsing the
+one JSON line each verb prints, same style as `tv.py`.
+`server.py` routes (added to `ROUTES`, group `"Apps"`):
+- `GET /api/apps` → `apps.list_apps`.
+- `POST /api/apps` → two input shapes on the same route: `Content-Type: application/json` body
+  `{"url","sha256"?}` installs directly from that URL (TV fetches it itself); any other content type is treated
+  as the raw IPK body (optional `?name=` query), which the server saves under a short-lived `uploads/` dir,
+  serves back at `/uploads/<id>.ipk` (added to the static-file surface, same auth rules as everything else),
+  computes its own sha256, and calls `install_app` with a URL built from the request's own `Host` header (the
+  TV reaches the server the same way the browser just did) and that hash. Either shape returns the job result
+  inline (install is capped at 90 s per 10.2, so this does not need the async job-queue machinery `/api/jobs`
+  uses).
+- `DELETE /api/apps/{id}` → `apps.uninstall_app`.
+- `GET /api/config/auth` → `{"mode": "token" | "disabled"}`.
+- `PATCH /api/config/auth` → body `{"mode": "token" | "disabled", "confirm": true}`; `confirm` must be
+  literally `true` or the route 400s. No extra privilege check beyond the route's normal auth (an attacker who
+  can already pass that middleware already controls the TV; this guards against UI mistakes, not attackers).
+Static serving changes from the fixed three-file map to **any file under `web/`**, resolved safely (reject
+`..`, symlinks that escape, and anything not a regular file) with a small extension → content-type table
+(`.html,.css,.js,.json,.svg,.png,.woff2,...`). This removes the need for the UI and server work to coordinate
+on an exact file list.
+
+### 10.4 On-TV server (`tv-server/`, new top-level directory)
+A second way to reach the same API and UI: a Node HTTP server that runs **on the TV itself**, so a phone or
+laptop on the LAN can reach it with no PC, no SSH key, and no `wof` install needed on the controlling device.
+- `tv-server/server.js`: hand-written (no npm dependencies — the TV has no package registry access by
+  default), `http.createServer()` bound to `0.0.0.0:<port>` (default `8766`, chosen to not collide with the
+  PC-side server's default `8765` when both run on the same LAN). Implements the **same route shapes** as
+  `server.py` for: `/api`, `/api/health` (always reports `{"paired": true, "tv_host": "127.0.0.1"}` — it *is*
+  the TV), `/api/status`, `/api/details`, `/api/notify/*`, `/api/overlay`, `/api/screenshot`,
+  `/api/screen/stream`, `/api/remote/{action}`, `/api/settings`, `/api/apps`, `/api/config/auth`. It reaches
+  the dispatcher **locally**, not over SSH: `child_process.execFile('sh', [DISPATCH_PATH], {input: command})`
+  with the exact same request string `dispatch.sh` already validates — this keeps the one proven, regex-walled
+  grammar as the only path to a Luna call, even though the HTTP layer and the dispatcher now run on the same
+  machine (defence in depth, not a hole opened because SSH is out of the picture).
+  **Known scope cut:** `/api/jobs*` (AI picture/sound file processing) is **not implemented in TV-server
+  mode** for this round — `process.py`'s host-side pre/post-processing was built and tested against a
+  workstation's `ffmpeg`, and porting that exact pipeline into dependency-free Node without a way to test it
+  tonight is out of scope; the PC-side server keeps 100% of this feature. `GET /api` on the TV server lists
+  this gap explicitly in its own catalogue so the web UI can grey the panel out rather than show a dead
+  button.
+- Serves `web/` the same way `server.py` does (same generic static handler, hand-written in Node); the UI is
+  one codebase, not two, and detects which backend it's talking to only via that one `/api` catalogue (the
+  "Apps" group will simply be present or absent — same for "Processing").
+- Auth: same `auth_mode`/token model, in a local JSON config file (`tv-server/config.json`, mode 0600) with
+  its own token (independent of the PC-side server's — pairing the PC never needed the TV to trust a browser).
+  First boot with no config: generate a random token, print it once to the server's own log file
+  (`/tmp/webos-foundry-tv-server.log` — the TV has no persistent syslog an installer could safely read later)
+  and serve a **plain, unauthenticated, read-only** `/` page that shows *only* "no token set yet — see the log
+  at `/tmp/webos-foundry-tv-server.log` or run `wof config show` from a paired PC" until a token exists; this
+  avoids ever serving the real control UI without auth on first boot, even before anyone has configured it.
+- Lifecycle: a `/var/lib/webosbrew/init.d/` hook (the same mechanism already proven in this project for the
+  Luma-restoration watcher: a root-context script invoked at boot, not a sandboxed SAM app) starts
+  `node tv-server/server.js` detached, writes a PID file, and is re-entrant (a second boot or a manual restart
+  kills the old PID first). `install.py` gets `install(transport, ..., tv_server=False)`: when `True`, it also
+  pushes the `tv-server/` tree (server.js plus the `web/` files it will serve — copied alongside it so the
+  on-TV app has its own self-contained static root, no cross-reference back to the PC's checkout) and the
+  init.d hook, then starts it.
+- **Honestly unverified:** whether a root-context `node http.createServer().listen(port,'0.0.0.0')` can bind
+  a real TCP socket reachable from the LAN on this TV's kernel/netns has not been tested — nothing in this
+  project's findings confirms or denies it (the proven precedents are a Unix-domain LS2 service and an
+  SSH-piped binary, not a TV-opened TCP listener). `docs/TV-SERVER.md` states this plainly as the first thing
+  to check once the TV is back on, with the one-line way to check it (`curl` from another LAN device).
+
