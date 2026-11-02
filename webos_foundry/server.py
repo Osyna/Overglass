@@ -31,7 +31,7 @@ from pathlib import Path
 from socket import AF_INET6
 from urllib.parse import parse_qs, unquote, urlsplit
 
-from webos_foundry import addons, apps, capture, notify, pairing, process, scenes, schedule, tv, webhooks
+from webos_foundry import addons, apps, capture, designs, notify, pairing, process, scenes, schedule, tv, webhooks
 from webos_foundry.config import AUTH_MODES, Config
 from webos_foundry.errors import ConfigError, NotPairedError, TransportError, TvBusyError, WebosFoundryError
 from webos_foundry.transport import SSHTransport
@@ -478,6 +478,30 @@ def post_addon_preview(request, params):
     return {"message": addons.preview(params["id"], body.get("params", {}), request.transport)}
 
 
+def get_designs(_request, _):
+    return {"designs": designs.load()}
+
+
+def put_design(request, params):
+    card = designs.save(params["name"], request.json_body())
+    return {"message": "Design saved", "design": card}
+
+
+def delete_design(_request, params):
+    with designs.LOCK:
+        if params["name"] not in designs.load():
+            raise ApiError(404, "No such design")
+        designs.delete(params["name"])
+    return {"message": "Design deleted"}
+
+
+def post_design_show(request, params):
+    if params["name"] not in designs.load():
+        raise ApiError(404, "No such design")
+    reserved()
+    return {"message": designs.show(request.transport, params["name"])}
+
+
 def stream_args(query):
     try:
         width = int(query.get("width", "160"))
@@ -864,6 +888,26 @@ ROUTES = (
           returns='{"message": "Overlay card shown"}',
           tv=["one dispatch call, exactly like POST /api/overlay, with the addon's generated card"],
           notes=TV_LOCK_NOTE, example={"path": "/api/addons/football/preview", "body": {"params": {"league": "bl2"}}}),
+    route("GET", "/api/designs", "Designs", "Every saved overlay design: a named card with its theme, layout and widgets.",
+          get_designs, returns='{"designs": {name: card}}', tv=[],
+          notes="Local storage only; never contacts the TV.", example={"path": "/api/designs"}),
+    route("PUT", "/api/designs/{name}", "Designs",
+          "Save (or replace) a design: exactly the card body POST /api/overlay accepts, validated the same way.",
+          put_design, body='The POST /api/overlay card body: {"theme"?, "seconds"?, "position"?, "size"?, "root"} or '
+                           '{"theme"?, "seconds"?, "regions": [{"position", "size"?, "root"}]}',
+          returns='{"message": "Design saved", "design": card}', tv=[],
+          notes="A name is 1-60 characters with no leading/trailing space. Scenes can show a design by name "
+                '({"type": "overlay", "design": name}), resolved when the scene runs. Never contacts the TV.',
+          example={"path": "/api/designs/match-day", "body": {"theme": {"accent": "#c8f542"}, "root": {
+              "type": "text", "text": "Kick-off", "size": "l", "weight": "strong"}}}),
+    route("DELETE", "/api/designs/{name}", "Designs", "Remove a saved design.", delete_design,
+          returns='{"message": "Design deleted"}', tv=[],
+          notes="404 if no design has that name; scene steps that referenced it fail when run.",
+          example={"path": "/api/designs/match-day"}),
+    route("POST", "/api/designs/{name}/show", "Designs", "Show a saved design on the TV now.", post_design_show,
+          returns='{"message": "Overlay card shown"}',
+          tv=["one dispatch call, exactly like POST /api/overlay, with the saved card"],
+          notes="404 if no design has that name. " + TV_LOCK_NOTE, example={"path": "/api/designs/match-day/show"}),
     route("GET", "/api/screenshot", "Status",
           "Capture the picture the TV shows from its HDMI input (without the TV's own menus) as an image.", get_screenshot,
           query={"width": "64-3840, even (default 1920); the height follows the 16:9 picture",
@@ -1029,7 +1073,7 @@ class Handler(BaseHTTPRequestHandler):
                 raise ApiError(*denied)
             handler, params = self.resolve(url.path)
             if (url.path not in LOCAL and not url.path.startswith("/webhook/")
-                    and not re.fullmatch(r"/api/(?:schedule|webhooks|addons)(?:/[^/]+)?", url.path)):
+                    and not re.fullmatch(r"/api/(?:schedule|webhooks|addons|designs)(?:/[^/]+)?", url.path)):
                 try:
                     self.transport = self.server.get_transport()
                 except NotPairedError:
@@ -1064,7 +1108,7 @@ class Handler(BaseHTTPRequestHandler):
             match = item["regex"].match(path)
             if match:
                 if item["method"] == self.command:
-                    return item["handler"], match.groupdict()
+                    return item["handler"], {key: unquote(value) for key, value in match.groupdict().items()}
                 methods.append(item["method"])
         if methods:
             raise ApiError(405, "Use %s for %s" % (" or ".join(methods), path))

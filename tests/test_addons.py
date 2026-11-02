@@ -109,3 +109,22 @@ def test_card_for_leaves_the_connectors_own_choices_when_unset(monkeypatch):
                                                                                    "size": "l"})})
     card = addons.card_for("football", {"params": {}, "interval_seconds": 60, "enabled": True})
     assert card["size"] == "l" and "position" not in card
+
+
+def test_install_accepts_and_applies_theme(tmp_path, monkeypatch):
+    entry = addons.install("football", {"params": {}, "theme": {"accent": "#C8F542", "radius": 0}}, tmp_path)
+    assert entry["theme"] == {"accent": "#c8f542", "radius": 0}
+    with pytest.raises(ValidationError):
+        addons.install("football", {"params": {}, "theme": {"accent": "lime"}}, tmp_path)
+    monkeypatch.setattr(connectors, "CONNECTORS",
+                         {"football": lambda params: notify.check_overlay_request({"title": "t", "kind": "info"})})
+    assert addons.card_for("football", entry)["theme"] == {"accent": "#c8f542", "radius": 0}
+
+
+def test_card_for_leaves_region_cards_placement_alone(monkeypatch):
+    regions = {"regions": [{"position": "top", "root": {"type": "text", "text": "x"}}]}
+    monkeypatch.setattr(connectors, "CONNECTORS", {"football": lambda params: notify.check_overlay_request(regions)})
+    card = addons.card_for("football", {"params": {}, "interval_seconds": 60, "enabled": True,
+                                         "position": "bottom-left", "size": "xl", "theme": {"accent": "#ffffff"}})
+    assert "position" not in card and "size" not in card and card["theme"] == {"accent": "#ffffff"}
+    notify.check_overlay_request(card)  # still a valid request

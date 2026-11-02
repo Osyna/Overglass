@@ -8,7 +8,7 @@ import time
 from dataclasses import asdict, fields
 from pathlib import Path
 
-from . import addons, capture, connectors, dispatcher, install as install_module, notify, pairing, process, scenes, schedule, tv, webhooks
+from . import addons, capture, connectors, designs, dispatcher, install as install_module, notify, pairing, process, scenes, schedule, tv, webhooks
 from .config import ENV, Config, config_dir
 from .errors import ConfigError, ValidationError, WebosFoundryError
 from .transport import SSHTransport
@@ -190,6 +190,33 @@ def cmd_scene_set(args):
 def cmd_scene_delete(args):
     scenes.delete(args.name, args.config_dir)
     print("Scene %s deleted" % args.name)
+
+
+def cmd_design_list(args):
+    saved = designs.load(args.config_dir)
+    if args.json:
+        print(json.dumps(saved, indent=2))
+    elif not saved:
+        print("No designs saved yet; see `wof design set --help`")
+    else:
+        for name, card in sorted(saved.items()):
+            layout = ", ".join(r["position"] for r in card["regions"]) if "regions" in card else card.get("position", "top-right")
+            print("%s  (%s)" % (name, layout))
+
+
+def cmd_design_set(args):
+    text = sys.stdin.read() if args.file == "-" else Path(args.file).read_text()
+    designs.save(args.name, json.loads(text), args.config_dir)
+    print("Design %s saved" % args.name)
+
+
+def cmd_design_delete(args):
+    designs.delete(args.name, args.config_dir)
+    print("Design %s deleted" % args.name)
+
+
+def cmd_design_show(args):
+    print(designs.show(_transport(args), args.name, args.config_dir))
 
 
 def cmd_scene_run(args):
@@ -472,6 +499,17 @@ def build_parser():
     command = add("delete", cmd_scene_delete, "remove a saved scene", group)
     command.add_argument("name")
     command = add("run", cmd_scene_run, "run every step of a saved scene, in order", group)
+    command.add_argument("name")
+
+    group = add("design", None, "saved overlay designs: a named card with its theme, layout and widgets").add_subparsers(
+        dest="sub", required=True, metavar="SUB")
+    with_json(add("list", cmd_design_list, "list saved designs", group))
+    command = add("set", cmd_design_set, "save a design from a JSON file (the POST /api/overlay card body)", group)
+    command.add_argument("name")
+    command.add_argument("file", metavar="FILE.json", help="- for stdin")
+    command = add("delete", cmd_design_delete, "remove a saved design", group)
+    command.add_argument("name")
+    command = add("show", cmd_design_show, "show a saved design on the TV now", group)
     command.add_argument("name")
 
     group = add("schedule", None, "local-time scene schedules (requires wof serve)").add_subparsers(

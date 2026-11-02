@@ -1043,3 +1043,42 @@ def test_addons_preview_requires_transport_even_when_unpaired(serve, monkeypatch
     app = serve(bind="0.0.0.0", token=TOKEN, transport=None)
     status, body = app.json("POST", "/api/addons/football/preview", {}, bearer())
     assert status == 503
+
+
+DESIGN = {"theme": {"accent": "#c8f542"}, "regions": [
+    {"position": "top", "root": {"type": "text", "text": "Top bar"}},
+    {"position": "right", "size": "s", "root": {"type": "section", "title": "Side", "icon": "bolt"}}]}
+
+
+def test_designs_save_list_show_delete(serve):
+    transport = FakeTransport({"notify-overlay": '{"returnValue": true, "overlay": "shown"}'})
+    app = serve(transport=transport)
+    assert app.json("GET", "/api/designs") == (200, {"designs": {}})
+    status, saved = app.json("PUT", "/api/designs/match-day", DESIGN)
+    assert status == 200 and saved["message"] == "Design saved" and saved["design"]["regions"][1]["size"] == "s"
+    assert app.json("GET", "/api/designs")[1]["designs"]["match-day"] == saved["design"]
+    assert app.json("POST", "/api/designs/match-day/show") == (200, {"message": "Overlay card shown"})
+    assert json.loads(transport.calls[0].data) == saved["design"]
+    assert app.json("POST", "/api/designs/missing/show")[0] == 404
+    assert app.json("DELETE", "/api/designs/match-day") == (200, {"message": "Design deleted"})
+    assert app.json("DELETE", "/api/designs/match-day")[0] == 404
+
+
+@pytest.mark.parametrize("body", [{"hide": True}, {"root": {"type": "nope"}}, {"regions": []},
+                                  {"theme": {"accent": "lime"}, "root": {"type": "text", "text": "x"}}])
+def test_designs_validation_errors_are_400(serve, body):
+    app = serve(transport=DeadTransport())
+    assert app.json("PUT", "/api/designs/x", body)[0] == 400
+    assert app.json("PUT", "/api/designs/%20spaced", DESIGN)[0] == 400
+
+
+def test_designs_storage_routes_work_unpaired_but_keep_auth(serve, monkeypatch):
+    def no_transport(_server):
+        pytest.fail("design storage must not build a TV transport")
+
+    monkeypatch.setattr(server.FoundryServer, "get_transport", no_transport)
+    app = serve(bind="0.0.0.0", token=TOKEN, transport=None)
+    assert app.json("GET", "/api/designs")[0] == 401
+    assert app.json("PUT", "/api/designs/x", DESIGN, bearer())[0] == 200
+    assert app.json("GET", "/api/designs", headers=bearer())[0] == 200
+    assert app.json("DELETE", "/api/designs/x", headers=bearer())[0] == 200

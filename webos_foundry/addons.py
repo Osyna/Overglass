@@ -47,6 +47,8 @@ def _check_entry(addon_id, body):
         out["position"] = notify._check_enum(body["position"], notify.POSITIONS, "position")
     if "size" in body:
         out["size"] = notify._check_enum(body["size"], notify.SIZES, "size")
+    if "theme" in body:
+        out["theme"] = notify._check_theme(body["theme"])
     return out
 
 
@@ -118,11 +120,11 @@ def preview(addon_id, params, transport) -> str:
 
 
 def card_for(addon_id, entry) -> dict:
-    """Poll a connector and apply the addon's saved position/size, if any. Raises whatever poll()
+    """Poll a connector and apply the addon's saved position/size/theme, if any. Raises whatever poll()
     raises (ValidationError/RuntimeError); callers decide how to log or surface that."""
     card = connectors.CONNECTORS[addon_id](entry["params"])
-    if "position" in entry:
-        card["position"] = entry["position"]
-    if "size" in entry:
-        card["size"] = entry["size"]
+    keys = ("theme",) if "regions" in card else ("position", "size", "theme")  # regions place themselves
+    for key in keys:
+        if key in entry:
+            card[key] = entry[key]
     return card

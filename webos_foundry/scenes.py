@@ -10,7 +10,7 @@ import tempfile
 import time
 from pathlib import Path
 
-from . import notify, tv
+from . import designs, notify, tv
 from .config import config_dir
 from .dispatcher import REMOTE_ACTIONS
 from .errors import ValidationError
@@ -52,6 +52,10 @@ def _check_step(step):
         return {"type": "setting", "category": category, "key": key, "value": step["value"],
                 "context": step.get("context") or {}}
     if kind == "overlay":
+        if "design" in step:
+            if set(step) - {"type", "design"}:
+                raise ValidationError("An overlay step takes either card or design, not both")
+            return {"type": "overlay", "design": designs.check_name(step["design"])}
         if set(step) - {"type", "card"}:
             raise ValidationError("An overlay step only takes card")
         return {"type": "overlay", "card": notify.check_overlay_request(step.get("card"))}
@@ -139,6 +143,8 @@ def run_step(transport, step) -> str:
     if kind == "setting":
         return tv.set_setting(transport, step["category"], step["key"], step["value"], step["context"])
     if kind == "overlay":
+        if "design" in step:  # resolved when the scene runs, so editing the design changes what the scene shows
+            return designs.show(transport, step["design"])
         return notify.overlay_show(transport, step["card"])
     time.sleep(step["seconds"])
     return "Waited %gs" % step["seconds"]

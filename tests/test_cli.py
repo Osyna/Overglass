@@ -434,12 +434,36 @@ def test_addon_preview_prints_json_or_shows(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(urllib.request, "urlopen", lambda url, timeout: io.BytesIO(json.dumps(matches).encode()))
     assert wof("--config-dir", str(tmp_path / "addons-home"), "addon", "preview", "football") == 0
     body = json.loads(capsys.readouterr().out)
-    assert body["root"]["children"][0]["children"][0]["text"] == "Bundesliga"
+    assert body["root"]["children"][0]["text"] == "Bundesliga"
 
     transport = FakeTransport({"notify-overlay": '{"returnValue": true, "overlay": "shown"}'})
     monkeypatch.setattr(cli, "_transport", lambda args: transport)
     assert wof("addon", "preview", "football", "--show") == 0
     assert capsys.readouterr().out.strip() == "Overlay card shown"
+
+
+def test_design_set_list_show_delete(tmp_path, capsys, monkeypatch):
+    args = ("--config-dir", str(tmp_path / "designs-home"))
+    card = tmp_path / "card.json"
+    card.write_text(json.dumps({"theme": {"accent": "#c8f542"}, "regions": [
+        {"position": "top", "root": {"type": "text", "text": "Top"}},
+        {"position": "right", "root": {"type": "section", "title": "Side", "icon": "bolt"}}]}))
+    assert wof(*args, "design", "list") == 0
+    assert "No designs" in capsys.readouterr().out
+    assert wof(*args, "design", "set", "match-day", str(card)) == 0
+    assert "saved" in capsys.readouterr().out
+    assert wof(*args, "design", "list") == 0
+    assert capsys.readouterr().out.strip() == "match-day  (top, right)"
+    transport = FakeTransport({"notify-overlay": '{"returnValue": true, "overlay": "shown"}'})
+    monkeypatch.setattr(cli, "_transport", lambda a: transport)
+    assert wof(*args, "design", "show", "match-day") == 0
+    assert capsys.readouterr().out.strip() == "Overlay card shown"
+    assert json.loads(transport.calls[0].data)["theme"] == {"accent": "#c8f542"}
+    assert wof(*args, "design", "delete", "match-day") == 0
+    assert wof(*args, "design", "show", "match-day") == 1
+    assert "No such design" in capsys.readouterr().err
+    card.write_text(json.dumps({"root": {"type": "nope"}}))
+    assert wof(*args, "design", "set", "bad", str(card)) == 1
 
 
 def test_schedule_set_list_update_delete(tmp_path, capsys):
