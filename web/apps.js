@@ -373,3 +373,35 @@ function wireExtras() {
 
   syncAppForms();
 }
+
+/* ---------- installable app ---------- */
+
+const INSTALL_DISMISSED = 'webos-foundry-install-dismissed';
+let installPrompt = null;
+
+// Only the static shell is cached (sw.js); registration failure (no HTTPS, blocked) is not worth telling anyone.
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
+
+// Chrome/Edge/Android only. Where this never fires (Safari, installed already) the banner simply never shows.
+window.addEventListener('beforeinstallprompt', (event) => {
+  event.preventDefault();
+  try { if (localStorage.getItem(INSTALL_DISMISSED)) return; } catch { /* storage blocked: offer it anyway */ }
+  installPrompt = event;
+  $('install-banner').hidden = false;
+});
+
+function hideInstall() {
+  installPrompt = null;
+  $('install-banner').hidden = true;
+}
+
+$('install-go').addEventListener('click', async () => {
+  const offer = installPrompt;
+  hideInstall();
+  if (offer) { offer.prompt(); await offer.userChoice; }
+});
+$('install-dismiss').addEventListener('click', () => {
+  hideInstall();
+  try { localStorage.setItem(INSTALL_DISMISSED, '1'); } catch { /* storage blocked: it may come back next visit */ }
+});
+window.addEventListener('appinstalled', hideInstall);

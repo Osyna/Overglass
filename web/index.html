@@ -6,6 +6,14 @@
 <meta name="color-scheme" content="light dark">
 <title>webOS Foundry</title>
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="manifest" href="/manifest.json">
+<link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
+<meta name="theme-color" content="#f9f4ec" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#1a1511" media="(prefers-color-scheme: dark)">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="webOS Foundry">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
 <link rel="stylesheet" href="/tokens.css">
 <link rel="stylesheet" href="/app.css">
 <script src="/theme.js"></script>
@@ -137,6 +145,12 @@
   <p><strong>Login is off.</strong> Anyone on this network who opens this page can control the TV.</p>
   <button class="btn quiet" type="button" data-goto="settings">Change</button>
   <button class="btn quiet icon-only" type="button" id="auth-banner-dismiss" aria-label="Hide this notice"><svg><use href="#i-x"/></svg></button>
+</aside>
+<aside class="banner" id="install-banner" role="status" hidden>
+  <svg><use href="#i-download"/></svg>
+  <p><strong>Install this app.</strong> Add it to your home screen to open it like any other app.</p>
+  <button class="btn quiet" type="button" id="install-go">Install</button>
+  <button class="btn quiet icon-only" type="button" id="install-dismiss" aria-label="Hide this notice"><svg><use href="#i-x"/></svg></button>
 </aside>
 
 

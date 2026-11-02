@@ -109,5 +109,6 @@ a group name.
 
 `index.html` markup and icon sprite · `tokens.css` generated tokens · `app.css` components and layout · `theme.js` theme
 switch (runs in `<head>`) · `app.js` API client, status, remote, notify, card, live, screenshot, zoom lightbox, pairing,
-settings, jobs, API reference · `apps.js` apps, login setting, auth wiring · `favicon.svg` · `check-ui.mjs` static
-regression gate.
+settings, jobs, API reference · `apps.js` apps, login setting, auth wiring, service-worker registration and the install banner ·
+`favicon.svg` · `manifest.json`, `sw.js`, `icons/` installable app (the worker caches only the static shell, never `/api/`;
+bump `CACHE` in `sw.js` to drop old copies) · `check-ui.mjs` static regression gate.
