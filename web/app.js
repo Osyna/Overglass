@@ -22,6 +22,7 @@ const S = {
   overlayBusy: false, live: null, liveCooling: false, zoom: null,
   paired: null, token: '', statusUnauthorized: false, promptDismissed: false, resultFor: null, resultUrl: null,
   authMode: null, bannerDismissed: false,
+  volumeBusy: false, volumeEditing: false,
 };
 
 function h(tag, attrs = {}, ...kids) {
@@ -84,9 +85,9 @@ async function call(method, path, opts = {}) {
   } catch (err) {
     data = { error: 'The server is not reachable (' + err.message + ')' };
   }
-  if (!opts.poll || S.logPolls) {
-    addLog({ method, path, status, ms: Math.round(performance.now() - started), shown, data,
-      json: opts.json, file: opts.file && opts.file.name });
+  if (!opts.private && (!opts.poll || S.logPolls)) {
+    addLog({ method, path, status, ms: Math.round(performance.now() - started), shown: studioRedact(shown), data: studioRedact(data),
+      json: studioRedact(opts.json), file: opts.file && opts.file.name });
   }
   if (status === 401) unauthorized((data && data.error) || 'token rejected');
   if (status >= 200 && status < 300) return blob || data;
@@ -173,6 +174,8 @@ function readToken() {
 
 function saveToken(value, remember = true) {
   S.token = value;
+  studioStopEvents();
+  studioApplyRole('');
   S.promptDismissed = false;
   S.statusUnauthorized = false;
   try {
@@ -347,8 +350,9 @@ function renderStatus() {
 function sync() {
   const off = !!S.status && !S.statusError && S.status.power === 'off';
   for (const btn of document.querySelectorAll('[data-action]')) {
-    btn.disabled = S.reserved || S.paired === false || (off && btn.hasAttribute('data-needs-on'));
+    btn.disabled = btn.dataset.guestBlocked === 'true' || S.reserved || S.paired === false || (off && btn.hasAttribute('data-needs-on'));
   }
+  syncRemoteVolume();
   $('remote-hint').textContent = S.reserved ? 'Reserved by processing' : off ? 'In standby: turn the TV on first' : '';
   for (const el of document.querySelectorAll('#settings-body select, #settings-body button')) {
     if (S.reserved) el.disabled = true;
@@ -358,12 +362,82 @@ function sync() {
   $('file').disabled = S.reserved;
   $('profile').disabled = S.reserved;
   syncNotify();
+  if (typeof syncApps === 'function') syncApps();
 }
 
 /* ---------- remote ---------- */
 
+function remoteVolumeLimit() {
+  return $('volume-unlock').checked ? 100 : 40;
+}
+
+function syncRemoteVolume() {
+  const slider = $('remote-volume-slider'), cap = remoteVolumeLimit();
+  const status = S.statusError ? null : S.status;
+  const available = status?.power === 'on' && Number.isInteger(status.volume) && S.paired !== false;
+  const action = S.api?.routes.find(route => route.path === '/api/remote/{action}');
+  const supported = !action || !action.values || action.values.some(item => item.name === 'volume');
+  const permitted = studioRole !== 'guest' || studioActions.includes('volume');
+  const blocked = !available || S.reserved || S.volumeBusy;
+  slider.disabled = blocked || !supported || !permitted;
+  $('volume-unlock').disabled = blocked;
+  slider.max = String(cap);
+  if (!S.volumeEditing && !S.volumeBusy) slider.value = String(Math.min(available ? status.volume : 0, cap));
+  else if (Number(slider.value) > cap) slider.value = String(cap);
+  $('volume-target').textContent = available ? slider.value : '—';
+  slider.setAttribute('aria-valuetext', available ? `Set volume to ${slider.value}` : 'Volume unavailable');
+  $('volume-limit-hint').textContent = !supported ? 'Exact volume is not supported by this server.'
+    : !permitted ? 'This account cannot set an exact volume. Use the permitted remote buttons.'
+      : !available ? 'Turn on the TV and wait for its current volume.'
+        : status.volume > cap ? `The TV is at ${status.volume}. Moving this slider sets a level up to ${cap}.`
+          : cap === 40 ? 'Limited to 40. Check the box to unlock higher levels.'
+            : 'Full range unlocked: 0–100. Higher levels can be loud.';
+  for (const button of document.querySelectorAll('[data-action="volume_up"], [data-action="volume_down"], #mute')) {
+    button.disabled = blocked || button.dataset.guestBlocked === 'true'
+      || button.dataset.action === 'volume_up' && status.volume >= cap
+      || button.dataset.action === 'volume_down' && status.volume <= 0;
+  }
+}
+
+async function setRemoteVolume() {
+  const slider = $('remote-volume-slider'), value = Number(slider.value);
+  if (slider.disabled || S.volumeBusy) return;
+  const restoreFocus = document.activeElement === slider;
+  S.volumeEditing = false;
+  if (!Number.isInteger(value) || value < 0 || value > remoteVolumeLimit()) { syncRemoteVolume(); return; }
+  S.volumeBusy = true;
+  syncRemoteVolume();
+  result($('volume-send-msg'), `Setting volume to ${value}…`);
+  try {
+    const reply = await call('POST', '/api/remote/volume', { json: { value } });
+    result($('volume-send-msg'), reply.message, 'ok');
+  } catch (err) {
+    result($('volume-send-msg'), 'Volume was not confirmed: ' + err.message, 'error');
+  } finally {
+    await loadStatus();
+    S.volumeBusy = false;
+    syncRemoteVolume();
+    if (restoreFocus && document.activeElement === document.body && !slider.disabled) slider.focus({ preventScroll: true });
+  }
+}
+
+function wireRemoteVolume() {
+  const slider = $('remote-volume-slider');
+  $('volume-unlock').checked = false;
+  slider.addEventListener('input', () => {
+    S.volumeEditing = true;
+    slider.value = String(Math.max(0, Math.min(remoteVolumeLimit(), Number(slider.value))));
+    syncRemoteVolume();
+  });
+  slider.addEventListener('change', setRemoteVolume);
+  slider.addEventListener('blur', () => { if (!S.volumeBusy) { S.volumeEditing = false; syncRemoteVolume(); } });
+  $('volume-unlock').addEventListener('change', () => { S.volumeEditing = false; sync(); });
+}
+
 async function remote(btn) {
   const action = btn.dataset.action;
+  if (S.volumeBusy && ['volume_up', 'volume_down', 'mute', 'unmute'].includes(action)) return;
+  if (action === 'volume_up' && S.status?.volume >= remoteVolumeLimit()) return;
   const value = btn.dataset.value ? Number(btn.dataset.value) : undefined;
   btn.dataset.state = 'loading';
   try {
@@ -405,6 +479,7 @@ function settingsMessage(text, tone, retry) {
 }
 
 async function loadSettings() {
+  if (studioRole === 'guest') return;
   if (!supports({ group: 'Picture & sound' })) return;
   if (S.paired === false) return settingsMessage('Not paired with a TV yet.');
   if (S.reserved) return settingsMessage('The TV is reserved by a processing job. Settings reload when it is released.');
@@ -545,10 +620,12 @@ function showJob(job) {
 }
 
 async function pollJob() {
-  if (!S.job) return;
+  if (!S.job || studioRole === 'guest') return;
   try {
-    showJob(await call('GET', '/api/jobs/' + S.job.id, { poll: true }));
+    const job = await call('GET', '/api/jobs/' + S.job.id, { poll: true });
+    if (studioRole !== 'guest') showJob(job);
   } catch (err) {
+    if (studioRole === 'guest') return;
     say('Lost track of the job: ' + err.message, 'error');
     S.jobTimer = setTimeout(pollJob, 3000);
   }
@@ -707,6 +784,7 @@ function detailsMessage(text, tone, retry) {
 }
 
 async function loadDetails(poll = false) {
+  if (studioRole === 'guest') return;
   if (!supports({ route: '/api/details' })) return;
   if (S.paired === false) return detailsMessage('Not paired with a TV yet.');
   if (S.status && !S.statusError && S.status.power === 'off') {
@@ -854,6 +932,10 @@ const OVERLAY_THEME_RANGES = { opacity: ['Background opacity', 0.2, 1, 0.01, 0.9
 const OVERLAY_FIELDS = {
   stack: { gap: ['Spacing (TV pixels)', 0, 48, 1], align: ['Alignment', ['start', 'center', 'end']] },
   row: { gap: ['Spacing (TV pixels)', 0, 48, 1], align: ['Alignment', ['start', 'center', 'end']] },
+  grid: { columns: ['Columns', 1, 3, 1], gap: ['Spacing (TV pixels)', 0, 48, 1] },
+  ticker: { text: ['Scrolling text', 1000], speed: ['Speed (TV pixels per second)', 10, 200, 1], tone: ['Colour', OVERLAY_TONES] },
+  qr: { text: ['QR content', 1000], size: ['Size', ['s', 'm', 'l']] },
+  svg: { source: ['SVG drawing', 8192], size: ['Size', ['s', 'm', 'l']] },
   text: { text: ['Text', 400], size: ['Text size', ['xs', 's', 'm', 'l', 'xl']],
     weight: ['Weight', ['normal', 'strong']], color: ['Colour', ['fg', 'fg-2', ...OVERLAY_TONES]] },
   image: { src: ['Image URL', 500], shape: ['Shape', ['square', 'circle']], size: ['Image size', ['s', 'm', 'l']] },
@@ -883,19 +965,25 @@ const OVERLAY_SUBFORMS = {
   compare: ['segments', 'segment', 2, 4, OVERLAY_SEGMENT_FIELDS, () => ({ label: 'Next', value: '', fraction: 0 })],
   meta: ['items', 'fact', 1, 4, OVERLAY_META_FIELDS, () => ({ label: 'Label', value: 'Value' })],
 };
-const OVERLAY_NAMES = { stack: 'Vertical group', row: 'Side-by-side group', text: 'Text', image: 'Image',
+const OVERLAY_NAMES = { stack: 'Column', row: 'Row', text: 'Text', image: 'Image',
   badge: 'Badge', dot: 'Status dot', progress: 'Progress bar', countdown: 'Countdown', list: 'List',
   divider: 'Divider', compare: 'Comparison bar', sparkline: 'Small bar chart', section: 'Section header',
-  event: 'Timed event', stat: 'Two-sided stat', status: 'Source status', meta: 'Key facts', clock: 'Clock' };
+  event: 'Timed event', stat: 'Two-sided stat', status: 'Source status', meta: 'Key facts', clock: 'Clock',
+  grid: 'Grid', ticker: 'Scrolling ticker', qr: 'QR code', svg: 'Custom SVG' };
+const OVERLAY_OPTION_NAMES = { xs: 'Extra small', s: 'Small', m: 'Medium', l: 'Large', xl: 'Extra large',
+  fg: 'Main text', 'fg-2': 'Quiet text', normal: 'Regular', strong: 'Bold', center: 'Centre',
+  bullet: 'Bullets', number: 'Numbered', plain: 'Plain lines', info: 'Information', accent: 'Theme accent',
+  time: 'Hours and minutes', seconds: 'Hours, minutes and seconds' };
 const OVERLAY_REQUIRED = { text: ['text'], image: ['src'], badge: ['text'], progress: ['value'], countdown: ['target'],
   list: ['items'], compare: ['segments'], sparkline: ['points'], section: ['title'], event: ['time', 'text'],
-  stat: ['label', 'left', 'right', 'fraction'], status: ['label', 'state'], meta: ['items'] };
+  stat: ['label', 'left', 'right', 'fraction'], status: ['label', 'state'], meta: ['items'],
+  grid: ['columns'], ticker: ['text'], qr: ['text'], svg: ['source'] };
 const OVERLAY_MAX_NODES = 80;
 const OVERLAY_MAX_BYTES = 49152;
 const OVERLAY_PALETTE = [
   ['Text & numbers', ['text', 'badge', 'list', 'meta']],
-  ['Layout', ['stack', 'row', 'divider', 'section']],
-  ['Media', ['image']],
+  ['Layout', ['stack', 'row', 'grid', 'divider', 'section']],
+  ['Media', ['image', 'qr', 'svg', 'ticker']],
   ['Charts & stats', ['progress', 'compare', 'sparkline', 'stat']],
   ['Live & status', ['clock', 'countdown', 'event', 'status', 'dot']],
 ];
@@ -909,6 +997,8 @@ const OVERLAY_HELP = {
   stat: ['chart', 'Compare two values on one line.'], clock: ['clock', 'The TV’s current time or date.'],
   countdown: ['clock', 'Count down to a date and time.'], event: ['flag', 'A time, an icon and a short event.'],
   status: ['bolt', 'Show whether a source is available.'], dot: ['info', 'A small coloured indicator.'],
+  grid: ['layers', 'Arrange widgets in one to three columns.'], ticker: ['swap', 'Scroll a long announcement across the card.'],
+  qr: ['target', 'A scannable code for a link or short text.'], svg: ['sun', 'A safe inline vector drawing, without scripts or external resources.'],
 };
 const OVERLAY_LOOKS = {
   'TV default': {},
@@ -929,10 +1019,17 @@ let overlaySelected = overlayCard.root;
 let overlayValidationBusy = false;
 let overlayValidationRevision = 0;
 let overlaySchema = null;
+let overlayStudioStep = 'start';
+const overlayCollapsed = new WeakSet();
 
-const overlayRegions = (card = overlayCard) => card.regions || [card];
+const overlayRegions = (card = overlayCard) => {
+  const active = card.timeline ? card.timeline[Math.min(studioFrame, card.timeline.length - 1)].card : card;
+  return active.regions || [active];
+};
 const overlayNodeCount = (node) => 1 + (node.children || []).reduce((count, child) => count + overlayNodeCount(child), 0);
-const overlayCardCount = (card = overlayCard) => overlayRegions(card).reduce((count, region) => count + overlayNodeCount(region.root), 0);
+const overlayCardCount = (card = overlayCard) => card.timeline
+  ? card.timeline.reduce((count, frame) => count + overlayCardCount(frame.card), 0)
+  : overlayRegions(card).reduce((count, region) => count + overlayNodeCount(region.root), 0);
 // The request body: the draft without the empty Look object the form edits in place.
 function overlayBody() {
   const card = clone(overlayCard);
@@ -1018,9 +1115,11 @@ function overlayTemplates() {
 }
 
 function newOverlayNode(type) {
-  if (type === 'stack' || type === 'row') return { type, children: [{ type: 'text', text: 'Text' }] };
+  if (['stack', 'row', 'grid'].includes(type)) return { type, ...(type === 'grid' ? { columns: 2 } : {}), children: [{ type: 'text', text: 'Text' }] };
   return { type, ...({
     text: { text: 'Text' }, image: { src: 'https://example.com/image.png' }, badge: { text: 'Ready' },
+    ticker: { text: 'Your announcement', speed: 40 }, qr: { text: 'https://example.com' },
+    svg: { source: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor"/></svg>' },
     progress: { value: 0.5 }, countdown: { target: new Date(Date.now() + 300000).toISOString() },
     list: { items: ['First item'] },
     compare: { segments: [{ label: 'First', value: '50%', fraction: 0.5 }, { label: 'Second', value: '50%', fraction: 0.5 }] },
@@ -1046,7 +1145,7 @@ function checkOverlayTree(root, counter = { n: 0 }) {
     const required = OVERLAY_REQUIRED[node.type] || [];
     for (const key of required) if (node[key] === undefined || node[key] === '') throw new Error(`${OVERLAY_NAMES[node.type]} needs ${key}.`);
     for (const [key, value] of Object.entries(node)) {
-      if (key === 'type' || key === 'children' && (node.type === 'stack' || node.type === 'row')) continue;
+      if (key === 'type' || key === 'children' && ['stack', 'row', 'grid'].includes(node.type)) continue;
       const spec = fields[key];
       if (!Object.hasOwn(fields, key)) throw new Error(`Unknown ${node.type} field: ${key}`);
       if (key === 'items' && node.type === 'list') {
@@ -1081,19 +1180,22 @@ function checkOverlayTree(root, counter = { n: 0 }) {
       } else if (Array.isArray(spec[1])) {
         if (value === '' || !spec[1].includes(value)) throw new Error(`Choose a valid ${key} for ${node.type}.`);
       } else if (spec.length === 4) {
-        if (!inRange(value, spec[1], spec[2]) || key === 'gap' && !Number.isInteger(value)) {
-          throw new Error(`${key} must be ${spec[1]}–${spec[2]}${key === 'gap' ? ', a whole number' : ''}.`);
+        if (!inRange(value, spec[1], spec[2]) || ['gap', 'columns'].includes(key) && !Number.isInteger(value)) {
+          throw new Error(`${key} must be ${spec[1]}–${spec[2]}${['gap', 'columns'].includes(key) ? ', a whole number' : ''}.`);
         }
       } else if (!cleanText(value, spec[1])) {
         throw new Error(`${key} needs at most ${spec[1]} characters without control characters.`);
       }
     }
     if (node.type === 'image' && !/^https?:\/\/[^\s"'<>]+$/u.test(node.src)) throw new Error('Use an http(s) image URL.');
+    if (['ticker', 'qr'].includes(node.type) && !node.text) throw new Error('Add text for this widget.');
+    if (node.type === 'qr' && new TextEncoder().encode(node.text).length > 2953) throw new Error('QR content must fit in 2953 UTF-8 bytes.');
+    if (node.type === 'svg') checkStudioSvg(node.source);
     if (node.type === 'countdown' && (!/^\d{4}-\d{2}-\d{2}T/u.test(node.target) || !Number.isFinite(Date.parse(node.target)))) {
       throw new Error('Use an ISO datetime such as 2026-12-25T18:00:00Z.');
     }
-    if (node.type === 'stack' || node.type === 'row') {
-      const limit = node.type === 'stack' ? 20 : 10;
+    if (['stack', 'row', 'grid'].includes(node.type)) {
+      const limit = node.type === 'row' ? 10 : 20;
       if (!Array.isArray(node.children) || node.children.length < 1 || node.children.length > limit) {
         throw new Error(`${node.type} needs 1–${limit} children. Add a widget.`);
       }
@@ -1122,33 +1224,7 @@ function checkOverlayTheme(theme) {
 
 // Validates a whole request body as POST /api/overlay and PUT /api/designs/{name} accept it.
 function checkOverlayCard(card) {
-  if (!card || typeof card !== 'object' || Array.isArray(card)) throw new Error('The card must be a JSON object.');
-  const multi = 'regions' in card;
-  const allowed = multi ? ['seconds', 'theme', 'regions'] : ['position', 'size', 'seconds', 'theme', 'root'];
-  for (const key of Object.keys(card)) {
-    if (!allowed.includes(key)) throw new Error(multi ? `A card with regions has no field named ${key}.` : `A card has no field named ${key}.`);
-  }
-  if (card.seconds !== undefined && !(Number.isInteger(card.seconds) && card.seconds >= 0 && card.seconds <= 300)) {
-    throw new Error('Seconds must be a whole number from 0 to 300.');
-  }
-  if (card.theme !== undefined) checkOverlayTheme(card.theme);
-  const regions = multi ? card.regions : [card];
-  if (!Array.isArray(regions) || regions.length < 1 || regions.length > 4) throw new Error('Use 1–4 regions.');
-  const counter = { n: 0 };
-  const seen = new Set();
-  for (const region of regions) {
-    if (!region || typeof region !== 'object' || Array.isArray(region)) throw new Error('Each region is an object with position, size and root.');
-    if (multi) {
-      for (const key of Object.keys(region)) if (!['position', 'size', 'root'].includes(key)) throw new Error(`A region has no field named ${key}.`);
-      if (!Object.hasOwn(OVERLAY_POSITIONS, region.position)) throw new Error('Each region needs a position.');
-      if (seen.has(region.position)) throw new Error('Each region needs a different position.');
-      seen.add(region.position);
-    } else if (region.position !== undefined && !Object.hasOwn(OVERLAY_POSITIONS, region.position)) throw new Error('Choose a valid position.');
-    if (region.size !== undefined && !Object.hasOwn(OVERLAY_SIZES, region.size)) throw new Error('Choose a valid size.');
-    if (region.root === undefined) throw new Error('Each region needs a root widget.');
-    checkOverlayTree(region.root, counter);
-  }
-  if (new TextEncoder().encode(JSON.stringify(card)).length > OVERLAY_MAX_BYTES) throw new Error(`Use at most ${OVERLAY_MAX_BYTES} bytes of JSON for the whole card.`);
+  checkStudioCard(card);
   return card;
 }
 
@@ -1203,6 +1279,9 @@ function overlayAiPrompt() {
     'Envelope: {"position"?:position,"size"?:size,"seconds"?:integer,"theme"?:theme,"root":widget} OR {"seconds"?:integer,"theme"?:theme,"regions":[{"position":position,"size"?:size,"root":widget}]}. Do not combine root and regions.',
     `Positions: ${Object.keys(OVERLAY_POSITIONS).join(', ')}. Top/bottom are full-width bars; left/right are full-height panels between any bars. Other positions float. Regions: 1–4, unique positions.`,
     `Sizes: ${Object.keys(OVERLAY_SIZES).join(', ')}. Seconds: integer 0–300; 0 stays until hidden; default 8.`,
+    'Optional card or region animation: {enter:"none|fade|slide|wipe",exit:"none|fade|slide|wipe",duration_ms:integer 0–2000}. Optional offset:{x:integer -1920..1920,y:integer -1080..1080}; edges remain docked.',
+    'Optional top-level behavior:{on_foreground:"keep|hide|shrink",ambient_dim:boolean}. To sequence cards use timeline:[{seconds:integer 1–300,card:normalCard}], 1–4 steps, instead of root/regions. No nested timeline; caps apply across all steps.',
+    'Optional design bindings:[{target:JSON pointer to existing text/numeric widget field,source:{kind:"json|homeassistant",url:"https://...",path:"dot.path or /pointer",token?:secret,allow_private?:boolean},fallback?:explicit scalar}], at most 20. Never bind widget types, URLs, SVG or layout. Private addresses require explicit allow_private. Never invent credentials or fallback values.',
     `Theme (all optional): ${Object.keys(OVERLAY_THEME_COLORS).map(key => key + ': #rrggbb').join('; ')}; `
       + Object.entries(OVERLAY_THEME_RANGES).map(([key, spec]) => `${key}: ${spec[1]}–${spec[2]}${key === 'radius' ? ' integer' : ''}`).join('; ')
       + `; font: ${Object.keys(OVERLAY_FONTS).join('|')}.`,
@@ -1211,7 +1290,7 @@ function overlayAiPrompt() {
     ...Object.entries(OVERLAY_FIELDS).map(([type, fields]) => {
       const required = OVERLAY_REQUIRED[type] || [];
       let extra = '';
-      if (type === 'stack' || type === 'row') extra = `; children: ${type === 'stack' ? '1–20' : '1–10'} widgets, required`;
+      if (['stack', 'row', 'grid'].includes(type)) extra = `; children: ${type === 'row' ? '1–10' : '1–20'} widgets, required`;
       if (type === 'list') extra = '; items: array of 1–10 strings, each max 120 characters';
       if (OVERLAY_SUBFORMS[type]) {
         const [key, , min, max, childFields] = OVERLAY_SUBFORMS[type];
@@ -1221,6 +1300,8 @@ function overlayAiPrompt() {
       if (type === 'image') extra = '; src must be an http(s) URL, not a local path or data URL';
       if (type === 'countdown') extra = '; target must be a valid ISO datetime including time zone, e.g. 2026-12-25T18:00:00Z';
       if (type === 'sparkline') extra = '; points: 3–24 numbers from -1 to 1; axis optional: exactly three strings, max 6 characters each';
+      if (type === 'svg') extra = '; max 8192 ASCII characters; geometry-only svg/g/path/rect/circle/ellipse/line/polyline/polygon; no text, controls, scripts, styles, event handlers, entities or external references';
+      if (type === 'qr') extra = '; text must also fit within 2953 UTF-8 bytes (version 40-L capacity)';
       return `Widget ${type}: {type:"${type}"; ${describe(fields)}}. Required: ${required.join(', ') || 'type only'}${extra}. All other fields optional.`;
     }),
     'Example — a short message:',
@@ -1283,6 +1364,7 @@ async function applyOverlayJson(source, messageElement = $('ov-json-msg')) {
       overlayValidationBusy = false;
       $('ov-paste-apply').disabled = $('ov-json-apply').disabled = false;
       syncNotify();
+      studioQueueLive();
     }
   }
 }
@@ -1293,6 +1375,8 @@ function showStudioStep(step) {
     else button.removeAttribute('aria-current');
   }
   for (const panel of document.querySelectorAll('[data-studio-panel]')) panel.hidden = panel.dataset.studioPanel !== step;
+  overlayStudioStep = step;
+  placeWidgetPreview(step);
 }
 
 async function fetchOverlaySchema() {
@@ -1348,7 +1432,7 @@ function overlayControls(node, fields, requiredFields) {
     if (Array.isArray(setting)) {
       const fallback = { size: 'm', color: 'fg', align: 'start', weight: 'normal', style: 'bullet',
         tone: node.type === 'stat' ? 'accent' : 'info', shape: 'square', state: 'online', format: 'time' }[key];
-      input = h('select', {}, setting.map((value) => h('option', { value, text: value || (key === 'icon' ? 'None' : 'Default'),
+      input = h('select', {}, setting.map((value) => h('option', { value, text: OVERLAY_OPTION_NAMES[value] || (value ? value[0].toUpperCase() + value.slice(1) : key === 'icon' ? 'None' : 'Default'),
         selected: value === (node[key] ?? (setting.includes('') ? '' : fallback)) })));
       if (key === 'icon') {
         const glyph = h('span', { class: 'overlay-glyph' });
@@ -1356,9 +1440,9 @@ function overlayControls(node, fields, requiredFields) {
         redraw();
         wrap = h('span', { class: 'overlay-icon-pick' }, input, glyph);
       }
-    } else if (key === 'points' || key === 'items') {
+    } else if (key === 'points' || key === 'items' || key === 'source') {
       input = h('textarea', { rows: 3 });
-      input.value = (node[key] || []).join(key === 'points' ? ', ' : '\n');
+      input.value = key === 'source' ? node[key] || '' : (node[key] || []).join(key === 'points' ? ', ' : '\n');
     } else {
       input = h('input', step !== undefined
         ? { type: key === 'value' || key === 'fraction' ? 'range' : 'number', min: setting, max, step, value: node[key] ?? (key === 'gap' ? 10 : 0) }
@@ -1384,7 +1468,8 @@ function overlayControls(node, fields, requiredFields) {
       : key === 'target' ? 'Include the time zone, for example 2026-12-25T18:00:00Z.'
         : key === 'fraction' || key === 'value' && step ? '0 means none; 1 means the whole amount.'
           : typeof setting === 'number' && step === undefined ? `Up to ${setting} characters${required.includes(key) ? ' · required' : ' · optional'}.` : '';
-    controls.append(h('label', { class: 'field' }, h('span', { class: 'field-head' }, label, out),
+    const wide = ['src', 'target', 'points', 'items', 'source'].includes(key) || step === undefined && typeof setting === 'number' && setting > 80;
+    controls.append(h('label', { class: 'field' + (wide ? ' widget-field-wide' : '') }, h('span', { class: 'field-head' }, label, out),
       wrap || input, hint && h('span', { class: 'hint', text: hint }), error));
     validate();
   }
@@ -1401,50 +1486,101 @@ function findOverlayNode(target) {
   return null;
 }
 
+function selectOverlayWidget(node) {
+  overlaySelected = node;
+  for (let found = findOverlayNode(node); found?.parent; found = findOverlayNode(found.parent)) overlayCollapsed.delete(found.parent);
+  renderOverlayBuilder();
+  $('ov-builder').querySelector('.widget-select[aria-pressed="true"]')?.focus();
+  if (typeof matchMedia === 'function' && matchMedia('(max-width: 640px)').matches) $('ov-builder').querySelector('.widget-inspector')?.scrollIntoView({ block: 'start' });
+}
+
+function overlayNodeSummary(node) {
+  if (node.children) return `${node.children.length} ${node.children.length === 1 ? 'item' : 'items'}`;
+  return node.text || node.title || node.label || node.state || node.src || '';
+}
+
+function overlayWidgetTools(node) {
+  const found = findOverlayNode(node);
+  if (!found?.parent) return h('p', { class: 'hint', text: node.children ? 'This is the area’s main layout. Add widgets inside it to build your card.' : 'This is the area’s only widget. Add another to arrange them together.' });
+  const { parent, index } = found, siblings = parent.children;
+  const tool = (text, disabled, act) => h('button', { class: 'btn quiet', type: 'button', text, disabled,
+    'aria-label': `${text} (${OVERLAY_NAMES[node.type]} ${index + 1})`, onclick: () => {
+      studioCaptureBindingAnchors(); act(); studioRebaseBindings(); updateOverlayDraft(true);
+    } });
+  return h('div', { class: 'row overlay-tools widget-actions', 'aria-label': 'Selected widget actions' },
+    tool('Move up', index === 0, () => siblings.splice(index - 1, 2, node, siblings[index - 1])),
+    tool('Move down', index === siblings.length - 1, () => siblings.splice(index, 2, siblings[index + 1], node)),
+    tool('Duplicate', siblings.length >= (parent.type === 'row' ? 10 : 20) || overlayCardCount() + overlayNodeCount(node) > OVERLAY_MAX_NODES,
+      () => siblings.splice(index + 1, 0, clone(node))),
+    tool('Remove widget', siblings.length <= 1, () => { siblings.splice(index, 1); overlaySelected = parent; }));
+}
+
 function overlayBuilder(node, depth = 1, parent = null, index = 0) {
   const box = h('li', { class: 'widget-tree-row' });
-  const select = h('button', { class: 'widget-select', type: 'button', 'aria-pressed': String(node === overlaySelected),
-    onclick: () => {
-      overlaySelected = node; renderOverlayBuilder();
-      $('ov-builder').querySelector('.widget-select[aria-pressed="true"]')?.focus();
-    } },
-  overlayIcon(OVERLAY_HELP[node.type][0]), h('span', { text: OVERLAY_NAMES[node.type] }),
-  h('small', { text: node.text || node.title || node.label || (node.children ? `${node.children.length} widgets` : '') }));
-  box.append(select);
-  if (parent) {
-    const siblings = parent.children;
-    const limit = parent.type === 'stack' ? 20 : 10;
-    const tool = (text, disabled, act) => h('button', { class: 'btn quiet', type: 'button', text, disabled,
-      'aria-label': `${text} (${OVERLAY_NAMES[node.type]} ${index + 1})`, onclick: () => { act(); updateOverlayDraft(true); } });
-    box.append(h('div', { class: 'row overlay-tools' },
-      tool('Move up', index === 0, () => siblings.splice(index - 1, 2, node, siblings[index - 1])),
-      tool('Move down', index === siblings.length - 1, () => siblings.splice(index, 2, siblings[index + 1], node)),
-      tool('Duplicate', siblings.length >= limit || overlayCardCount() + overlayNodeCount(node) > OVERLAY_MAX_NODES, () => siblings.splice(index + 1, 0, clone(node))),
-      tool('Remove widget', siblings.length <= 1, () => { siblings.splice(index, 1); overlaySelected = parent; })));
+  const line = h('div', { class: 'widget-node' });
+  wireStudioWidgetDrag(line, node);
+  let branch;
+  if (node.children) {
+    const toggle = h('button', { class: 'widget-toggle', type: 'button',
+      'aria-label': `Expand or collapse ${OVERLAY_NAMES[node.type]}`, 'aria-expanded': String(!overlayCollapsed.has(node)),
+      onclick: () => {
+        if (overlayCollapsed.has(node)) overlayCollapsed.delete(node); else overlayCollapsed.add(node);
+        branch.hidden = overlayCollapsed.has(node);
+        toggle.setAttribute('aria-expanded', String(!branch.hidden));
+      } });
+    line.append(toggle);
+  } else line.append(h('span', { class: 'widget-toggle-space', 'aria-hidden': 'true' }));
+  line.append(h('button', { class: 'widget-select', type: 'button', 'aria-pressed': String(node === overlaySelected),
+    onclick: () => selectOverlayWidget(node) },
+    overlayIcon(OVERLAY_HELP[node.type][0]), h('span', { text: OVERLAY_NAMES[node.type] }),
+    h('small', { text: overlayNodeSummary(node), title: overlayNodeSummary(node) })));
+  box.append(line);
+  if (node.children) {
+    branch = h('ol', { class: 'widget-branch', hidden: overlayCollapsed.has(node) },
+      node.children.map((child, i) => overlayBuilder(child, depth + 1, node, i)));
+    box.append(branch);
   }
-  if (node.children) box.append(h('ol', { class: 'widget-branch' }, node.children.map((child, i) => overlayBuilder(child, depth + 1, node, i))));
   return box;
 }
 
 function renderOverlayInspector(node) {
+  const found = findOverlayNode(node), trail = [];
+  for (let entry = found; entry; entry = entry.parent ? findOverlayNode(entry.parent) : null) trail.unshift(entry.node);
+  const breadcrumbs = h('nav', { class: 'widget-breadcrumbs', 'aria-label': 'Selected widget location' },
+    trail.map((item, i) => item === node ? h('span', { text: OVERLAY_NAMES[item.type], 'aria-current': 'location' })
+      : h('button', { type: 'button', text: i === 0 ? 'Card layout' : OVERLAY_NAMES[item.type], onclick: () => selectOverlayWidget(item) })));
   const box = h('section', { class: 'widget-inspector', 'aria-label': 'Selected widget settings' },
-    h('h3', { text: OVERLAY_NAMES[node.type] }), h('p', { class: 'hint', text: OVERLAY_HELP[node.type][1] }));
-  const found = findOverlayNode(node);
+    breadcrumbs, h('header', { class: 'widget-inspector-head' }, h('h3', { text: OVERLAY_NAMES[node.type] }),
+      h('p', { class: 'hint', text: OVERLAY_HELP[node.type][1] })), overlayWidgetTools(node));
   const picker = h('select', { 'aria-label': 'Widget type' }, Object.keys(OVERLAY_FIELDS).map((type) => h('option', {
     value: type, text: OVERLAY_NAMES[type], selected: node.type === type,
-    disabled: ['stack', 'row'].includes(type) && ((found?.depth || 1) >= 5 || !node.children && overlayCardCount() >= OVERLAY_MAX_NODES),
+    disabled: ['stack', 'row', 'grid'].includes(type) && ((found?.depth || 1) >= 5 || !node.children && overlayCardCount() >= OVERLAY_MAX_NODES),
   })));
+  const typeError = h('p', { class: 'field-error', role: 'status', hidden: true });
   picker.addEventListener('change', () => {
+    const keepChildren = node.children && ['stack', 'row', 'grid'].includes(picker.value);
+    if (keepChildren && picker.value === 'row' && node.children.length > 10) {
+      picker.value = node.type;
+      typeError.textContent = 'A row fits up to 10 items. Keep this column or choose a grid.';
+      typeError.hidden = false;
+      return;
+    }
+    typeError.hidden = true;
     const replace = () => {
       const replacement = newOverlayNode(picker.value);
+      if (keepChildren) {
+        replacement.children = node.children;
+        if ('gap' in node) replacement.gap = node.gap;
+        if (picker.value !== 'grid' && 'align' in node) replacement.align = node.align;
+      }
       for (const key of Object.keys(node)) delete node[key];
       Object.assign(node, replacement);
       updateOverlayDraft(true);
     };
-    if (node.children) askInPlace(box, 'Changing this group replaces the widgets inside it. Continue?', 'Change type', replace);
+    if (node.children && !keepChildren) askInPlace(box, 'Changing this layout to a single widget removes its contents. Continue?', 'Change type', replace);
     else replace();
   });
-  box.append(h('label', { class: 'field' }, 'Widget type', picker), overlayControls(node, OVERLAY_FIELDS[node.type]));
+  box.append(h('label', { class: 'field' }, 'Widget type', picker), typeError, overlayControls(node, OVERLAY_FIELDS[node.type]));
   if (OVERLAY_SUBFORMS[node.type]) {
     const [key, word, min, max, fields, blank] = OVERLAY_SUBFORMS[node.type];
     const Word = word[0].toUpperCase() + word.slice(1);
@@ -1458,6 +1594,7 @@ function renderOverlayInspector(node) {
     box.append(h('button', { class: 'btn', type: 'button', text: `Add ${word}`, disabled: node[key].length >= max,
       onclick: () => { node[key].push(blank()); updateOverlayDraft(true); } }));
   }
+  box.append(studioPresetControls(node));
   return box;
 }
 
@@ -1471,8 +1608,8 @@ function overlayAddTarget() {
 function canAddOverlayWidget(type) {
   const target = overlayAddTarget();
   const added = overlayNodeCount(newOverlayNode(type)) + (target.group ? 0 : 1);
-  return overlayCardCount() + added <= OVERLAY_MAX_NODES && target.childDepth + (['stack', 'row'].includes(type) ? 1 : 0) <= 5
-    && (!target.group || target.group.children.length < (target.group.type === 'stack' ? 20 : 10));
+  return overlayCardCount() + added <= OVERLAY_MAX_NODES && target.childDepth + (['stack', 'row', 'grid'].includes(type) ? 1 : 0) <= 5
+    && (!target.group || target.group.children.length < (target.group.type === 'row' ? 10 : 20));
 }
 
 function addOverlayWidget(type) {
@@ -1486,7 +1623,7 @@ function addOverlayWidget(type) {
 }
 
 function regionControls(region, i, regions) {
-  const multi = 'regions' in overlayCard;
+  const multi = 'regions' in studioWorkingCard();
   const box = h('fieldset', { class: 'overlay-region' }, h('legend', { text: multi ? `Area ${i + 1}` : 'Where on the TV?' }));
   const occupied = (value) => multi && regions.some((other) => other !== region && other.position === value);
   const position = h('select', { 'aria-label': `Position for area ${i + 1}` }, Object.entries(OVERLAY_POSITIONS).map(([value, text]) => h('option', {
@@ -1497,7 +1634,7 @@ function regionControls(region, i, regions) {
       'aria-pressed': String(value === (region.position || 'top-right')), disabled: occupied(value),
       onclick: () => {
         region.position = value; updateOverlayDraft(true);
-        $('ov-builder').querySelectorAll('.position-picker')[i]?.querySelector(`[data-position="${value}"]`)?.focus();
+        $('ov-builder').querySelector('.position-picker')?.querySelector(`[data-position="${value}"]`)?.focus();
       } })));
   const size = h('select', {}, Object.entries(OVERLAY_SIZES).map(([value, text]) => h('option', { value, text, selected: value === (region.size || 'm') })));
   size.addEventListener('change', () => { region.size = size.value; updateOverlayDraft(false); });
@@ -1507,30 +1644,72 @@ function regionControls(region, i, regions) {
       disabled: regions.length <= 1, onclick: () => {
         askInPlace(box, `Remove area ${i + 1} and its widgets?`, 'Remove', () => { regions.splice(i, 1); updateOverlayDraft(true); });
       } })));
+  box.append(studioRegionExtras(region));
   return box;
+}
+
+function placeWidgetPreview(step, dock = $('ov-preview-dock')) {
+  const grid = $('ov-widget-editor').parentElement;
+  if (!grid || !dock) return;
+  grid.dataset.step = step;
+  const slot = $('ov-builder').querySelector('.widget-preview-slot');
+  if (step === 'design' && slot) {
+    if (!dock.dataset.widgetDocked && typeof matchMedia === 'function' && matchMedia('(max-width: 640px)').matches) dock.open = false;
+    dock.dataset.widgetDocked = 'true';
+    slot.append(dock);
+  } else grid.append(dock);
 }
 
 function renderOverlayBuilder() {
   const regions = overlayRegions();
   if (!findOverlayNode(overlaySelected)) overlaySelected = regions[0].root;
-  const layout = h('div', { class: 'overlay-regions' }, regions.map((region, i) => regionControls(region, i, regions)));
-  if ('regions' in overlayCard) layout.append(h('button', { class: 'btn', type: 'button', text: 'Add region',
+  const active = findOverlayNode(overlaySelected).region, area = regions.indexOf(active);
+  const dock = $('ov-preview-dock');
+  const tabs = h('div', { class: 'widget-areas', role: 'group', 'aria-label': 'Screen areas' },
+    regions.map((region, i) => h('button', { type: 'button', class: 'btn quiet', 'aria-pressed': String(region === active),
+      text: `${i + 1}. ${OVERLAY_POSITIONS[region.position || 'top-right']}`, onclick: () => selectOverlayWidget(region.root) })));
+  if ('regions' in studioWorkingCard()) tabs.append(h('button', { class: 'btn quiet', type: 'button', text: 'Add region',
     disabled: regions.length >= 4 || overlayCardCount() + 2 > OVERLAY_MAX_NODES, onclick: () => {
-      const position = Object.keys(OVERLAY_POSITIONS).find((p) => !regions.some((r) => r.position === p));
+      const position = Object.keys(OVERLAY_POSITIONS).find(p => !regions.some(r => r.position === p));
       const region = { position, size: 'm', root: newOverlayNode('stack') };
       regions.push(region); overlaySelected = region.root; updateOverlayDraft(true);
     } }));
-  const outline = h('div', { class: 'widget-outline' }, h('h3', { text: 'Your widgets' }),
-    h('p', { class: 'hint', text: 'Choose a widget to edit it. Groups arrange the widgets inside them.' }),
-    regions.map((region, i) => h('div', {}, regions.length > 1 && h('h4', { text: `Area ${i + 1} · ${OVERLAY_POSITIONS[region.position]}` }),
-      h('ol', { class: 'widget-tree' }, overlayBuilder(region.root)))));
-  const palette = h('details', { class: 'widget-palette' }, h('summary', { text: 'Add a widget' }),
-    h('p', { class: 'hint', text: 'New widgets go inside the selected group, or after the selected widget.' }),
-    OVERLAY_PALETTE.map(([title, types]) => h('section', { class: 'palette-group' }, h('h4', { text: title }),
-      types.map((type) => h('button', { class: 'palette-item', type: 'button', disabled: !canAddOverlayWidget(type),
-        onclick: () => addOverlayWidget(type) }, overlayIcon(OVERLAY_HELP[type][0]),
-      h('span', {}, h('strong', { text: OVERLAY_NAMES[type] }), h('small', { text: OVERLAY_HELP[type][1] })))))));
-  $('ov-builder').replaceChildren(layout, h('div', { class: 'widget-workspace' }, outline, renderOverlayInspector(overlaySelected)), palette);
+  const outline = h('aside', { class: 'widget-outline', 'aria-label': 'Card contents' },
+    h('header', { class: 'widget-outline-head' }, h('h3', { text: 'Contents' }),
+      h('span', { class: 'hint', text: `${overlayNodeCount(active.root)} widgets` })),
+    h('p', { class: 'hint', text: 'Drag to reorder. Select a row to edit; arrows open or close a layout.' }),
+    h('ol', { class: 'widget-tree' }, overlayBuilder(active.root)),
+    h('details', { class: 'widget-placement' }, h('summary', { text: 'Position, size & motion' }), regionControls(active, area, regions)),
+    studioPresetPalette());
+  const target = overlayAddTarget();
+  const search = h('input', { type: 'search', placeholder: 'Find a widget…', 'aria-label': 'Find a widget to add' });
+  const empty = h('p', { class: 'hint', text: 'No matching widgets. Try text, image, chart or layout.', hidden: true });
+  const groups = OVERLAY_PALETTE.map(([title, types]) => {
+    const items = types.map(type => ({ type, element: h('button', { class: 'palette-item', type: 'button', disabled: !canAddOverlayWidget(type),
+      onclick: () => addOverlayWidget(type) }, overlayIcon(OVERLAY_HELP[type][0]),
+      h('span', {}, h('strong', { text: OVERLAY_NAMES[type] }), h('small', { text: OVERLAY_HELP[type][1] }))) }));
+    return { items, element: h('section', { class: 'palette-group' }, h('h4', { text: title }), items.map(item => item.element)) };
+  });
+  const palette = h('details', { class: 'widget-palette widget-add-picker' }, h('summary', { text: 'Add widget' }),
+    h('div', { class: 'widget-library' }, search,
+      h('p', { class: 'hint', text: target.node.children ? `Add inside this ${OVERLAY_NAMES[target.node.type].toLowerCase()}.`
+        : `Add after the selected ${OVERLAY_NAMES[target.node.type].toLowerCase()}.` }),
+      groups.map(group => group.element), empty));
+  search.addEventListener('input', () => {
+    const query = search.value.trim().toLowerCase();
+    for (const group of groups) {
+      for (const item of group.items) item.element.hidden = !`${OVERLAY_NAMES[item.type]} ${OVERLAY_HELP[item.type][1]}`.toLowerCase().includes(query);
+      group.element.hidden = group.items.every(item => item.element.hidden);
+    }
+    empty.hidden = groups.some(group => !group.element.hidden);
+  });
+  search.addEventListener('keydown', event => {
+    if (event.key === 'Escape') { palette.open = false; palette.querySelector('summary').focus(); }
+  });
+  $('ov-builder').replaceChildren(h('div', { class: 'widget-toolbar' }, tabs, palette),
+    h('div', { class: 'widget-workspace' }, outline, renderOverlayInspector(overlaySelected),
+      h('aside', { class: 'widget-preview-slot', 'aria-label': 'Live TV preview' })));
+  placeWidgetPreview(overlayStudioStep, dock);
 }
 
 // Colour, opacity, radius, zoom and font controls writing into `theme` in place; `keys` picks a compact subset.
@@ -1566,12 +1745,21 @@ function themeForm(theme, onChange, keys = [...Object.keys(OVERLAY_THEME_COLORS)
 function previewOverlayNode(node) {
   const el = h(node.type === 'text' ? 'p' : node.type === 'divider' ? 'hr' : node.type === 'list' ? 'ul' : node.type === 'badge' || node.type === 'dot' ? 'span' : 'div', { class: 'w-' + node.type });
   for (const key of ['size', 'weight', 'color', 'tone', 'align', 'style', 'shape', 'state']) if (node[key]) el.dataset[key] = node[key];
+  if (node.type === 'grid') el.style.gridTemplateColumns = `repeat(${node.columns}, minmax(0, 1fr))`;
   if (node.children) {
     if (node.gap !== undefined) el.style.gap = node.gap + 'px';
     el.append(...node.children.map(previewOverlayNode));
   } else if (node.type === 'text') {
     el.textContent = node.text;
     el.dataset.size = node.size || 'm';
+  } else if (node.type === 'ticker') {
+    el.dataset.tone = node.tone || 'info';
+    el.dataset.speed = node.speed || 50;
+    el.append(h('span', { class: 'w-ticker-text', text: node.text }));
+  } else if (node.type === 'qr') {
+    studioPreviewQr(el, node.text);
+  } else if (node.type === 'svg') {
+    studioPreviewSvg(el, node.source);
   } else if (node.type === 'image') {
     // The page's same-origin CSP deliberately forbids fetching arbitrary TV image URLs.
     el.dataset.shape = node.shape || 'square';
@@ -1659,7 +1847,7 @@ function fitTvPanels(screen) {
   }
 }
 function renderTvStage(stage, card) {
-  const theme = card.theme || {};
+  const theme = { ...card.theme, ...card.timeline?.[Math.min(studioFrame, card.timeline.length - 1)].card.theme };
   const rgb = (hex) => [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16)).join(' ');
   for (const prop of ['--tv-surface', '--tv-accent', '--tv-fg', '--tv-fg-2', '--tv-line', '--tv-radius', '--tv-scale']) stage.style.removeProperty(prop);
   if (theme.surface || theme.opacity !== undefined) stage.style.setProperty('--tv-surface', `rgb(${rgb(theme.surface || '#191c22')} / ${theme.opacity ?? 0.94})`);
@@ -1669,17 +1857,22 @@ function renderTvStage(stage, card) {
   if (theme.radius !== undefined) stage.style.setProperty('--tv-radius', theme.radius + 'px');
   if (theme.scale !== undefined) stage.style.setProperty('--tv-scale', String(theme.scale));
   stage.dataset.font = theme.font || 'sans';
-  const screen = h('div', { class: 'tv-screen' }, overlayRegions(card).map((region) =>
-    h('article', { class: 'tv-card', dataset: { pos: region.position || 'top-right', size: region.size || 'm' } },
-      h('div', { class: 'root' }, previewOverlayNode(region.root)))));
+  const screen = h('div', { class: 'tv-screen' }, overlayRegions(card).map((region, index) => {
+    const article = h('article', { class: 'tv-card', dataset: { pos: region.position || 'top-right', size: region.size || 'm' } },
+      h('div', { class: 'root' }, previewOverlayNode(region.root)));
+    studioPositionRegion(article, stage.id === 'ov-preview' ? overlayRegions()[index] : region, stage);
+    return article;
+  }));
   screen.dataset.edges = overlayRegions(card).map(region => region.position).filter(position => ['top', 'bottom', 'left', 'right'].includes(position)).join(' ');
   stage.replaceChildren(screen);
   fitTvPanels(screen);
+  studioFitTickers(screen);
   if (typeof ResizeObserver === 'undefined' || stage.dataset.watched) return;
   stageWatcher ??= new ResizeObserver((entries) => {
     for (const entry of entries) {  // also refits panels: a bar measures 0 while the view is still hidden
       entry.target.style.setProperty('--tv-zoom', String(entry.contentRect.width / 1920));
       if (entry.target.firstElementChild) fitTvPanels(entry.target.firstElementChild);
+      if (entry.target.firstElementChild) studioFitTickers(entry.target.firstElementChild);
     }
   });
   stage.dataset.watched = 'true';
@@ -1705,18 +1898,23 @@ function tickOverlayPreview() {
 }
 
 function updateOverlayDraft(rebuild) {
+  studioRecordDraft();
   overlayJsonDirty = false;
   const body = overlayBody();
   $('ov-json').value = JSON.stringify(body, null, 2);
   $('ov-json').removeAttribute('aria-invalid');
   try { checkOverlayCard(body); overlayError = ''; } catch (err) { overlayError = err.message; }
   if (rebuild) {
-    $('ov-layout').value = 'regions' in overlayCard ? 'regions' : 'single';
+    $('ov-layout').value = 'regions' in studioWorkingCard() ? 'regions' : 'single';
     $('ov-card-seconds').value = overlayCard.seconds ?? '';
     overlayCard.theme ??= {};
-    $('ov-look-form').replaceChildren(themeForm(overlayCard.theme, () => updateOverlayDraft(false)));
+    const lookCard = studioWorkingCard(), theme = studioVisibleTheme();
+    $('ov-look-form').replaceChildren(themeForm(theme, () => { lookCard.theme = theme; updateOverlayDraft(false); }));
     renderOverlayBuilder();
+    renderStudioExtras();
   }
+  const summary = $('ov-builder').querySelector('.widget-select[aria-pressed="true"] small');
+  if (summary) summary.textContent = overlayNodeSummary(overlaySelected);
   const msg = $('ov-builder-msg');
   if (overlayError) result(msg, overlayError, 'error'); else msg.hidden = true;
   if (overlayError) $('ov-preview').replaceChildren(h('p', { class: 'tv-empty', text: 'Complete the widget fields to see your preview.' }));
@@ -1727,10 +1925,12 @@ function updateOverlayDraft(rebuild) {
   $('ov-meter-text').textContent = `${count} / ${OVERLAY_MAX_NODES} widgets · ${size.toLocaleString()} / ${OVERLAY_MAX_BYTES.toLocaleString()} bytes`;
   tickOverlayPreview();
   syncNotify();
+  studioQueueLive();
 }
 
 function setOverlayCard(card) {
   overlayCard = card;
+  studioFrame = 0;
   overlaySelected = overlayRegions()[0].root;
   overlayLoaded = JSON.stringify(overlayBody());
   updateOverlayDraft(true);
@@ -1805,51 +2005,45 @@ function downloadJson(value, name) {
 }
 
 function exportDesign() {
-  downloadJson(overlayBody(), $('design-name').value.trim() || 'card');
+  downloadJson(studioBundle(overlayBody(), $('design-name').value.trim() || 'card'), $('design-name').value.trim() || 'card');
 }
 
 async function importDesign(file) {
-  if (!file) return;
-  try {
-    const text = await file.text();
-    extractOverlayObject(text);
-    askReplaceDraft($('ov-panel-start'), file.name, async () => {
-      if (await applyOverlayJson(text, $('ov-paste-msg'))) {
-        $('design-name').value = file.name.replace(/\.json$/iu, '').slice(0, 60);
-      }
-    });
-  } catch (err) {
-    result($('ov-paste-msg'), `Could not import ${file.name}: ${err.message}`, 'error');
-  }
+  if (file) await studioImport(file);
 }
 
 function wireOverlayBuilder() {
   renderOverlayTemplates();
   updateOverlayDraft(true);
   showStudioStep('start');
+  wireStudioExtras();
   for (const button of document.querySelectorAll('[data-studio-step]')) {
     button.addEventListener('click', () => showStudioStep(button.dataset.studioStep));
   }
   $('ov-layout').addEventListener('change', () => {
     const multi = $('ov-layout').value === 'regions';
     const change = () => {
-      if (multi && !('regions' in overlayCard)) {
-        overlayCard.regions = [{ position: overlayCard.position || 'top-right', size: overlayCard.size || 'm', root: overlayCard.root }];
-        delete overlayCard.position; delete overlayCard.size; delete overlayCard.root;
-      } else if (!multi && 'regions' in overlayCard) {
-        Object.assign(overlayCard, overlayCard.regions[0]);
-        delete overlayCard.regions;
+      const layoutCard = studioWorkingCard();
+      studioCaptureBindingAnchors();
+      if (multi && !('regions' in layoutCard)) {
+        layoutCard.regions = [{ position: layoutCard.position || 'top-right', size: layoutCard.size || 'm', root: layoutCard.root,
+          ...(layoutCard.offset ? { offset: layoutCard.offset } : {}), ...(layoutCard.animation ? { animation: layoutCard.animation } : {}) }];
+        delete layoutCard.position; delete layoutCard.size; delete layoutCard.root; delete layoutCard.offset; delete layoutCard.animation;
+      } else if (!multi && 'regions' in layoutCard) {
+        Object.assign(layoutCard, layoutCard.regions[0]);
+        delete layoutCard.regions;
       }
+      studioRebaseBindings();
       updateOverlayDraft(true);
     };
-    if (!multi && overlayCard.regions?.length > 1) {
+    if (!multi && studioWorkingCard().regions?.length > 1) {
       $('ov-layout').value = 'regions';
       askInPlace($('ov-panel-design'), 'Keep only the first area? The other areas and their widgets will be removed.', 'Use one card', change);
     } else change();
   });
   $('ov-look-presets').replaceChildren(...Object.entries(OVERLAY_LOOKS).map(([name, theme]) =>
     h('button', { class: 'look-preset btn', type: 'button', text: name, dataset: { preset: name.toLowerCase().replaceAll(' ', '-') },
-      onclick: () => { overlayCard.theme = clone(theme); updateOverlayDraft(true); } })));
+      onclick: () => studioApplyLook(theme) })));
   $('ov-card-seconds').addEventListener('input', () => {
     const value = $('ov-card-seconds').value;
     if (value === '') delete overlayCard.seconds; else overlayCard.seconds = Number(value);
@@ -1885,7 +2079,7 @@ function wireOverlayBuilder() {
   $('ov-schema-download').addEventListener('click', () => schemaAction(true));
   $('ov-ai').addEventListener('toggle', () => { if ($('ov-ai').open) fetchOverlaySchema().catch(err => result($('ov-ai-msg'), err.message, 'error')); });
   $('design-copy').addEventListener('click', async () => {
-    try { await copyText(JSON.stringify(overlayBody(), null, 2)); result($('design-save-msg'), 'Card JSON copied.', 'ok'); }
+    try { await copyText(JSON.stringify(studioRedact(overlayBody()), null, 2)); result($('design-save-msg'), 'Card JSON copied without saved credentials.', 'ok'); }
     catch { result($('design-save-msg'), 'Copy was blocked. Export JSON instead.', 'error'); }
   });
   $('ov-json-reset').addEventListener('click', () => updateOverlayDraft(false));
@@ -1900,11 +2094,13 @@ function wireOverlayBuilder() {
 function syncOverlay(off) {
   const card = cardFromForm();
   const blocked = off || S.reserved || S.overlayBusy;
+  for (const button of document.querySelectorAll('[data-overlay-send]')) button.disabled = blocked;
   $('ov-show').disabled = blocked || !(card.title || card.body || card.lines);
   $('ov-send').disabled = blocked || !!overlayError || overlayJsonDirty || overlayValidationBusy;
   $('ov-hide').disabled = blocked;
   $('ov-details').disabled = blocked;
   $('ov-panel-design').inert = overlayJsonDirty || overlayValidationBusy;
+  $('ov-widget-editor').inert = overlayJsonDirty || overlayValidationBusy;
   $('design-save').disabled = !!overlayError || overlayJsonDirty || overlayValidationBusy || automationBusy.has('designs');
   $('design-export').disabled = $('design-copy').disabled = !!overlayError || overlayJsonDirty || overlayValidationBusy;
   $('overlay-hint').textContent = off ? 'In standby: turn the TV on first' : S.reserved ? 'Reserved by processing' : '';
@@ -1913,6 +2109,7 @@ function syncOverlay(off) {
 async function sendOverlay(card, btn) {
   const msg = $(btn.id === 'ov-send' || btn.id === 'ov-hide' ? 'ov-send-msg' : 'overlay-msg');
   if (S.overlayBusy) return;
+  studioCancelLive(card.hide === true || btn.id !== 'ov-send');
   if (card.seconds !== undefined && !(Number.isInteger(card.seconds) && card.seconds >= 0 && card.seconds <= 300)) {
     return result(msg, 'Seconds must be a whole number from 0 to 300', 'error');
   }
@@ -1920,6 +2117,10 @@ async function sendOverlay(card, btn) {
     return result(msg, `Use at most ${OVERLAY_MAX_BYTES} bytes of JSON for the whole card.`, 'error');
   }
   S.overlayBusy = true;
+  if (card.bindings) {
+    try { card = (await call('POST', '/api/designs/resolve', { json: card })).card; }
+    catch (err) { S.overlayBusy = false; syncNotify(); return result(msg, err.message, 'error'); }
+  }
   syncNotify();
   btn.dataset.state = 'loading';
   try {
@@ -1931,6 +2132,7 @@ async function sendOverlay(card, btn) {
   }
   S.overlayBusy = false;
   syncNotify();
+  studioQueueLive();
 }
 
 async function showDetailsCard(btn) {
@@ -2290,14 +2492,10 @@ function addonCard(addon, entry) {
   const form = h('form', { class: 'stack-form', 'aria-label': 'Settings for ' + addon.name });
   const fields = [];
   for (const spec of addon.params_schema) {
-    const value = entry?.params[spec.key] ?? spec.default ?? '';
-    const input = spec.type === 'select' && spec.choices
-      ? h('select', {}, spec.choices.map(choice => h('option', {
-        value: choice.value ?? choice, text: choice.label ?? choice, selected: (choice.value ?? choice) === value,
-      })))
-      : h('input', { type: 'text', value });
-    fields.push([spec.key, input]);
-    form.append(h('label', { class: 'field' }, spec.label, input));
+    const input = studioMetadataInput(spec, entry?.params?.[spec.key]);
+    fields.push([spec.key, input, spec.type]);
+    form.append(h('label', { class: spec.type === 'boolean' ? 'check' : 'field' }, spec.label, input,
+      spec.description && h('span', { class: 'hint', text: spec.description })));
   }
   const interval = h('input', { type: 'number', min: 15, max: 3600, step: 1, required: true,
     value: entry?.interval_seconds ?? addon.default_interval_seconds });
@@ -2308,7 +2506,8 @@ function addonCard(addon, entry) {
   const theme = { ...entry?.theme };
   form.append(h('details', { class: 'addon-look', open: Object.keys(theme).length > 0 }, h('summary', { text: 'Look' }),
     themeForm(theme, () => {}, ['accent', 'surface', 'opacity'])));
-  const params = () => Object.fromEntries(fields.map(([key, input]) => [key, input.value]));
+  const params = () => Object.fromEntries(fields.map(([key, input, type]) =>
+    [key, type === 'boolean' ? input.checked : type === 'number' ? Number(input.value) : input.value]));
   const path = '/api/addons/' + encodeURIComponent(addon.id);
   const save = h('button', { class: 'btn primary', type: 'submit', text: entry ? 'Update' : 'Install',
     'aria-label': (entry ? 'Update ' : 'Install ') + addon.name });
@@ -2316,7 +2515,7 @@ function addonCard(addon, entry) {
   preview.addEventListener('click', () => changeAutomation('addons', preview, 'POST', path + '/preview', { params: params() }));
   form.addEventListener('submit', async event => {
     event.preventDefault();
-    if (await changeAutomation('addons', save, 'PUT', path, { ...entry, params: params(), interval_seconds: Number(interval.value), enabled: true,
+    if (await changeAutomation('addons', save, 'PUT', path, { ...entry, params: params(), interval_seconds: Number(interval.value), enabled: entry ? entry.enabled : true,
       position: position.value, size: size.value, theme: Object.keys(theme).length ? theme : undefined })) await loadAutomation('addons');
   });
   form.append(h('div', { class: 'row' }, save, preview));
@@ -2393,12 +2592,10 @@ function renameDesign(id, entry, row) {
     if (automationData.designs && Object.hasOwn(automationData.designs, name)) return result(message, 'That name is already in use. Choose another name.', 'error');
     askInPlace(form, `Rename ${id} to ${name}? Scenes using the old name will need updating.`, 'Rename', async () => {
       const button = form.querySelector('button');
-      if (!await changeAutomation('designs', button, 'PUT', '/api/designs/' + encodeURIComponent(name), clone(entry))) return;
-      const removed = await changeAutomation('designs', button, 'DELETE', '/api/designs/' + encodeURIComponent(id));
-      const error = $('designs-msg').textContent;
-      if (removed && $('design-name').value === id) $('design-name').value = name;
+      if (!await changeAutomation('designs', button, 'POST', '/api/designs/' + encodeURIComponent(id) + '/rename', { name })) return;
+      if ($('design-name').value === id) $('design-name').value = name;
       await loadAutomation('designs');
-      result($('designs-msg'), removed ? `Renamed ${id} to ${name}.` : `Saved ${name}, but kept ${id} because it could not be removed: ${error}`, removed ? 'ok' : 'error');
+      result($('designs-msg'), `Renamed ${id} to ${name}. Saved versions moved with it.`, 'ok');
     });
   });
   row.append(form);
@@ -2411,7 +2608,7 @@ function automationRow(kind, id, entry) {
   const name = kind === 'scenes' || kind === 'designs' ? id : kind === 'schedule' ? entry.scene : entry.label || id;
   const summary = kind === 'scenes' ? `${entry.steps.length} step${entry.steps.length === 1 ? '' : 's'}`
     : kind === 'schedule' ? `${entry.time} · ${entry.days.length ? entry.days.map(day => day[0].toUpperCase() + day.slice(1)).join(', ') : 'Every day'} · ${entry.enabled ? 'Enabled' : 'Disabled'}`
-      : kind === 'designs' ? designSummary(entry) : 'Scene: ' + entry.scene;
+      : kind === 'designs' ? designSummary(entry) : (entry.design ? 'Design: ' + entry.design : 'Scene: ' + entry.scene);
   row.append(h('div', { class: 'app-meta' }, h('strong', { text: name }), h('span', { text: summary })));
   const actions = h('div', { class: 'row' });
   if (kind === 'designs') {
@@ -2423,11 +2620,17 @@ function automationRow(kind, id, entry) {
       setOverlayCard(clone(entry)); $('design-name').value = id; showStudioStep('design');
       $('h-studio').scrollIntoView({ block: 'start', behavior: 'instant' });
     }));
-    const show = h('button', { class: 'btn', type: 'button', text: 'Show on TV', 'aria-label': 'Show ' + id + ' on TV' });
-    show.addEventListener('click', () => changeAutomation(kind, show, 'POST', '/api/designs/' + encodeURIComponent(id) + '/show'));
+    const show = h('button', { class: 'btn', type: 'button', text: 'Show on TV', 'aria-label': 'Show ' + id + ' on TV',
+      dataset: { overlaySend: 'true' }, disabled: S.overlayBusy || S.reserved });
+    show.addEventListener('click', () => {
+      if (S.overlayBusy) return;
+      studioCancelLive(true);
+      return changeAutomation(kind, show, 'POST', '/api/designs/' + encodeURIComponent(id) + '/show');
+    });
     const rename = h('button', { class: 'btn quiet', type: 'button', text: 'Rename', onclick: () => renameDesign(id, entry, row) });
-    const exportButton = h('button', { class: 'btn quiet', type: 'button', text: 'Export', onclick: () => downloadJson(entry, id) });
-    actions.append(load, show, rename, exportButton);
+    const exportButton = h('button', { class: 'btn quiet', type: 'button', text: 'Export', onclick: () => studioExportSaved(id) });
+    const versions = h('button', { class: 'btn quiet', type: 'button', text: 'Versions', onclick: () => studioVersions(id, row) });
+    actions.append(load, show, rename, exportButton, versions);
   } else if (kind === 'scenes') {
     const run = h('button', { class: 'btn', type: 'button', text: 'Run', 'aria-label': 'Run ' + id });
     run.addEventListener('click', () => changeAutomation(kind, run, 'POST', '/api/scenes/' + encodeURIComponent(id) + '/run', undefined,
@@ -2459,6 +2662,7 @@ function automationRow(kind, id, entry) {
     actions.append(copyButton('Copy link', () => url));
     row.append(h('input', { type: 'text', class: 'automation-link', value: url, readonly: true,
       'aria-label': 'Webhook link for ' + name }));
+    if (entry.design) row.append(studioWebhookPayload(entry.design, url));
   }
   const remove = h('button', { class: 'btn danger', type: 'button', 'aria-label': 'Delete ' + name }, icon('trash'), h('span', { text: 'Delete' }));
   remove.addEventListener('click', () => askAutomationDelete(kind, id, name, row, remove));
@@ -2469,7 +2673,7 @@ function automationRow(kind, id, entry) {
 
 const SCENE_TYPES = { remote: 'Press a remote button', overlay: 'Show a card', wait: 'Wait a moment', setting: 'Change a TV setting' };
 const SCENE_REMOTE = { wake: 'Turn on', power_off: 'Turn off', home: 'Go Home', back: 'Go back', up: 'Up', down: 'Down',
-  left: 'Left', right: 'Right', ok: 'OK', hdmi: 'Switch HDMI input', volume_up: 'Volume up', volume_down: 'Volume down',
+  left: 'Left', right: 'Right', ok: 'OK', hdmi: 'Switch HDMI input', volume_up: 'Volume up', volume_down: 'Volume down', volume: 'Set volume',
   mute: 'Mute', unmute: 'Unmute' };
 let sceneSteps = [{ type: 'wait', seconds: 0 }];
 
@@ -2493,6 +2697,7 @@ function sceneFromSteps(steps) {
     if (step.type === 'remote') {
       if (!Object.hasOwn(SCENE_REMOTE, step.action)) fail('choose a remote button.');
       if (step.action === 'hdmi' && (!Number.isInteger(step.value) || step.value < 1 || step.value > 4)) fail('choose HDMI input 1–4.');
+      if (step.action === 'volume' && (!Number.isInteger(step.value) || step.value < 0 || step.value > 100)) fail('choose a volume from 0 to 100.');
     }
     if (step.type === 'setting' && (!step.category || !step.key || !Object.hasOwn(step, 'value'))) fail('choose a setting and its value.');
     if (step.type === 'overlay') {
@@ -2557,11 +2762,12 @@ function renderSceneBuilder() {
         value, text: SCENE_REMOTE[value] || value, selected: value === step.action })));
       action.addEventListener('change', () => {
         step.action = action.value;
-        if (step.action === 'hdmi') step.value = 1; else delete step.value;
+        if (step.action === 'hdmi') step.value = 1; else if (step.action === 'volume') step.value = 20; else delete step.value;
         syncSceneJson(); renderSceneBuilder();
       });
       fields.append(h('label', { class: 'field' }, 'Remote button', action));
       if (step.action === 'hdmi') inputField('HDMI input', 'value', { type: 'number', min: 1, max: 4, step: 1, required: true });
+      if (step.action === 'volume') inputField('Volume (0–100)', 'value', { type: 'number', min: 0, max: 100, step: 1, required: true });
     } else if (step.type === 'overlay') {
       const mode = h('select', { 'aria-label': 'Card source' }, h('option', { value: 'design', text: 'A saved design', selected: 'design' in step }),
         h('option', { value: 'card', text: 'Paste card JSON', selected: !('design' in step) }));
@@ -2667,7 +2873,7 @@ function wireAutomation() {
   $('webhook-form').addEventListener('submit', async event => {
     event.preventDefault();
     const reply = await changeAutomation('webhooks', $('webhook-save'), 'POST', '/api/webhooks',
-      { scene: $('webhook-scene').value, label: $('webhook-label').value });
+      { [$('webhook-target-type').value]: $('webhook-scene').value, label: $('webhook-label').value });
     if (reply) {
       $('webhook-form').reset();
       await loadAutomation('webhooks');
@@ -2681,6 +2887,7 @@ function wireAutomation() {
 
 function showView(view) {
   if (!VIEWS.has(view)) view = 'home';
+  if (studioRole === 'guest' && !['remote', 'settings'].includes(view)) view = 'remote';
   S.view = view;
   for (const el of document.querySelectorAll('.view')) el.hidden = el.dataset.viewId !== view;
   for (const tab of document.querySelectorAll('.tab')) {
@@ -2688,9 +2895,13 @@ function showView(view) {
     else tab.removeAttribute('aria-current');
   }
   if (view !== 'show') stopLive();  // the live picture is private: it must not keep streaming into a hidden page
+  if (view !== 'show') { studioClearSnapshot(); studioCancelLive(true); }
   if (view === 'apps' && S.api) loadApps();
   if ((view === 'automate' || view === 'show') && S.api) for (const kind of automationKinds(view)) loadAutomation(kind);
   if (location.hash !== '#' + view) history.replaceState(null, '', view === 'home' ? location.pathname : '#' + view);
+  if (view === 'settings') studioLoadUsers();
+  if (view === 'automate') studioLoadRotations();
+  if (view === 'show') studioLoadThemes();
   window.scrollTo(0, 0);
 }
 
@@ -2796,6 +3007,7 @@ function wire() {
   $('token-cancel').addEventListener('click', () => { S.promptDismissed = true; $('token-dialog').close(); });
   $('token-dialog').addEventListener('cancel', () => { S.promptDismissed = true; });
   for (const btn of document.querySelectorAll('[data-action]')) btn.addEventListener('click', () => remote(btn));
+  wireRemoteVolume();
   for (const tab of document.querySelectorAll('.tab')) tab.addEventListener('click', () => showView(tab.dataset.view));
   for (const link of document.querySelectorAll('[data-goto]')) link.addEventListener('click', () => showView(link.dataset.goto));
   window.addEventListener('hashchange', () => showView(location.hash.slice(1)));
@@ -2824,10 +3036,13 @@ function wire() {
     delete drop.dataset.over;
     if (!S.reserved) pickFile(e.dataTransfer.files[0]);
   });
-  setInterval(() => { if (!document.hidden && !S.statusBusy) loadStatus(true); }, 10000);
+  setInterval(() => { if (!document.hidden && !S.statusBusy && !studioEventsHealthy()) loadStatus(true); }, 10000);
   setInterval(() => { if (S.job && ACTIVE.has(S.job.state)) renderElapsed(); }, 1000);
-  document.addEventListener('visibilitychange', () => { if (document.hidden) stopLive(); else loadStatus(true); });
-  setInterval(() => { if (!document.hidden) loadDetails(true); }, 60000);
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) { stopLive(); studioClearSnapshot(); studioCancelLive(true); studioStopEvents(); }
+    else { if (!studioEventsHealthy()) loadStatus(true); studioStartEvents(); }
+  });
+  setInterval(() => { if (!document.hidden && studioRole !== 'guest') loadDetails(true); }, 60000);
   $('refresh-details').addEventListener('click', () => loadDetails());
   $('notify-form').addEventListener('submit', (e) => { e.preventDefault(); if (!$('toast').disabled) sendNotify('toast', $('toast')); });
   $('speak').addEventListener('click', (e) => sendNotify('say', e.currentTarget));
@@ -2836,7 +3051,8 @@ function wire() {
   $('shot-capture').addEventListener('click', capture);
   $('live-start').addEventListener('click', startLive);
   $('live-stop').addEventListener('click', stopLive);
-  window.addEventListener('pagehide', stopLive);
+  window.addEventListener('pagehide', () => { stopLive(); studioClearSnapshot(); studioCancelLive(true); studioStopEvents(); });
+  window.addEventListener('pageshow', () => { if (!document.hidden) studioStartEvents(); });
   wireOverlayBuilder();
   $('overlay-form').addEventListener('submit', (e) => { e.preventDefault(); if (!$('ov-show').disabled) sendOverlay(cardFromForm(), $('ov-show')); });
   $('ov-hide').addEventListener('click', (e) => sendOverlay({ hide: true }, e.currentTarget));
@@ -2845,7 +3061,11 @@ function wire() {
 }
 
 async function loadAll() {
+  if (studioRole === 'guest') { await loadStatus(); return; }
   if (S.view === 'automate' || S.view === 'show') for (const kind of automationKinds(S.view)) loadAutomation(kind);
+  if (S.view === 'show') studioLoadThemes();
+  if (S.view === 'automate') studioLoadRotations();
+  if (S.view === 'settings') studioLoadUsers();
   if (S.paired === false) { renderStatus(); loadSettings(); loadDetails(); loadAuth(); return; }
   if (supports({ route: '/api/jobs' })) {
     try {
@@ -2861,6 +3081,7 @@ async function loadAll() {
   loadDetails();
   loadApps();
   loadAuth();
+  studioStartEvents();
 }
 
 async function start() {
@@ -2870,6 +3091,7 @@ async function start() {
   renderTheme();
   renderDevice();
   showView(location.hash.slice(1));
+  if (studioRole === 'guest') { S.paired = true; await loadStatus(); return; }
   try {
     const health = await call('GET', '/api/health');
     S.paired = health.paired;
@@ -2886,6 +3108,7 @@ async function start() {
     say('Could not load the API catalogue: ' + err.message, 'error');
   }
   await loadAll();
+  studioStartEvents();
 }
 
 document.addEventListener('DOMContentLoaded', start);

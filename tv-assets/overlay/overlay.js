@@ -14,7 +14,7 @@
   var TEXT_COLORS = ['fg', 'fg-2'].concat(TONES);
   var LIST_STYLES = ['bullet', 'number', 'plain'];
   var WIDGET_TYPES = ['stack', 'row', 'text', 'image', 'badge', 'dot', 'progress', 'countdown', 'list', 'divider',
-                      'compare', 'sparkline', 'section', 'event', 'stat', 'status', 'meta', 'clock'];
+                      'compare', 'sparkline', 'section', 'event', 'stat', 'status', 'meta', 'clock', 'grid', 'ticker', 'qr', 'svg'];
   var IMAGE_SHAPES = ['square', 'circle'];
   var IMAGE_SIZES = ['s', 'm', 'l'];
   var STATES = ['online', 'offline', 'degraded', 'unknown'];
@@ -46,6 +46,11 @@
   var hideTimer = null;
   var closeTimer = null;
   var liveTimers = [];
+  var timelineTimer = null;
+  var timelineKey = null;
+  var timelineIndex = 0;
+  var activePayload = null;
+  var runtimeState = {dim: 1, compact: false, hidden: false};
 
   function text(value, max) {
     return typeof value === 'string' ? value.slice(0, max) : '';
@@ -67,6 +72,59 @@
   function oneOf(value, choices) {
     return choices.indexOf(value) >= 0 ? value : undefined;
   }
+  function checkSvg(source) {
+    const fail = () => { throw new Error('SVG must be a safe inline geometry document of at most 8192 characters'); };
+    if (typeof source !== 'string' || source.length > 8192 || /[^\x20-\x7e]|&|<!|<\?/.test(source)) fail();
+    source = source.replace(/^ +| +$/g, '');
+    const tags = ['svg', 'g', 'path', 'rect', 'circle', 'ellipse', 'line', 'polyline', 'polygon'];
+    const scalars = ['width', 'height', 'x', 'y', 'x1', 'y1', 'x2', 'y2', 'cx', 'cy', 'r', 'rx', 'ry', 'stroke-width'];
+    const scalar = /^-?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:%|px)?$/;
+    const paint = /^(?:none|currentColor|transparent|black|white|red|green|blue|yellow|gray|grey|#[0-9a-fA-F]{3}(?:[0-9a-fA-F]{3})?)$/;
+    const stack = [];
+    let rootSeen = false;
+    let pos = 0;
+    while (pos < source.length) {
+      if (source[pos] === ' ') { pos += 1; continue; }
+      const tag = /^<(\/?)([A-Za-z][A-Za-z0-9-]*)([^<>]*?)(\/?)>/.exec(source.slice(pos));
+      if (!tag || !tags.includes(tag[2])) fail();
+      const name = tag[2];
+      if (tag[1]) {
+        if (tag[4] || !/^ *$/.test(tag[3]) || stack.pop() !== name) fail();
+      } else {
+        if (!stack.length) {
+          if (rootSeen || name !== 'svg') fail();
+          rootSeen = true;
+        } else if (name === 'svg') fail();
+        let attrs = tag[3];
+        const seen = new Set();
+        while (attrs && !/^ *$/.test(attrs)) {
+          const attr = /^ +([A-Za-z][A-Za-z0-9-]*) *= *(["'])(.*?)\2/.exec(attrs);
+          if (!attr || seen.has(attr[1])) fail();
+          const key = attr[1], value = attr[3];
+          seen.add(key);
+          let valid = false;
+          if (key === 'xmlns') valid = !stack.length && value === 'http://www.w3.org/2000/svg';
+          else if (scalars.includes(key)) valid = scalar.test(value);
+          else if (key === 'fill' || key === 'stroke') valid = paint.test(value);
+          else if (['opacity', 'fill-opacity', 'stroke-opacity'].includes(key)) {
+            valid = /^-?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)$/.test(value) && Number(value) >= 0 && Number(value) <= 1;
+          } else if (key === 'viewBox' || key === 'points') valid = /^[-+0-9.eE, ]+$/.test(value);
+          else if (key === 'd') valid = /^[MmZzLlHhVvCcSsQqTtAa0-9eE+., -]+$/.test(value);
+          else if (key === 'transform') valid = /^(?: *(?:matrix|translate|scale|rotate|skewX|skewY)\( *[-+0-9.eE, ]+\) *)+$/.test(value);
+          else if (key === 'fill-rule') valid = ['nonzero', 'evenodd'].includes(value);
+          else if (key === 'stroke-linecap') valid = ['butt', 'round', 'square'].includes(value);
+          else if (key === 'stroke-linejoin') valid = ['miter', 'round', 'bevel'].includes(value);
+          if (!valid) fail();
+          attrs = attrs.slice(attr[0].length);
+        }
+        if (!tag[4]) stack.push(name);
+      }
+      pos += tag[0].length;
+    }
+    if (!rootSeen || stack.length) fail();
+    return source;
+  }
+
 
   function fraction(value) {
     return typeof value === 'number' && !isNaN(value) ? Math.max(0, Math.min(1, value)) : null;
@@ -79,15 +137,20 @@
     var kind = WIDGET_TYPES.indexOf(node.type) >= 0 ? node.type : null;
     if (!kind) return null;
     var out = {type: kind};
-    if (kind === 'stack' || kind === 'row') {
-      var limit = kind === 'stack' ? 20 : 10;
+    if (kind === 'stack' || kind === 'row' || kind === 'grid') {
+      var limit = kind === 'row' ? 10 : 20;
+      if (kind === 'grid') {
+        if (!Number.isInteger(node.columns) || node.columns < 1 || node.columns > 3) return null;
+        out.columns = node.columns;
+      }
       if (!Array.isArray(node.children) || node.children.length < 1 || node.children.length > limit) return null;
       out.gap = typeof node.gap === 'number' && node.gap >= 0 && node.gap <= 48 ? node.gap : undefined;
       out.align = oneOf(node.align, ['start', 'center', 'end']);
       out.children = [];
       for (var i = 0; i < node.children.length; i++) {
         var child = checkNode(node.children[i], depth + 1, counter);
-        if (child) out.children.push(child);
+        if (!child) return null;
+        out.children.push(child);
       }
       if (!out.children.length) return null;
     } else if (kind === 'text') {
@@ -179,6 +242,21 @@
     } else if (kind === 'clock') {
       out.format = oneOf(node.format, CLOCK_FORMATS);
       out.label = text(node.label, 40) || undefined;
+    } else if (kind === 'ticker' || kind === 'qr') {
+      if (typeof node.text !== 'string' || Array.from(node.text).length > 1000 || /[\u0000-\u001f\u007f]/.test(node.text)) return null;
+      out.text = node.text.trim();
+      if (!out.text) return null;
+      if (kind === 'ticker') {
+        if (node.speed !== undefined && (!Number.isInteger(node.speed) || node.speed < 10 || node.speed > 200)) return null;
+        out.speed = node.speed;
+        out.tone = oneOf(node.tone, TONES);
+      } else {
+        try { if (unescape(encodeURIComponent(out.text)).length > 2953) return null; } catch (error) { return null; }
+        out.size = oneOf(node.size, IMAGE_SIZES);
+      }
+    } else if (kind === 'svg') {
+      try { out.source = checkSvg(node.source); } catch (error) { return null; }
+      out.size = oneOf(node.size, IMAGE_SIZES);
     } // divider has no fields
     return out;
   }
@@ -253,10 +331,8 @@
   }
 
   function startCountdown(clock, targetIso) {
-    var target = new Date(targetIso).getTime();
-    var tick = function () { clock.textContent = formatCountdown(target - Date.now()); };
-    tick();
-    liveTimers.push(setInterval(tick, 1000));
+    clock.dataset.target = targetIso;
+    clock.textContent = formatCountdown(new Date(targetIso).getTime() - Date.now());
   }
 
   function formatClock(now, format) {
@@ -266,20 +342,81 @@
   }
 
   function startClock(clock, format) {
-    var tick = function () { clock.textContent = formatClock(new Date(), format); };
-    tick();
-    liveTimers.push(setInterval(tick, 1000));
+    clock.dataset.format = format;
+    clock.textContent = formatClock(new Date(), format);
   }
 
-  function renderNode(node) {
+  function ensureLiveTimer() {
+    if (liveTimers.length) return;
+    liveTimers.push(setInterval(function () {
+      var countdowns = stage.querySelectorAll('.w-countdown-clock');
+      var clocks = stage.querySelectorAll('.w-clock-face');
+      for (var i = 0; i < countdowns.length; i++) {
+        countdowns[i].textContent = formatCountdown(new Date(countdowns[i].dataset.target).getTime() - Date.now());
+      }
+      for (var j = 0; j < clocks.length; j++) clocks[j].textContent = formatClock(new Date(), clocks[j].dataset.format);
+    }, 1000));
+  }
+
+  function buildNode(node) {
     var e;
     switch (node.type) {
       case 'stack':
       case 'row':
-        e = el('div', node.type === 'stack' ? 'w-stack' : 'w-row');
+      case 'grid':
+        e = el('div', 'w-' + node.type);
+        if (node.type === 'grid') e.style.gridTemplateColumns = 'repeat(' + node.columns + ', minmax(0, 1fr))';
         if (node.gap !== undefined) e.style.gap = node.gap + 'px';
         if (node.align) e.dataset.align = node.align;
         node.children.forEach(function (child) { e.appendChild(renderNode(child)); });
+        return e;
+      case 'ticker':
+        e = el('div', 'w-ticker');
+        e.dataset.tone = node.tone || 'info';
+        e.dataset.speed = node.speed || 50;
+        e.appendChild(span('w-ticker-text', node.text));
+        return e;
+      case 'qr':
+        e = el('div', 'w-qr');
+        e.dataset.size = node.size || 'm';
+        e.setAttribute('role', 'img');
+        e.setAttribute('aria-label', 'QR code: ' + node.text);
+        try {
+          var code = window.qrcode(0, 'L');
+          code.addData(node.text, 'Byte');
+          code.make();
+          var count = code.getModuleCount();
+          var svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+          svg.setAttribute('viewBox', '0 0 ' + (count + 8) + ' ' + (count + 8));
+          svg.setAttribute('shape-rendering', 'crispEdges');
+          var white = document.createElementNS(svg.namespaceURI, 'rect');
+          white.setAttribute('width', '100%');
+          white.setAttribute('height', '100%');
+          white.setAttribute('fill', '#ffffff');
+          svg.appendChild(white);
+          var path = document.createElementNS(svg.namespaceURI, 'path');
+          var commands = [];
+          for (var row = 0; row < count; row++) {
+            for (var col = 0; col < count; col++) {
+              if (code.isDark(row, col)) commands.push('M' + (col + 4) + ' ' + (row + 4) + 'h1v1h-1z');
+            }
+          }
+          path.setAttribute('d', commands.join(''));
+          path.setAttribute('fill', '#000000');
+          svg.appendChild(path);
+          e.appendChild(svg);
+        } catch (error) {
+          e.setAttribute('role', 'alert');
+          e.textContent = 'QR encoding failed: ' + error.message;
+        }
+        return e;
+      case 'svg':
+        e = el('div', 'w-svg');
+        e.dataset.size = node.size || 'm';
+        var source = node.source.indexOf('xmlns=') >= 0 || /xmlns *=/.test(node.source) ? node.source :
+          node.source.replace('<svg', '<svg xmlns="http://www.w3.org/2000/svg"');
+        var graphic = new DOMParser().parseFromString(source, 'image/svg+xml').documentElement;
+        e.appendChild(document.importNode(graphic, true));
         return e;
       case 'text':
         e = el('p', 'w-text');
@@ -291,7 +428,8 @@
       case 'image':
         e = el('img', 'w-image');
         e.alt = '';
-        e.addEventListener('error', function () { e.remove(); });
+        e.addEventListener('error', function () { e.hidden = true; });
+        e.addEventListener('load', function () { e.hidden = false; });
         e.dataset.shape = node.shape || 'square';
         e.dataset.size = node.size || 'm';
         e.src = node.src;
@@ -435,6 +573,113 @@
     }
   }
 
+  function renderNode(node) {
+    var element = buildNode(node);
+    element._widget = node;
+    return element;
+  }
+
+  function morph(old, fresh) {
+    if (old.nodeType !== fresh.nodeType || old.nodeName !== fresh.nodeName) {
+      old.parentNode.replaceChild(fresh, old);
+      return fresh;
+    }
+    if (old.nodeType === 3) {
+      if (old.nodeValue !== fresh.nodeValue) old.nodeValue = fresh.nodeValue;
+      return old;
+    }
+    Array.prototype.slice.call(old.attributes).forEach(function (attribute) {
+      // Focusability is local interaction state, not part of a widget's JSON fields.
+      if (attribute.name !== 'tabindex' && !fresh.hasAttribute(attribute.name)) old.removeAttribute(attribute.name);
+    });
+    Array.prototype.slice.call(fresh.attributes).forEach(function (attribute) {
+      if (old.getAttribute(attribute.name) !== attribute.value) old.setAttribute(attribute.name, attribute.value);
+    });
+    var count = Math.max(old.childNodes.length, fresh.childNodes.length);
+    var next = Array.prototype.slice.call(fresh.childNodes);
+    for (var i = 0; i < count; i++) {
+      if (!next[i]) { while (old.childNodes.length > i) old.removeChild(old.lastChild); break; }
+      if (!old.childNodes[i]) old.appendChild(next[i]);
+      else morph(old.childNodes[i], next[i]);
+    }
+    return old;
+  }
+
+  function patchNode(element, node) {
+    var previous = element._widget;
+    if (previous && JSON.stringify(previous) === JSON.stringify(node)) return element;
+    if (!previous || previous.type !== node.type) {
+      var replacement = renderNode(node);
+      element.parentNode.replaceChild(replacement, element);
+      return replacement;
+    }
+    if (node.children) {
+      element.style.gap = node.gap === undefined ? '' : node.gap + 'px';
+      if (node.align) element.dataset.align = node.align;
+      else delete element.dataset.align;
+      if (node.type === 'grid') element.style.gridTemplateColumns = 'repeat(' + node.columns + ', minmax(0, 1fr))';
+      node.children.forEach(function (child, index) {
+        if (element.children[index]) patchNode(element.children[index], child);
+        else element.appendChild(renderNode(child));
+      });
+      while (element.children.length > node.children.length) element.removeChild(element.lastChild);
+    } else {
+      morph(element, buildNode(node));
+    }
+    element._widget = node;
+    return element;
+  }
+
+  function motion(card, direction) {
+    var settings = card._animation || {};
+    var kind = settings[direction] || 'none';
+    var duration = settings.duration_ms === undefined ? 180 : settings.duration_ms;
+    if (kind === 'none' || duration === 0) return 0;
+    var base = window.getComputedStyle(card).transform;
+    var from = {}, to = {};
+    if (kind === 'fade' || kind === 'slide') { from.opacity = 0; to.opacity = 1; }
+    if (kind === 'slide') { from.transform = (base === 'none' ? '' : base + ' ') + 'translateY(24px)'; to.transform = base; }
+    if (kind === 'wipe') { from.clipPath = 'inset(0 100% 0 0)'; to.clipPath = 'inset(0 0% 0 0)'; }
+    if (card._motion) card._motion.cancel();
+    card._motion = card.animate(direction === 'enter' ? [from, to] : [to, from],
+      {duration: duration, easing: 'ease', fill: direction === 'enter' ? 'backwards' : 'forwards'});
+    return duration;
+  }
+
+  function retire(card) {
+    card.classList.add('retiring');
+    card.setAttribute('aria-hidden', 'true');
+    var duration = motion(card, 'exit');
+    setTimeout(function () { card.remove(); }, duration);
+    return duration;
+  }
+
+  function fitTickers() {
+    var tickers = stage.querySelectorAll('.w-ticker');
+    for (var i = 0; i < tickers.length; i++) {
+      var ticker = tickers[i], content = ticker.firstChild;
+      var distance = ticker.clientWidth + content.offsetWidth;
+      var signature = distance + ':' + ticker.dataset.speed + ':' + content.textContent;
+      if (ticker._motionKey === signature) continue;
+      ticker._motionKey = signature;
+      content.style.setProperty('--ticker-start', ticker.clientWidth + 'px');
+      content.style.setProperty('--ticker-end', -content.offsetWidth + 'px');
+      content.style.animationDuration = (distance / Number(ticker.dataset.speed)) + 's';
+    }
+  }
+
+  function runtime(values) {
+    var layoutChanged = (runtimeState.hidden && values.hidden === false) ||
+      (typeof values.compact === 'boolean' && values.compact !== runtimeState.compact);
+    if (values.dim !== undefined && typeof values.dim === 'number' && values.dim >= 0.2 && values.dim <= 1) runtimeState.dim = values.dim;
+    if (typeof values.compact === 'boolean') runtimeState.compact = values.compact;
+    if (typeof values.hidden === 'boolean') runtimeState.hidden = values.hidden;
+    stage.style.filter = runtimeState.dim === 1 ? '' : 'brightness(' + runtimeState.dim + ')';
+    stage.dataset.compact = String(runtimeState.compact);
+    stage.hidden = runtimeState.hidden;
+    if (layoutChanged && !runtimeState.hidden) { fitPanels(); fitTickers(); }
+  }
+
   function hexToRgb(hex) {
     return parseInt(hex.slice(1, 3), 16) + ' ' + parseInt(hex.slice(3, 5), 16) + ' ' + parseInt(hex.slice(5, 7), 16);
   }
@@ -455,27 +700,40 @@
     stage.dataset.font = theme.font || 'sans';
   }
 
-  function makeCard(position, size, tree, seconds) {
-    var card = el('article', 'card');
-    card.dataset.pos = position;
-    card.dataset.size = size;
+  function updateCard(card, region, seconds) {
+    card.dataset.pos = region.position;
+    card.dataset.size = region.size;
     card.dataset.pinned = String(seconds === 0);
+    card._animation = region.animation || {};
+    card.style.setProperty('--offset-x', (region.offset ? region.offset.x : 0) + 'px');
+    card.style.setProperty('--offset-y', (region.offset ? region.offset.y : 0) + 'px');
+    card.style.top = '';
+    card.style.bottom = '';
+    patchNode(card.querySelector('.root').firstChild, region.tree);
+    if (card._seconds !== seconds) {
+      card._seconds = seconds;
+      var bar = card.querySelector('.time span');
+      bar.style.transition = 'none';
+      bar.style.transform = 'scaleX(1)';
+      void bar.offsetWidth;
+      if (seconds) {
+        bar.style.transition = 'transform ' + seconds + 's linear';
+        bar.style.transform = 'scaleX(0)';
+      }
+    }
+  }
+
+  function makeCard(region, seconds) {
+    var card = el('article', 'card show');
     var root = el('div', 'root');
-    root.appendChild(renderNode(tree));
+    root.appendChild(renderNode(region.tree));
     card.appendChild(root);
     var time = el('div', 'time');
-    var bar = el('span');
-    time.appendChild(bar);
+    time.appendChild(el('span'));
     card.appendChild(time);
     stage.appendChild(card);
-    bar.style.transition = 'none';
-    bar.style.transform = 'scaleX(1)';
-    void bar.offsetWidth;
-    requestAnimationFrame(function () { card.classList.add('show'); });
-    if (seconds) {
-      bar.style.transition = 'transform ' + seconds + 's linear';
-      bar.style.transform = 'scaleX(0)';
-    }
+    updateCard(card, region, seconds);
+    motion(card, 'enter');
     return card;
   }
 
@@ -486,70 +744,167 @@
   }
 
   function cards() {
-    return Array.prototype.slice.call(stage.querySelectorAll('.card'));
+    return Array.prototype.slice.call(stage.querySelectorAll('.card:not(.retiring)'));
   }
 
   function close() {
     clearTimeout(hideTimer);
-    cards().forEach(function (card) { card.classList.remove('show'); });
+    clearTimeout(timelineTimer);
     clearTimeout(closeTimer);
+    timelineKey = null;
+    activePayload = null;
+    var duration = 0;
+    cards().forEach(function (card) { duration = Math.max(duration, retire(card)); });
     closeTimer = setTimeout(function () {
       clearLiveTimers();
       stage.textContent = '';
       try { window.close(); } catch (e) {}
-    }, 200);
+    }, duration);
   }
 
-  function regionsOf(p) {
-    var counter = {n: 0};
-    var out = [];
-    if (Array.isArray(p.regions)) {
-      var seen = {};
-      for (var i = 0; i < p.regions.length && i < MAX_REGIONS; i++) {
-        var region = p.regions[i];
-        if (!region || typeof region !== 'object') continue;
-        var position = oneOf(region.position, POSITIONS);
-        if (!position || seen[position]) continue;
-        var tree = checkNode(region.root, 0, counter);
-        if (!tree) continue;
-        seen[position] = true;
-        out.push({position: position, size: oneOf(region.size, SIZES) || 'm', tree: tree});
+  function optionsOf(raw) {
+    var out = {};
+    if (raw.offset !== undefined) {
+      if (!raw.offset || typeof raw.offset !== 'object') return null;
+      var x = raw.offset.x === undefined ? 0 : raw.offset.x;
+      var y = raw.offset.y === undefined ? 0 : raw.offset.y;
+      if (!Number.isInteger(x) || !Number.isInteger(y) || Math.abs(x) > 1920 || Math.abs(y) > 1080) return null;
+      out.offset = {x: x, y: y};
+    }
+    if (raw.animation !== undefined) {
+      var animation = raw.animation;
+      if (!animation || typeof animation !== 'object') return null;
+      out.animation = {};
+      for (var i = 0; i < 2; i++) {
+        var key = ['enter', 'exit'][i];
+        if (animation[key] !== undefined) {
+          if (!oneOf(animation[key], ['none', 'fade', 'slide', 'wipe'])) return null;
+          out.animation[key] = animation[key];
+        }
       }
-    } else {
-      var single = checkNode(p.root, 0, counter);
-      if (single) out.push({position: oneOf(p.position, POSITIONS) || 'top-right', size: oneOf(p.size, SIZES) || 'm', tree: single});
+      if (animation.duration_ms !== undefined) {
+        if (!Number.isInteger(animation.duration_ms) || animation.duration_ms < 0 || animation.duration_ms > 2000) return null;
+        out.animation.duration_ms = animation.duration_ms;
+      }
+    }
+    return out;
+  }
+
+  function regionsOf(p, counter) {
+    counter = counter || {n: 0};
+    var out = [];
+    var entries = p.regions === undefined ? [p] : p.regions;
+    if (!Array.isArray(entries) || entries.length < 1 || entries.length > MAX_REGIONS || (p.regions !== undefined && p.root !== undefined)) return out;
+    var seen = {};
+    for (var i = 0; i < entries.length; i++) {
+      var region = entries[i];
+      if (!region || typeof region !== 'object') return [];
+      var position = region.position === undefined && p.regions === undefined ? 'top-right' : oneOf(region.position, POSITIONS);
+      var size = region.size === undefined ? 'm' : oneOf(region.size, SIZES);
+      if (!position || !size || seen[position]) return [];
+      var tree = checkNode(region.root, 0, counter);
+      var options = optionsOf(region);
+      if (!tree || !options) return [];
+      seen[position] = true;
+      out.push({position: position, size: size, tree: tree, animation: options.animation, offset: options.offset});
     }
     return out;
   }
 
   // Left/right panels start below a top bar and end above a bottom bar, like a broadcast sidebar.
   function fitPanels() {
-    var top = stage.querySelector('.card[data-pos="top"]');
-    var bottom = stage.querySelector('.card[data-pos="bottom"]');
+    var top = stage.querySelector('.card:not(.retiring)[data-pos="top"]');
+    var bottom = stage.querySelector('.card:not(.retiring)[data-pos="bottom"]');
     var inset = {top: top ? top.offsetHeight + 'px' : '', bottom: bottom ? bottom.offsetHeight + 'px' : ''};
     var edges = [];
     ['top', 'bottom', 'left', 'right'].forEach(function (side) {
-      var card = stage.querySelector('.card[data-pos="' + side + '"]');
+      var card = stage.querySelector('.card:not(.retiring)[data-pos="' + side + '"]');
       if (card) edges.push(side);
       if (card && (side === 'left' || side === 'right')) { card.style.top = inset.top; card.style.bottom = inset.bottom; }
     });
     stage.dataset.edges = edges.join(' ');
   }
 
-  function render(p) {
-    if (p.hide === true) return close();
+  function renderFrame(p, seconds, replace) {
     var regions = regionsOf(p);
-    if (!regions.length) return; // malformed launch params from outside notify.js: draw nothing rather than guess
-    clearTimeout(hideTimer);
+    if (!regions.length) return false;
     clearTimeout(closeTimer);
-    clearLiveTimers();
-    stage.textContent = '';
     applyTheme(checkTheme(p.theme));
-    var seconds = typeof p.seconds === 'number' && p.seconds >= 0 && p.seconds <= 300 ? p.seconds : 8;
-    regions.forEach(function (region) { makeCard(region.position, region.size, region.tree, seconds); });
+    runtime(runtimeState);
+    var existing = cards();
+    if (replace) { existing.forEach(retire); existing = []; }
+    regions.forEach(function (region, index) {
+      if (existing[index]) updateCard(existing[index], region, seconds);
+      else makeCard(region, seconds);
+    });
+    existing.slice(regions.length).forEach(retire);
     fitPanels();
+    fitTickers();
+    ensureLiveTimer();
     passThrough();
-    if (seconds) hideTimer = setTimeout(close, seconds * 1000);
+    return true;
+  }
+
+  function timelineFrame(replace) {
+    var frame = activePayload.timeline[timelineIndex];
+    var payload = Object.assign({}, frame.card);
+    if (payload.theme === undefined) payload.theme = activePayload.theme;
+    renderFrame(payload, frame.seconds, replace);
+    timelineTimer = setTimeout(function () {
+      timelineIndex += 1;
+      if (timelineIndex >= activePayload.timeline.length) return close();
+      timelineFrame(true);
+    }, frame.seconds * 1000);
+  }
+
+  function render(p) {
+    p = paramsOf(p);
+    if (p.hide === true) return close();
+    if (p.action === 'runtime') { runtime(p); return; }
+    if (p.timeline !== undefined) {
+      if (!Array.isArray(p.timeline) || p.timeline.length < 1 || p.timeline.length > 4 || p.root !== undefined || p.regions !== undefined) return;
+      var counter = {n: 0};
+      for (var i = 0; i < p.timeline.length; i++) {
+        var frame = p.timeline[i];
+        if (!frame || !Number.isInteger(frame.seconds) || frame.seconds < 1 || frame.seconds > 300 ||
+            !frame.card || frame.card.timeline !== undefined || !regionsOf(frame.card, counter).length) return;
+      }
+      var key = JSON.stringify(p.timeline.map(function (frame) { return frame.seconds; }));
+      var preserve = timelineKey === key && activePayload && activePayload.timeline;
+      var preserveDeadline = preserve && activePayload.seconds === p.seconds;
+      if (!preserveDeadline) {
+        clearTimeout(hideTimer);
+        if (Number.isInteger(p.seconds) && p.seconds > 0 && p.seconds <= 300) hideTimer = setTimeout(close, p.seconds * 1000);
+      }
+      activePayload = p;
+      runtime({dim: p.dim === undefined && !preserve ? 1 : p.dim,
+        compact: p.compact === undefined && !preserve ? false : p.compact, hidden: preserve ? undefined : false});
+      if (preserve) {
+        var current = p.timeline[timelineIndex];
+        var payload = Object.assign({}, current.card);
+        if (payload.theme === undefined) payload.theme = p.theme;
+        renderFrame(payload, current.seconds, false);
+      } else {
+        clearTimeout(timelineTimer);
+        timelineKey = key;
+        timelineIndex = 0;
+        timelineFrame(false);
+      }
+      return;
+    }
+    var seconds = Number.isInteger(p.seconds) && p.seconds >= 0 && p.seconds <= 300 ? p.seconds : 8;
+    var preserveTimer = activePayload && !activePayload.timeline && activePayload.seconds === p.seconds && cards().length;
+    if (!regionsOf(p).length) return;
+    clearTimeout(timelineTimer);
+    timelineKey = null;
+    activePayload = p;
+    runtime({dim: p.dim === undefined && !preserveTimer ? 1 : p.dim,
+      compact: p.compact === undefined && !preserveTimer ? false : p.compact, hidden: preserveTimer ? undefined : false});
+    renderFrame(p, seconds, false);
+    if (!preserveTimer) {
+      clearTimeout(hideTimer);
+      if (seconds) hideTimer = setTimeout(close, seconds * 1000);
+    }
   }
 
   // A real button press dismisses the card; Magic Remote pointer activity (key codes 1536 and up) does not.
@@ -559,5 +914,8 @@
   document.addEventListener('webOSRelaunch', function (event) {
     render(paramsOf(event && event.detail ? event.detail : window.PalmSystem && window.PalmSystem.launchParams));
   }, true);
+  window.webosFoundryOverlay = {render: render, close: close};
+  if (document.fonts) document.fonts.ready.then(function () { fitPanels(); fitTickers(); });
+  window.addEventListener('resize', function () { fitPanels(); fitTickers(); });
   render(paramsOf(window.PalmSystem ? window.PalmSystem.launchParams : {}));
 }());

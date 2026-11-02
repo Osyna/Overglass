@@ -1,6 +1,6 @@
 # Stillwater
 
-The design system for the webOS Foundry browser app. This replaces Lamplight. The audience is a TV owner, not a developer: someone opening the app on the sofa with a phone, or managing their TV from a laptop.
+The design system for the Overglass browser app. This replaces Lamplight. The audience is a TV owner, not a developer: someone opening the app on the sofa with a phone, or managing their TV from a laptop.
 
 The product should feel calm, modern and dependable. It shows the next useful action without hiding the existing TV controls. Its mode is **Operate**, its scope is the whole interface, and its Signet owner is **impeccable**.
 
@@ -66,8 +66,8 @@ The six main destinations remain Home, Remote, Apps, Automate, Show and Tune. Ap
 - **641–1099px:** navigation occupies its own second header row so controls do not collide.
 - **640px and below:** navigation becomes a fixed bottom tab bar. The top header keeps the brand mark, TV status, appearance toggle and Settings. Safe-area padding protects both bars and the page content.
 - **800px and below:** ordinary two-column task layouts become one column.
-- **1000px and below:** the Studio preview moves above its editor as a collapsible dock, open initially. On wider screens it stays to the right and sticks below the header.
-- **640px and below:** the widget outline and inspector stack, and saved designs use a single thumbnail column.
+- **1000px and below:** Start and Finish place the preview above their controls. Design uses a full-width widget workspace: three panes above 1100px, contents and inspector with preview above at 641–1100px, and one column on phones.
+- **640px and below:** the Design preview starts collapsed on first entry, preserving a user's later open/closed choice. Selecting a widget brings its inspector into view. Saved designs use a single thumbnail column.
 
 These are layout rules, not claims of completed browser or hardware verification.
 
@@ -81,7 +81,11 @@ TV status and power are the anchor on the left, followed by plain shortcut rows.
 
 The directional pad is the primary tactile control. On larger screens it sits to the left of power, input and volume; phones stack these groups in familiar reading order. The selected HDMI input and mute state remain visible. Keyboard hints appear on larger pointer-capable devices, without taking space from phone controls.
 
+The volume slider sits directly below −/+ and commits on release, with the TV's read-back as the source of truth. Slider and + stop at 40 unless “Allow volume above 40” is checked; this resets on page load. Relocking never changes the TV, and an existing level above the cap stays visible. Keyboard focus returns to the slider after a confirmed write.
+
 ### Apps
+
+Included project apps occupy a full-width section above the file/link installer and other installed apps. Each row shows installed/missing state, package availability, and a direct Install/Repair action. Known included apps are excluded from the generic list, while their existing uninstall confirmation remains available. Install status is not optimistic: success follows TV readback, and errors remain visible. The row keeps its icon beside the metadata on phones and moves actions below.
 
 Installation and installed apps are separate columns on larger screens. The file drop target is the first installation path; a link is the alternative. The upload and install phases show only real progress and elapsed time. Installed apps remain icon-and-name rows with in-place remove confirmations and visible errors.
 
@@ -101,7 +105,11 @@ Studio comes first. It owns one draft throughout three steps:
 
 Step buttons keep the draft intact. Card capacity and the raw-JSON disclosure sit outside the step panels, so changing steps never hides access to the draft's code. JSON is applied explicitly or when its textarea loses focus. The browser checks the card and asks `POST /api/overlay/validate` for the server's verdict; an accepted, previewable response becomes the draft, with widget and byte counts from the server. Unapplied JSON or validation in progress makes the Design panel inert and visually subdued, and disables sending, saving, copying and export. Failed validation leaves the previous draft intact rather than silently replacing it.
 
-Each region has a nine-position mini-TV picker: four corners, center, top and bottom bars, and left and right panels. The widget workspace separates a nested outline from an inspector for the chosen widget. The outline exposes selection and structural actions; the inspector exposes fields. A grouped palette below offers SVG, name and a plain-language description for each widget type. It does not require the owner to know schema type names.
+Design separates card setup from widget editing. Layout, timing and looks live in a closed **Card setup** disclosure. The widget workspace spans the full studio width, with screen-area buttons, a compact **Contents** tree, the selected widget's inspector and the TV preview. Only the current area's tree is shown. Placement and motion settings sit below it in a disclosure rather than repeating nine-position grids above every area.
+
+Tree rows show an icon, widget type and one truncated value or child count. Columns, rows and grids have explicit expand/collapse buttons; collapse state survives redraws. Move, duplicate and remove actions appear only in the selected inspector. Breadcrumbs select ancestor layouts. A searchable **Add widget** picker explains its insertion target and closes after insertion; saved widget presets remain separate. Text, URLs and code fields use the full inspector width. Dropdowns show plain-language labels while preserving JSON enum values.
+
+Changing between Column, Row and Grid preserves contents and bindings. A row conversion exceeding ten items is refused next to the field, without discarding data. Replacing a layout with a leaf widget still confirms content removal. Drag and keyboard edits retain their existing semantics. Unapplied JSON makes both setup and the widget workspace inert; capacity and card code remain below the workspace.
 
 Look presets are shortcuts into the same card theme, not a second theme system. Unset properties retain TV defaults. Layout remains one card or up to four regions; the existing limits remain 80 widgets, five nesting levels and 49152 bytes of JSON.
 
@@ -111,7 +119,7 @@ A 16:9 `.tv-stage` contains a scaled 1920×1080 `.tv-screen`. The preview uses t
 
 **The edge-presence contract is `data-edges` on `.tv-screen`.** Its space-separated values are `top bottom left right`, limited to present edge regions. JavaScript measures top/bottom bars and fits side-panel insets. CSS mirrors `tv-assets/overlay/overlay.css`: adjoining side-panel borders disappear, shared corners become square, and joined edge-bar shadows disappear. This makes multi-region HUDs read as one continuous surface rather than overlapping cards.
 
-All existing widget families remain styled: stack, row, text, image placeholder, badge, dot, progress, countdown, clock, list, divider, compare, sparkline, section, event, stat, status and meta. Their tones remain TV-specific. Comparison, statistic and sparkline tracks use separate TV tokens where the renderer does.
+All widget families remain styled: stack (Column), row, grid, text, image placeholder, badge, dot, progress, countdown, clock, list, divider, compare, sparkline, section, event, stat, status, meta, ticker, QR and sanitized SVG. Their tones remain TV-specific. Comparison, statistic and sparkline tracks use separate TV tokens where the renderer does.
 
 The preview is a guide, not a screenshot of the overlay. The actual floating card is absent from the existing HDMI capture paths.
 
@@ -131,6 +139,6 @@ Appearance choices, access mode, the saved token and the developer entry point f
 
 ## File responsibilities and maintenance
 
-`tokens.css` defines palette, type stacks, scale, spacing, shape, motion and TV constants. `app.css` defines layout and component states. `index.html` owns semantic structure and the icon sprite; `app.js` and `apps.js` own state and API behavior. `theme.js` sets appearance before paint. `sw.js` owns shell caching and must change its cache version with a shell redesign.
+`tokens.css` defines palette, type stacks, scale, spacing, shape, motion and TV constants. `app.css` defines layout and component states. `index.html` owns semantic structure and the icon sprite; `app.js`, `studio.js` and `apps.js` own state and API behavior. The widget workspace uses the same draft, schema, history and binding state as the rest of Studio. `theme.js` sets appearance before paint. `sw.js` owns shell caching and must change its cache version with a shell redesign.
 
 For UI changes, run the offline UI, overlay and automation gates together after markup, styling and behavior changes have landed. Browser inspection should cover phone, tablet and desktop layouts in both themes, keyboard use and contrast. Preview fidelity also needs comparison with the actual TV; an offline gate cannot establish font or hardware rendering equivalence.

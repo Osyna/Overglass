@@ -24,14 +24,14 @@ Assistant's own `aiohttp` (`"iot_class": "local_polling"`).
 Home Assistant config directory as `config/custom_components/webos_foundry/`, then restart Home Assistant.
 
 **HACS (custom repository).** HACS → ⋮ → *Custom repositories* → add
-`https://github.com/webos-foundry/webos-foundry` with category *Integration* → download *webOS Foundry*
+`https://github.com/Osyna/Overglass` with category *Integration* → download *Overglass*
 → restart Home Assistant. HACS looks for `custom_components/<domain>/` at the repository root, but this
 repository keeps the integration under `homeassistant/custom_components/`; unless a root-level layout or
 `hacs.json` is added, HACS will not find it and you should use the manual copy.
 
 ## Add it
 
-*Settings → Devices & services → Add integration → webOS Foundry*, then enter:
+*Settings → Devices & services → Add integration → Overglass*, then enter:
 
 | Field | Value |
 | --- | --- |

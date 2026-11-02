@@ -1,10 +1,10 @@
 {
   "id": "dev.webosfoundry.overlay",
   "version": "1.0.1",
-  "vendor": "webOS Foundry contributors",
+  "vendor": "Overglass contributors",
   "type": "web",
   "main": "index.html",
-  "title": "webOS Foundry Overlay",
+  "title": "Overglass Overlay",
   "icon": "icon.png",
   "visible": false,
   "transparent": true,

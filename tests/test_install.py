@@ -137,12 +137,59 @@ def test_overlay_ipk_layout(assets):
     assert control.startswith("Package: dev.webosfoundry.overlay\nVersion: 1.0.0\n") and "Maintainer: v\n" in control
 
 
+def test_install_overlay_preserves_nested_asset_paths_and_bytes(assets):
+    nested = {
+        "qrcode.js": b"// encoder",
+        "qrcode-LICENSE.txt": b"MIT license",
+        "fonts/a.woff2": b"wOF2\x00\x01",
+        "fonts/licenses/OFL.txt": b"Open Font License",
+    }
+    for name, data in nested.items():
+        path = assets / "overlay" / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+    fake = tv()
+    install.install(fake)
+    payload = next(call.data for call in fake.calls if call.command == "install-overlay")
+    assert len(payload) <= install.FILE_MAX
+    with tarfile.open(fileobj=io.BytesIO(members(payload)["data.tar.gz"])) as tar:
+        app = "./usr/palm/applications/dev.webosfoundry.overlay/"
+        assert tar.getmember(app + "fonts").isdir()
+        assert tar.getmember(app + "fonts/licenses").isdir()
+        for name, data in nested.items():
+            assert tar.extractfile(app + name).read() == data
+
+
 def test_real_overlay_assets_package_if_present():
     real = Path(__file__).resolve().parent.parent / "tv-assets" / "overlay"
     if not (real / "appinfo.json").is_file():
         pytest.skip("tv-assets/overlay not present yet")
-    with tarfile.open(fileobj=io.BytesIO(members(install.package_overlay(real))["data.tar.gz"])) as tar:
-        assert "./usr/palm/applications/dev.webosfoundry.overlay/appinfo.json" in tar.getnames()
+    payload = install.package_overlay(real)
+    assert len(payload) <= install.FILE_MAX
+    with tarfile.open(fileobj=io.BytesIO(members(payload)["data.tar.gz"])) as tar:
+        app = "./usr/palm/applications/dev.webosfoundry.overlay/"
+        for path in real.rglob("*"):
+            if path.is_file():
+                assert tar.extractfile(app + path.relative_to(real).as_posix()).read() == path.read_bytes()
+
+
+def test_vendored_assets_are_identical_offline_fonts_and_licensed_qr():
+    import hashlib
+
+    root = Path(__file__).resolve().parent.parent
+    overlay, web = root / "tv-assets/overlay", root / "web"
+    manifest = json.loads((overlay / "vendor-assets.json").read_text())
+    assert (web / "vendor-assets.json").read_bytes() == (overlay / "vendor-assets.json").read_bytes()
+    for name, digest in manifest["sha256"].items():
+        data = (overlay / name).read_bytes()
+        assert data == (web / name).read_bytes()
+        assert hashlib.sha256(data).hexdigest() == digest
+    for font in manifest["fonts"]:
+        assert (overlay / font["file"]).read_bytes().startswith(b"wOF2")
+    assert {font["family"] for font in manifest["fonts"]} == {"Inter", "Roboto Condensed", "JetBrains Mono"}
+    assert b"MIT License" in (overlay / "qrcode-LICENSE.txt").read_bytes()
+    for name in ("Inter", "RobotoCondensed", "JetBrainsMono"):
+        assert b"SIL OPEN FONT LICENSE Version 1.1" in (overlay / ("fonts/" + name + "-LICENSE.txt")).read_bytes()
 
 
 # ---- generic directory push and the on-TV server
@@ -257,7 +304,7 @@ def test_install_tv_server_pushes_tree_web_hook_and_starts(assets, tv_server):
     fake = tree_fake()
     result = install.install(fake, overlay=False, vtcap="no", tv_server=True)
     assert tree_paths(fake) == ["tv-server/server.js", "tv-server/web/app.js", "tv-server/web/img/logo.svg",
-                                "tv-server/web/index.html"]  # not config.json (TV-owned), not the hook
+                                "tv-server/web/index.html", "tv-server/bundled/dev.webosfoundry.overlay.ipk"]
     assert result["tv_server"] == {"files": tree_paths(fake), "hook": "webos-foundry-tv-server", "started": True,
                                    "output": "started"}
     assert fake.commands[-2] == "install-hook webos-foundry-tv-server"
@@ -265,6 +312,32 @@ def test_install_tv_server_pushes_tree_web_hook_and_starts(assets, tv_server):
     assert fake.commands[-1] == "run-hook webos-foundry-tv-server start"
     assert [c.split()[1] for c in fake.commands[:9]] == [n for n in dispatcher.INSTALL_FILES if n != "dispatch.sh"] + ["dispatch.sh"]
     assert all(dispatcher.verb_of(c) for c in fake.commands)
+    payload = next(call.data for call in fake.calls if call.command ==
+                   "install-tree tv-server/bundled/dev.webosfoundry.overlay.ipk put")
+    assert len(payload) <= install.FILE_MAX
+    with tarfile.open(fileobj=io.BytesIO(members(payload)["data.tar.gz"])) as tar:
+        app = "./usr/palm/applications/dev.webosfoundry.overlay/"
+        for path in (assets / "overlay").rglob("*"):
+            if path.is_file():
+                assert tar.extractfile(app + path.relative_to(assets / "overlay").as_posix()).read() == path.read_bytes()
+    assert not any(call.command == "install-overlay" for call in fake.calls)
+
+def test_install_tv_server_includes_nested_font_assets_and_qr(assets, tv_server):
+    _, web = tv_server
+    files = {
+        "qrcode.js": b"// encoder",
+        "qrcode-LICENSE.txt": b"MIT license",
+        "fonts/Inter-Regular.woff2": b"wOF2\x00\x01",
+        "fonts/Inter-LICENSE.txt": b"Open Font License",
+    }
+    tree(web, files)
+    fake = tree_fake()
+    install.install(fake, overlay=False, vtcap="no", tv_server=True)
+    pushed = {call.command.split()[1]: call.data for call in fake.calls
+              if call.command.startswith("install-tree ")}
+    for name, data in files.items():
+        assert pushed["tv-server/web/" + name] == data
+
 
 
 def test_install_tv_server_needs_its_local_files_before_sending_anything(monkeypatch, assets, tv_server, tmp_path):
@@ -308,3 +381,33 @@ def test_real_tv_server_and_web_trees_pass_the_tv_grammar(monkeypatch):
     assert "tv-server/web/index.html" in result["tv_server"]["files"]
     assert "tv-server/config.json" not in result["tv_server"]["files"]
     assert all(dispatcher.verb_of(c) for c in fake.commands)
+    payload = next(call.data for call in fake.calls if call.command ==
+                   "install-tree tv-server/bundled/dev.webosfoundry.overlay.ipk put")
+    with tarfile.open(fileobj=io.BytesIO(members(payload)["data.tar.gz"])) as tar:
+        app = "./usr/palm/applications/dev.webosfoundry.overlay/"
+        metadata = json.loads(tar.extractfile(app + "appinfo.json").read())
+        assert metadata["id"] == install.BUNDLED_OVERLAY_ID
+        for path in (root / "tv-assets/overlay").rglob("*"):
+            if path.is_file():
+                assert tar.extractfile(app + path.relative_to(root / "tv-assets/overlay").as_posix()).read() == path.read_bytes()
+
+
+def test_bundled_overlay_staging_roundtrips_real_dispatcher_preserving_tv_config(assets, tv_server, tmp_path):
+    from tests.test_tv_assets import Rig, RigTransport, SHELL
+    if SHELL is None:
+        pytest.skip("needs sh")
+    rig = Rig(tmp_path / "rig")
+    remote = rig.tv / "tv-server"
+    remote.mkdir()
+    (remote / "config.json").write_bytes(b'{"owned":true}')
+    result = install._install_tv_server(RigTransport(rig))
+    staged = remote / install.BUNDLED_OVERLAY_PATH
+    assert staged.is_file() and 0 < staged.stat().st_size <= install.FILE_MAX
+    with tarfile.open(fileobj=io.BytesIO(members(staged.read_bytes())["data.tar.gz"])) as tar:
+        app = "./usr/palm/applications/dev.webosfoundry.overlay/"
+        for file in (assets / "overlay").rglob("*"):
+            if file.is_file():
+                assert tar.extractfile(app + file.relative_to(assets / "overlay").as_posix()).read() == file.read_bytes()
+    assert (remote / "config.json").read_bytes() == b'{"owned":true}'
+    assert not (remote / "web/bundled").exists() and not list(remote.rglob("*.part"))
+    assert "tv-server/" + install.BUNDLED_OVERLAY_PATH in result["files"] and result["started"] is True

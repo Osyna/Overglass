@@ -19,7 +19,7 @@ class Element {
       add: name => this.classList.toggle(name, true), remove: name => this.classList.toggle(name, false),
     };
   }
-  setAttribute(name, value) { this[name === 'class' ? 'className' : name] = ['disabled', 'selected'].includes(name) ? true : value; }
+  setAttribute(name, value) { this[name === 'class' ? 'className' : name] = ['disabled', 'selected', 'hidden'].includes(name) ? true : value; }
   getAttribute(name) { return this[name === 'class' ? 'className' : name] ?? null; }
   hasAttribute(name) { return this.getAttribute(name) !== null; }
   removeAttribute(name) { delete this[name]; }
@@ -65,6 +65,8 @@ const context = vm.createContext({
     getElementById: id => { if (!elements.has(id)) { const el = new Element('div'); el.id = id; elements.set(id, el); } return elements.get(id); },
   },
 });
+vm.runInContext(fs.readFileSync(new URL('./qrcode.js', import.meta.url), 'utf8'), context);
+vm.runInContext(fs.readFileSync(new URL('./studio.js', import.meta.url), 'utf8'), context);
 vm.runInContext(fs.readFileSync(new URL('./app.js', import.meta.url), 'utf8'), context);
 await vm.runInContext(`(async () => {
   const walk = el => [el, ...(el.children || []).filter(child => typeof child === 'object').flatMap(walk)];
@@ -73,8 +75,8 @@ await vm.runInContext(`(async () => {
   const inputs = el => walk(el).filter(child => ['input', 'select', 'textarea'].includes(child.tag));
 
   // --- every widget type: the blank node validates, previews, and renders builder controls ---
-  assert.equal(Object.keys(OVERLAY_FIELDS).length, 18);
-  assert.deepEqual(Object.keys(OVERLAY_FIELDS), ['stack', 'row', 'text', 'image', 'badge', 'dot', 'progress', 'countdown', 'list',
+  assert.equal(Object.keys(OVERLAY_FIELDS).length, 22);
+  assert.deepEqual(Object.keys(OVERLAY_FIELDS), ['stack', 'row', 'grid', 'ticker', 'qr', 'svg', 'text', 'image', 'badge', 'dot', 'progress', 'countdown', 'list',
     'divider', 'compare', 'sparkline', 'section', 'event', 'stat', 'status', 'meta', 'clock']);
   assert.deepEqual(OVERLAY_TONES, ['info', 'success', 'warning', 'alert', 'accent']);
   assert.equal(Object.keys(OVERLAY_ICONS).length, 16);
@@ -352,7 +354,7 @@ await vm.runInContext(`(async () => {
   updateOverlayDraft = () => {};
   overlayCard = { root: newOverlayNode('compare') };
   let builder = renderOverlayInspector(overlayCard.root);
-  assert.equal(walk(builder).filter(el => el.tag === 'input').length, 6, 'each segment has label, value and share inputs');
+  assert.equal(walk(builder).filter(el => el.tag === 'input' && el['aria-label'] !== 'Widget preset name').length, 6, 'each segment has label, value and share inputs');
   assert.equal(button(builder, 'Remove segment').disabled, true);
   button(builder, 'Add segment').listeners.click();
   builder = renderOverlayInspector(overlayCard.root);
@@ -422,22 +424,16 @@ await vm.runInContext(`(async () => {
 
   // move / duplicate / remove, and the 80-widget cap across regions
   overlayCard = { root: { type: 'stack', children: [{ type: 'text', text: 'A' }, { type: 'text', text: 'B' }, { type: 'dot' }] } };
-  builder = overlayBuilder(overlayCard.root);
-  const widgets = walk(builder).filter(el => el.classList.contains('widget-tree-row') && el !== builder);
-  assert.equal(widgets.length, 3);
-  assert.equal(button(widgets[0], 'Move up').disabled, true);
-  assert.equal(button(widgets[2], 'Move down').disabled, true);
-  button(widgets[0], 'Move down').listeners.click();
+  assert.equal(button(renderOverlayInspector(overlayCard.root.children[0]), 'Move up').disabled, true);
+  assert.equal(button(renderOverlayInspector(overlayCard.root.children[2]), 'Move down').disabled, true);
+  button(renderOverlayInspector(overlayCard.root.children[0]), 'Move down').listeners.click();
   assert.equal(JSON.stringify(overlayCard.root.children.map(c => c.text || c.type)), JSON.stringify(['B', 'A', 'dot']));
-  builder = overlayBuilder(overlayCard.root);
-  button(walk(builder).filter(el => el.classList.contains('widget-tree-row') && el !== builder)[2], 'Move up').listeners.click();
+  button(renderOverlayInspector(overlayCard.root.children[2]), 'Move up').listeners.click();
   assert.equal(JSON.stringify(overlayCard.root.children.map(c => c.text || c.type)), JSON.stringify(['B', 'dot', 'A']));
-  builder = overlayBuilder(overlayCard.root);
-  button(walk(builder).filter(el => el.classList.contains('widget-tree-row') && el !== builder)[0], 'Duplicate').listeners.click();
+  button(renderOverlayInspector(overlayCard.root.children[0]), 'Duplicate').listeners.click();
   assert.equal(JSON.stringify(overlayCard.root.children.map(c => c.text || c.type)), JSON.stringify(['B', 'B', 'dot', 'A']));
   assert.notEqual(overlayCard.root.children[0], overlayCard.root.children[1], 'a duplicate is a copy, not a shared object');
-  builder = overlayBuilder(overlayCard.root);
-  button(walk(builder).filter(el => el.classList.contains('widget-tree-row') && el !== builder)[1], 'Remove widget').listeners.click();
+  button(renderOverlayInspector(overlayCard.root.children[1]), 'Remove widget').listeners.click();
   assert.equal(JSON.stringify(overlayCard.root.children.map(c => c.text || c.type)), JSON.stringify(['B', 'dot', 'A']));
   overlayCard = { regions: [{ position: 'top', root: forty }, { position: 'right', root: { type: 'stack', children: [
     { type: 'stack', children: Array.from({ length: 18 }, () => ({ type: 'dot' })) },
@@ -453,7 +449,7 @@ await vm.runInContext(`(async () => {
   assert.equal(canAddOverlayWidget('dot'), false, 'the palette cap counts every region');
   addOverlayWidget('dot');
   assert.equal(overlayCardCount(), 80, 'direct palette calls also enforce the cap');
-  assert.equal(button(overlayBuilder(forty.children[0], 2, forty, 0), 'Duplicate').disabled, true);
+  assert.equal(button(renderOverlayInspector(forty.children[0]), 'Duplicate').disabled, true);
   overlayCard = { root: newOverlayNode('stack') };
   for (let i = 0; i < 2; i++) overlayCard.root = { type: 'stack', children: [overlayCard.root] };
   overlaySelected = overlayCard.root.children[0].children[0];
@@ -473,18 +469,50 @@ await vm.runInContext(`(async () => {
   assert.equal(overlayCard.root.children[0].type, 'dot');
   assert.equal(overlayCard.root.children[1], overlaySelected);
   checkOverlayCard(overlayCard);
+  const collapsible = overlayBuilder(overlayCard.root);
+  const toggle = collapsible.querySelector('.widget-toggle');
+  toggle.listeners.click();
+  assert.equal(collapsible.querySelector('.widget-branch').hidden, true, 'collapse hides children without editing the card');
+  assert.equal(overlayBuilder(overlayCard.root).querySelector('.widget-branch').hidden, true, 'collapsed groups stay collapsed after a redraw');
+  toggle.listeners.click();
+  assert.equal(collapsible.querySelector('.widget-branch').hidden, false);
+
+  overlayCard = { regions: [
+    { position: 'top', root: { type: 'text', text: 'Top' } },
+    { position: 'right', root: { type: 'stack', children: [{ type: 'text', text: 'Side' }] } },
+  ] };
+  overlaySelected = overlayCard.regions[0].root;
   renderOverlayBuilder();
-  const workspace = $('ov-builder').querySelector('.widget-workspace');
-  assert.ok(workspace.querySelector('.widget-outline'));
-  assert.ok(workspace.querySelector('.widget-inspector'));
-  assert.ok(workspace.querySelector('.widget-select'));
-  const paletteItems = $('ov-builder').querySelectorAll('.palette-item');
-  assert.equal(paletteItems.length, Object.keys(OVERLAY_FIELDS).length);
-  for (const item of paletteItems) {
-    assert.equal(item.children[0].tag, 'svg', 'palette widgets have SVG icons');
-    assert.ok(item.querySelector('strong')?.textContent, 'palette widgets have names');
-    assert.ok(item.querySelector('small')?.textContent, 'palette widgets explain what they do');
-  }
+  button($('ov-builder').querySelector('.widget-areas'), '2. ' + OVERLAY_POSITIONS.right).listeners.click();
+  assert.equal(overlaySelected, overlayCard.regions[1].root, 'area selection changes the actual insertion target');
+  const searchWidgets = inputs($('ov-builder')).find(input => input.type === 'search');
+  searchWidgets.value = 'clock'; searchWidgets.listeners.input();
+  const matches = $('ov-builder').querySelectorAll('.palette-item').filter(item => !item.hidden);
+  assert.equal(matches.length, 1, 'widget search narrows the available choices');
+  matches[0].listeners.click();
+  assert.equal(overlayCard.regions[0].root.text, 'Top', 'adding to a different area leaves the first area intact');
+  assert.equal(overlayCard.regions[1].root.children[1].type, 'clock');
+  assert.equal(overlaySelected, overlayCard.regions[1].root.children[1]);
+
+  overlayCard = { root: { type: 'stack', gap: 12, children: [{ type: 'text', text: 'Keep A' }, { type: 'text', text: 'Keep B' }] } };
+  overlaySelected = overlayCard.root;
+  const originalChild = overlayCard.root.children[0];
+  let arrangement = inputs(renderOverlayInspector(overlaySelected)).find(input => input.getAttribute('aria-label') === 'Widget type');
+  arrangement.value = 'row'; arrangement.listeners.change();
+  assert.equal(overlayCard.root.type, 'row');
+  assert.equal(overlayCard.root.children[0], originalChild, 'layout changes retain content and binding identities');
+  arrangement = inputs(renderOverlayInspector(overlaySelected)).find(input => input.getAttribute('aria-label') === 'Widget type');
+  arrangement.value = 'grid'; arrangement.listeners.change();
+  assert.equal(overlayCard.root.children[1].text, 'Keep B');
+  checkOverlayCard(overlayCard);
+  overlayCard = { root: { type: 'stack', children: Array.from({ length: 11 }, () => ({ type: 'dot' })) } };
+  overlaySelected = overlayCard.root;
+  const oversizedInspector = renderOverlayInspector(overlaySelected);
+  arrangement = inputs(oversizedInspector).find(input => input.getAttribute('aria-label') === 'Widget type');
+  arrangement.value = 'row'; arrangement.listeners.change();
+  assert.equal(overlayCard.root.type, 'stack', 'an oversized row conversion never deletes content');
+  assert.equal(overlayCard.root.children.length, 11);
+  assert.ok(walk(oversizedInspector).some(el => el.className === 'field-error' && el.textContent && !el.hidden));
 
   // regions: unique positions, add/remove
   overlayCard = { regions: [{ position: 'top', size: 'full', root: dot }, { position: 'right', size: 's', root: dot }] };

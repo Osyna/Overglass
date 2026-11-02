@@ -31,7 +31,7 @@ from pathlib import Path
 from socket import AF_INET6
 from urllib.parse import parse_qs, unquote, urlsplit
 
-from webos_foundry import addons, apps, capture, designs, notify, pairing, process, scenes, schedule, tv, webhooks
+from webos_foundry import access, addons, apps, bindings, capture, designs, dispatcher, events, install, notify, pairing, process, rotations, runtime, scenes, schedule, themes, tv, webhooks
 from webos_foundry.config import AUTH_MODES, Config
 from webos_foundry.errors import ConfigError, NotPairedError, TransportError, TvBusyError, WebosFoundryError
 from webos_foundry.transport import SSHTransport
@@ -45,13 +45,14 @@ TYPES = {  # extension -> content type of the files served from web/
     ".txt": "text/plain; charset=utf-8",
 }
 UPLOAD_RE = re.compile(r"/uploads/([0-9a-f]{32})\.ipk")  # unguessable id = the capability the TV fetches an upload by
-PUBLIC = ("/api", "/api/health")  # no bearer token, ever
+PUBLIC = ("/api", "/api/health", "/api/access/login")  # login still obeys Host/Origin checks and rate limits
 LOCAL = PUBLIC + ("/api/config/auth", "/api/pair", "/api/overlay/schema", "/api/overlay/validate")  # answered from this server's own state; no TV or pairing needed
 NOT_PAIRED = "Not paired; run: wof pair --host <ip>"
 CSP = ("default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' blob:; "
        "font-src 'self'; media-src 'self' blob:; manifest-src 'self'; base-uri 'none'; form-action 'none'; "
        "frame-ancestors 'none'")
 MAX_JSON = 64 * 1024
+MAX_BUNDLE = 512 * 1024  # validated PNG thumbnail plus the normal card payload
 MAX_UPLOAD = 16 * 1024 * 1024
 MAX_IPK = 128 * 1024 * 1024
 KEEP_JOBS = 20  # finished jobs whose files stay downloadable until the server stops
@@ -96,6 +97,8 @@ REMOTE = {
     "ok": ("OK key", KEY + ' {"key":"ENTER"}'),
     "hdmi": ("Switch input; body {\"value\": 1-4}",
              'luna://com.webos.applicationManager/launch {"id":"com.webos.app.hdmiN"}, then getForegroundAppInfo until it is in front'),
+    "volume": ('Set TV speaker volume; body {"value": 0-100}, limited by the TV maximum',
+               VOLUME + "setVolume, then getVolume readback"),
     "volume_up": ("Volume +1 on the TV speaker", VOLUME + "setVolume, then getVolume readback"),
     "volume_down": ("Volume −1 on the TV speaker", VOLUME + "setVolume, then getVolume readback"),
     "mute": ("Mute the TV speaker", VOLUME + 'muteVolume {"mute":true}, then getVolume readback'),
@@ -198,10 +201,10 @@ def auth_error(path, header, token, loopback, auth_mode="token"):
     if auth_mode == "disabled" or path in PUBLIC or path.startswith("/webhook/") or is_static(path):
         return None
     presented = bearer(header)
-    if loopback and not token:
+    if loopback and not header:
         return None
     if presented is None:
-        return None if loopback else (401, "Missing bearer token: send Authorization: Bearer <server_token>")
+        return 401, "Missing bearer token: send Authorization: Bearer <server_token>"
     if token and hmac.compare_digest(presented.encode(), token.encode()):
         return None
     return 401, "Invalid bearer token"
@@ -314,7 +317,12 @@ def get_health(_request, _):
 
 
 def get_status(request, _):
-    return tv.get_status(request.transport)
+    with TV_LOCK:
+        reserved()
+        status = tv.get_status(request.transport)
+    if getattr(request, "identity", {}).get("role") == "guest":
+        return {key: status.get(key) for key in ("power", "app_id", "source", "volume", "muted")}
+    return status
 
 
 def post_remote(request, params):
@@ -322,6 +330,8 @@ def post_remote(request, params):
     if action not in tv.REMOTE_ACTIONS:
         raise ApiError(404, "Unknown remote action; GET /api lists them")
     value = request.json_body(required=False).get("value")
+    if action == "volume" and (type(value) is not int or not 0 <= value <= 100):
+        raise ApiError(400, "Volume must be an integer from 0 to 100")
     reserved()
     with TV_LOCK:
         return {"action": action, "message": tv.remote(request.transport, action, value)}
@@ -342,7 +352,9 @@ def put_setting(request, params):
 
 
 def get_details(request, _):
-    return tv.get_details(request.transport)
+    with TV_LOCK:
+        reserved()
+        return tv.get_details(request.transport)
 
 
 def post_toast(request, _):
@@ -371,8 +383,9 @@ def get_screenshot(request, _):
 
 def post_overlay(request, _):
     card = request.json_body()
-    reserved()
-    return {"message": notify.overlay_show(request.transport, card)}
+    with TV_LOCK:
+        reserved()
+        return {"message": notify.overlay_show(request.transport, card)}
 
 
 def get_overlay_schema(request, _):
@@ -380,7 +393,13 @@ def get_overlay_schema(request, _):
 
 
 def post_overlay_validate(request, _):
-    return notify.inspect_overlay(request.json_body())
+    body = request.json_body()
+    if "bindings" not in body:
+        return notify.inspect_overlay(body)
+    card = designs.check_design(body)
+    verdict = notify.inspect_overlay({key: value for key, value in card.items() if key != "bindings"})
+    verdict["card"] = card
+    return verdict
 
 
 def get_scenes(_request, _):
@@ -402,9 +421,10 @@ def post_scene_run(request, params):
     saved = scenes.load()
     if params["name"] not in saved:
         raise ApiError(404, "No such scene")
-    reserved()
     with TV_LOCK:
-        return {"messages": scenes.run_scene(request.transport, saved[params["name"]])}
+        reserved()
+        with request.server.runtime.producing("scene"):
+            return {"messages": scenes.run_scene(request.transport, saved[params["name"]])}
 
 
 def get_webhooks(_request, _):
@@ -413,9 +433,9 @@ def get_webhooks(_request, _):
 
 def post_webhook(request, _):
     body = request.json_body()
-    if set(body) - {"scene", "label"}:
-        raise ValueError("A webhook only takes scene and label")
-    token = webhooks.create(body.get("scene"), body.get("label"))
+    if set(body) - {"scene", "design", "label"}:
+        raise ValueError("A webhook takes scene or design and label")
+    token = webhooks.create(body.get("scene"), body.get("label"), design=body.get("design"))
     return {"token": token, "url": "/webhook/" + token, "message": "Webhook created"}
 
 
@@ -428,13 +448,24 @@ def get_webhook(request, params):
     entry = webhooks.resolve(params["token"])
     if entry is None:
         raise ApiError(404, "No such webhook")
-    scene = scenes.load().get(entry["scene"])
-    if scene is None:
-        raise ApiError(404, "Webhook scene no longer exists: %s" % entry["scene"])
-    reserved()
+    if request.command == "GET":
+        return {"target": entry, "message": "POST this URL to fire the webhook"}
+    body = request.json_body(required=False)
+    if set(body) - {"values"}:
+        raise ValueError("A webhook accepts only values")
     with TV_LOCK:
-        messages = scenes.run_scene(request.server.get_transport(), scene)
-    return {"message": "Webhook fired: %d step(s) run" % len(messages)}
+        reserved()
+        if "design" in entry:
+            card = webhooks.render(entry, body.get("values"))
+            return {"message": notify.overlay_show(request.server.get_transport(), card)}
+        if body.get("values"):
+            raise ValueError("Scene webhooks do not accept values")
+        scene = scenes.load().get(entry["scene"])
+        if scene is None:
+            raise ApiError(404, "Webhook scene no longer exists")
+        with request.server.runtime.producing("scene"):
+            messages = scenes.run_scene(request.server.get_transport(), scene)
+        return {"message": "Webhook fired: %d step(s) run" % len(messages)}
 
 
 def get_schedule(_request, _):
@@ -467,8 +498,13 @@ def get_addons(_request, _):
 
 
 def put_addon(request, params):
-    with addons.LOCK:
-        entry = addons.install(params["id"], request.json_body())
+    body = request.json_body()
+    with rotations.LOCK, addons.LOCK:
+        if body.get("enabled", True) and any(entry["enabled"] for entry in rotations.load().values()):
+            raise ApiError(409, "Disable the active rotation before enabling an addon")
+        entry = addons.install(params["id"], body)
+    if entry["enabled"]:
+        request.server.runtime.resume()
     return {"message": "Addon installed", "entry": entry}
 
 
@@ -482,8 +518,9 @@ def delete_addon(_request, params):
 
 def post_addon_preview(request, params):
     body = request.json_body(required=False)
-    reserved()
-    return {"message": addons.preview(params["id"], body.get("params", {}), request.transport)}
+    with TV_LOCK:
+        reserved()
+        return {"message": addons.preview(params["id"], body.get("params", {}), request.transport)}
 
 
 def get_designs(_request, _):
@@ -506,8 +543,9 @@ def delete_design(_request, params):
 def post_design_show(request, params):
     if params["name"] not in designs.load():
         raise ApiError(404, "No such design")
-    reserved()
-    return {"message": designs.show(request.transport, params["name"])}
+    with TV_LOCK:
+        reserved()
+        return {"message": designs.show(request.transport, params["name"])}
 
 
 def stream_args(query):
@@ -636,6 +674,46 @@ def work_root():
         return ROOT
 
 
+BUNDLED_OVERLAY = {
+    "id": install.BUNDLED_OVERLAY_ID, "title": "Overglass Overlay",
+    "description": "Displays Overglass overlay cards on the TV.", "version": "1.0.1",
+}
+
+
+def bundled_overlay_package():
+    try:
+        return install._checked(install.package_overlay())
+    except (OSError, ValueError, KeyError, WebosFoundryError) as error:
+        raise ApiError(503, "Bundled overlay source is unavailable; restore tv-assets/overlay in the project "
+                            "or set WEBOS_FOUNDRY_ASSETS, then try again") from error
+
+
+def get_bundled_apps(request, _):
+    try:
+        bundled_overlay_package()
+        available = True
+    except ApiError:
+        available = False
+    with TV_LOCK:
+        reserved()
+        installed = install.status(request.transport)["overlay"]
+    return [{**BUNDLED_OVERLAY, "installed": installed, "available": available}]
+
+
+def post_bundled_app(request, params):
+    if params["id"] != install.BUNDLED_OVERLAY_ID:
+        raise ApiError(404, "No such bundled app")
+    if request.query or request.json_body(required=False):
+        raise ApiError(400, "Bundled app installation takes no options")
+    with TV_LOCK:
+        reserved()
+        package = bundled_overlay_package()
+        request.transport.run(dispatcher.build_install_overlay(), data=package, timeout=120)
+        if not install.status(request.transport)["overlay"]:
+            raise ApiError(502, "The TV did not confirm the overlay renderer is installed")
+    return {"id": install.BUNDLED_OVERLAY_ID, "installed": True, "message": "Overlay renderer installed"}
+
+
 def get_apps(request, _):
     return apps.list_apps(request.transport)
 
@@ -721,6 +799,153 @@ def post_pair(request, _):
     return {"message": "Paired with %s" % config.tv_host, "tv_host": config.tv_host}
 
 
+def post_access_login(request, _):
+    body = request.json_body()
+    try:
+        result = request.server.sessions.login(body.get("name"), body.get("pin"), request.client_address[0])
+    except access.LoginError as error:
+        raise ApiError(error.status, str(error)) from None
+    result["warning"] = "HTTP does not encrypt your PIN or session. Use a trusted LAN or an HTTPS reverse proxy."
+    return result
+
+
+def get_access_users(_request, params):
+    users = access.public_users()
+    if "name" in params:
+        if params["name"] not in users:
+            raise ApiError(404, "No such account")
+        return {"user": users[params["name"]]}
+    return {"users": users}
+
+
+def put_access_user(request, params):
+    user = access.save(params["name"], request.json_body())
+    request.server.sessions.revoke(name=params["name"])
+    return {"user": user, "message": "Account saved; previous sessions revoked"}
+
+
+def delete_access_user(request, params):
+    access.delete(params["name"])
+    request.server.sessions.revoke(name=params["name"])
+    return {"message": "Account deleted; sessions revoked"}
+
+
+def get_access_sessions(request, _):
+    return {"sessions": request.server.sessions.list()}
+
+
+def delete_access_session(request, params):
+    request.server.sessions.revoke(session_id=params["id"])
+    return {"message": "Session revoked"}
+
+
+def post_access_logout(request, _):
+    request.server.sessions.revoke(session_id=request.identity.get("id"))
+    return {"message": "Logged out"}
+
+
+def get_events(request, _):
+    feed = request.server.events
+    if not feed.subscribe():
+        raise ApiError(503, "Event feed is full or shutting down")
+    try:
+        request.connection.settimeout(events.HEARTBEAT + 5)
+        request.send_response(200)
+        request.send_header("Content-Type", "text/event-stream")
+        request.send_header("Cache-Control", "no-store")
+        request.send_header("X-Accel-Buffering", "no")
+        request.send_header("X-Content-Type-Options", "nosniff")
+        request.end_headers()
+        request.wfile.write(b"retry: 3000\n\n")
+        request.wfile.flush()
+        after = 0
+        while not feed.stop.is_set():
+            item = feed.next(after)
+            identity = request.identity
+            if identity.get("id") and request.server.sessions.resolve(bearer(request.headers.get("Authorization"))) is None:
+                break
+            if feed.stop.is_set():
+                break
+            if item:
+                after, payload = item
+                request.wfile.write(("id: %d\nevent: state\ndata: %s\n\n" % (after, payload)).encode())
+            else:
+                request.wfile.write(b": heartbeat\n\n")
+            request.wfile.flush()
+    except (BrokenPipeError, ConnectionResetError, TimeoutError):
+        pass
+    finally:
+        feed.unsubscribe()
+        request.close_connection = True
+
+
+def get_themes(_request, _):
+    return {"themes": themes.load()}
+
+
+def put_theme(request, params):
+    return {"theme": themes.save(params["name"], request.json_body()), "message": "Theme saved"}
+
+
+def delete_theme(_request, params):
+    themes.delete(params["name"])
+    return {"message": "Theme deleted"}
+
+
+def get_design_history(_request, params):
+    return {"versions": designs.history(params["name"])}
+
+
+def post_design_restore(request, params):
+    return {"card": designs.restore(params["name"], request.json_body().get("id")), "message": "Revision restored"}
+
+
+def get_design_export(_request, params):
+    return designs.export_bundle(params["name"])
+
+
+def post_design_import(request, _):
+    body = request.json_body(limit=MAX_BUNDLE)
+    bundle = body.get("bundle")
+    return {"card": designs.import_bundle(bundle, name=body.get("name"), overwrite=body.get("overwrite", False)),
+            "required_secrets": bundle.get("required_secrets", []), "message": "Design imported"}
+
+
+def post_design_resolve(request, _):
+    return {"card": bindings.resolve(request.json_body())}
+
+
+def post_design_rename(request, params):
+    return {"card": designs.rename(params["name"], request.json_body().get("name")), "message": "Design renamed"}
+
+
+def get_rotations(_request, _):
+    return {"entries": rotations.load()}
+
+
+def post_rotation(request, _):
+    body = request.json_body()
+    entry_id = rotations.save(None, body)
+    if body.get("enabled", True):
+        request.server.runtime.resume()
+    return {"id": entry_id, "message": "Rotation saved"}
+
+
+def put_rotation(request, params):
+    if params["id"] not in rotations.load():
+        raise ApiError(404, "No such rotation")
+    body = request.json_body()
+    entry_id = rotations.save(params["id"], body)
+    if body.get("enabled", True):
+        request.server.runtime.resume()
+    return {"id": entry_id, "message": "Rotation saved"}
+
+
+def delete_rotation(request, params):
+    rotations.delete(params["id"])
+    return {"message": "Rotation deleted"}
+
+
 def route(method, path, group, summary, handler, **doc):
     pattern = re.compile("^" + re.sub(r"\\\{(\w+)\\\}", r"(?P<\1>[^/]+)", re.escape(path)) + "$")
     return {"method": method, "path": path, "group": group, "summary": summary, **doc,
@@ -728,6 +953,62 @@ def route(method, path, group, summary, handler, **doc):
 
 
 ROUTES = (
+    route("POST", "/api/access/login", "Access", "Exchange an account PIN for an expiring session.", post_access_login,
+          body='{"name":str,"pin":str}', returns='{"token":str,"role":str,"actions":[str],"expires":number,"warning":str}', tv=[],
+          notes="Five attempts per address/account per five minutes. HTTP is not encrypted.",
+          example={"path": "/api/access/login", "body": {"name": "guest", "pin": "123456"}}),
+    route("GET", "/api/access/users", "Access", "List accounts without PIN hashes (admin only).", get_access_users,
+          returns='{"users":{name:{role,actions}}}', tv=[], example={"path": "/api/access/users"}),
+    route("GET", "/api/access/users/{name}", "Access", "Read one account without credentials (admin only).", get_access_users,
+          returns='{"user":{role,actions}}', tv=[], example={"path": "/api/access/users/guest"}),
+    route("PUT", "/api/access/users/{name}", "Access", "Save a PIN account and revoke its old sessions (admin only).", put_access_user,
+          body='{"pin":"6-12 digits","role":"admin|guest","actions"?:[remote action]}', returns='{"user":object,"message":str}',
+          tv=[], notes="Guest default actions exclude power-off and wake. Explicit actions may include them.",
+          example={"path": "/api/access/users/guest", "body": {"pin": "123456", "role": "guest"}}),
+    route("DELETE", "/api/access/users/{name}", "Access", "Delete an account and revoke its sessions (admin only).", delete_access_user,
+          returns='{"message":str}', tv=[], example={"path": "/api/access/users/guest"}),
+    route("GET", "/api/access/sessions", "Access", "List session IDs and expiry, never bearer secrets (admin only).", get_access_sessions,
+          returns='{"sessions":[{id,name,role,expires}]}', tv=[], example={"path": "/api/access/sessions"}),
+    route("DELETE", "/api/access/sessions/{id}", "Access", "Revoke a session immediately (admin only).", delete_access_session,
+          returns='{"message":str}', tv=[], example={"path": "/api/access/sessions/session-id"}),
+    route("POST", "/api/access/logout", "Access", "Revoke the calling PIN session.", post_access_logout,
+          returns='{"message":str}', tv=[], example={"path": "/api/access/logout"}),
+    route("GET", "/api/events", "Status", "Authenticated fetch SSE of shared bounded TV state (admin only).", get_events,
+          returns="text/event-stream; event: state, data: {status,connected,jobs,overlay}", tv=["shared status poll every three seconds while viewers exist"],
+          notes="Send Authorization, never a query token. Heartbeat every 15 seconds; retry 3000ms; closes on shutdown or session revocation.",
+          example={"path": "/api/events"}),
+    route("GET", "/api/themes", "Themes", "List validated reusable themes.", get_themes,
+          returns='{"themes":object}', tv=[], example={"path": "/api/themes"}),
+    route("PUT", "/api/themes/{name}", "Themes", "Save a validated reusable theme.", put_theme,
+          body="Theme object accepted by the overlay schema", returns='{"theme":object,"message":str}', tv=[],
+          example={"path": "/api/themes/night", "body": {"accent": "#80ccff"}}),
+    route("DELETE", "/api/themes/{name}", "Themes", "Delete a reusable theme.", delete_theme,
+          returns='{"message":str}', tv=[], example={"path": "/api/themes/night"}),
+    route("POST", "/api/designs/import", "Designs", "Import a sanitized versioned design bundle.", post_design_import,
+          body='{"bundle":object,"name"?:str,"overwrite"?:bool}', returns='{"card":object,"required_secrets":array,"message":str}', tv=[],
+          example={"path": "/api/designs/import", "body": {"bundle": {"format": "webos-foundry-design", "version": 1, "name": "shared", "card": {"root": {"type": "text", "text": "Hello"}}}}}),
+    route("POST", "/api/designs/resolve", "Designs", "Resolve safe JSON/Home Assistant scalar bindings without showing.", post_design_resolve,
+          body="Full saved design with optional bindings", returns='{"card":object}', tv=[],
+          notes="Contacts explicitly configured data sources; SSRF checks and private-network opt-in apply.",
+          example={"path": "/api/designs/resolve", "body": {"root": {"type": "text", "text": "Hello"}}}),
+    route("GET", "/api/designs/{name}/history", "Designs", "List at most 100 saved revisions.", get_design_history,
+          returns='{"versions":[{id,created_at,card}]}', tv=[], example={"path": "/api/designs/match-day/history"}),
+    route("POST", "/api/designs/{name}/restore", "Designs", "Restore a revision, recording the current card first.", post_design_restore,
+          body='{"id":str}', returns='{"card":object,"message":str}', tv=[], example={"path": "/api/designs/match-day/restore", "body": {"id": "revision-id"}}),
+    route("POST", "/api/designs/{name}/rename", "Designs", "Rename a design together with its revision history.", post_design_rename,
+          body='{"name":str}', returns='{"card":object,"message":str}', tv=[], example={"path": "/api/designs/match-day/rename", "body": {"name": "match-night"}}),
+    route("GET", "/api/designs/{name}/export", "Designs", "Export a sanitized share bundle with secrets removed.", get_design_export,
+          returns="Version 1 webos-foundry-design bundle", tv=[], example={"path": "/api/designs/match-day/export"}),
+    route("GET", "/api/rotations", "Rotations", "List timed saved-design rotations.", get_rotations,
+          returns='{"entries":object}', tv=[], example={"path": "/api/rotations"}),
+    route("POST", "/api/rotations", "Rotations", "Create a saved-design rotation.", post_rotation,
+          body='{"designs":[name],"interval_seconds":15..86400,"enabled":bool}', returns='{"id":str,"message":str}', tv=[],
+          example={"path": "/api/rotations", "body": {"designs": ["match-day"], "interval_seconds": 60, "enabled": True}}),
+    route("PUT", "/api/rotations/{id}", "Rotations", "Replace a saved-design rotation.", put_rotation,
+          body='{"designs":[name],"interval_seconds":15..86400,"enabled":bool}', returns='{"id":str,"message":str}', tv=[],
+          example={"path": "/api/rotations/rotation-id", "body": {"designs": ["match-day"], "interval_seconds": 60, "enabled": True}}),
+    route("DELETE", "/api/rotations/{id}", "Rotations", "Remove a saved-design rotation.", delete_rotation,
+          returns='{"message":str}', tv=[], example={"path": "/api/rotations/rotation-id"}),
     route("GET", "/api", "Reference", "This catalogue: TV address, processing profiles and every route.", api_index,
           returns="Catalogue object", tv=[], notes="Needs no token.", example={"path": "/api"}),
     route("GET", "/api/health", "Reference",
@@ -817,7 +1098,7 @@ ROUTES = (
     route("GET", "/api/overlay/schema", "Notify",
           "The JSON Schema of an overlay card, for tools and AI assistants that write cards for you.", get_overlay_schema,
           returns="A JSON Schema (draft 2020-12) object describing every envelope field, the theme, regions and all "
-                  "18 widget types with their limits.", tv=[],
+                  "22 widget types with their limits.", tv=[],
           notes="Generated from the server's own validation constants, so it never drifts from what POST /api/overlay "
                 "accepts. Needs no TV and no pairing.",
           example={"path": "/api/overlay/schema"}),
@@ -855,11 +1136,11 @@ ROUTES = (
                                "and 502 (with the TV's message) at the step that failed; earlier steps already ran.",
           example={"path": "/api/scenes/movie-night/run"}),
     route("GET", "/api/webhooks", "Webhooks", "List webhook tokens, scenes and display labels.", get_webhooks,
-          returns='{"webhooks": {token: {"scene": str, "label": str}}}', tv=[],
+          returns='{"webhooks": {token: {"scene" or "design": str, "label": str}}}', tv=[],
           notes="Normal API authentication; full tokens remain available for copying. Local storage only.",
           example={"path": "/api/webhooks"}),
-    route("POST", "/api/webhooks", "Webhooks", "Create a revocable URL for one saved scene.", post_webhook,
-          body='{"scene": "1-60 characters", "label"?: "at most 60 characters"}',
+    route("POST", "/api/webhooks", "Webhooks", "Create a revocable URL for one saved scene or design.", post_webhook,
+          body='{"scene" or "design": "1-60 characters", "label"?: "at most 60 characters"}',
           returns='{"token": str, "url": "/webhook/<token>", "message": "Webhook created"}', tv=[],
           notes="Normal API authentication. The scene is looked up when triggered, not when created.",
           example={"path": "/api/webhooks", "body": {"scene": "movie-night", "label": "Movie night"}}),
@@ -867,13 +1148,15 @@ ROUTES = (
           returns='{"message": "Webhook deleted"}', tv=[],
           notes="Normal API authentication; 400 for an unknown token.",
           example={"path": "/api/webhooks/WEBHOOK_TOKEN"}),
-    route("GET", "/webhook/{token}", "Webhooks", "Run the one scene granted by this capability URL.", get_webhook,
-          returns='{"message": "Webhook fired: N step(s) run"}',
-          tv=["runs the saved scene steps in order, stopping on the first failure"],
-          notes="Public: the URL token is the credential; no bearer token. Anyone with it can run this scene. "
-                "Delete the webhook to revoke it. 404 for unknown tokens or a deleted scene. "
-                "409 while the TV is reserved; 502 for TV failures.",
+    route("GET", "/webhook/{token}", "Webhooks", "Read the capability target without running it.", get_webhook,
+          returns='{"target":object,"message":str}', tv=[],
+          notes="Public capability URL. GET never changes the TV. Use POST to fire; DELETE the management URL to revoke.",
           example={"path": "/webhook/WEBHOOK_TOKEN"}),
+    route("POST", "/webhook/{token}", "Webhooks", "Run a capability scene or render a design with scalar values.", get_webhook,
+          body='Optional {"values":{allowed binding target or placeholder:scalar}}', returns='{"message":str}',
+          tv=["Runs saved scene steps or shows the validated bound design"],
+          notes="The unguessable URL is the credential. GET cannot fire. Busy TV returns 409; transport failure returns 502.",
+          example={"path": "/webhook/WEBHOOK_TOKEN", "body": {"values": {}}}),
     route("GET", "/api/schedule", "Schedule", "List local scene schedules.", get_schedule,
           returns='{"entries": {id: {"id", "scene", "time", "days", "enabled"}}}', tv=[],
           notes="Local storage only; no pairing or TV connection needed.", example={"path": "/api/schedule"}),
@@ -963,7 +1246,7 @@ ROUTES = (
                 "connection to stop it. It takes no TV lock; a job started while it runs does not stop it.",
           stream=True, example={"path": "/api/screen/stream?width=160&height=90&fps=30"}),
     route("POST", "/api/remote/{action}", "Remote", "Send one remote action and wait for the TV to confirm it.", post_remote,
-          body='Optional JSON. Only hdmi takes a body: {"value": 1-4}',
+          body='JSON required for hdmi: {"value": 1-4}, or volume: {"value": 0-100}; values must be integers. Optional otherwise.',
           returns='{"action": "…", "message": "what the TV confirmed"}',
           values=[{"name": name, "detail": detail, "tv": tv_text} for name, (detail, tv_text) in REMOTE.items()],
           tv=[], notes=TV_LOCK_NOTE + " Wake is the exception: it is a LAN broadcast from this computer.",
@@ -1040,6 +1323,16 @@ ROUTES = (
                 "afterwards; its URL uses the Host you called, so use the computer's LAN address, not localhost. "
                 "Answers when the install has finished or failed, up to 90 s.",
           example={"path": "/api/apps", "body": {"url": "https://example.com/app.ipk", "sha256": "0" * 64}}),
+    route("GET", "/api/apps/bundled", "Apps", "Bundled TV apps available for one-click installation.", get_bundled_apps,
+          returns='[{"id", "title", "description", "version", "installed": bool, "available": bool}]',
+          tv=["dispatch install-status; package availability comes from the project overlay source"],
+          notes="Admin only. No third-party apps.", example={"path": "/api/apps/bundled"}),
+    route("POST", "/api/apps/bundled/{id}", "Apps", "Install the bundled overlay renderer from project source.",
+          post_bundled_app, body="No body or an empty JSON object; no options.",
+          returns='{"id": str, "installed": true, "message": str} after TV readback confirms installation',
+          tv=["dispatch install-overlay with the locally packaged IPK on stdin, then install-status"],
+          notes="Admin only. 404 for unknown ids, 409 while processing reserves the TV, 503 if source is missing.",
+          example={"path": "/api/apps/bundled/dev.webosfoundry.overlay"}),
     route("DELETE", "/api/apps/{id}", "Apps", "Uninstall an app by its id.", delete_app,
           returns='{"message": "App removed"}',
           tv=['dispatch verb app-uninstall → node apps.js uninstall: luna://com.webos.appInstallService/dev/remove '
@@ -1069,6 +1362,32 @@ class FoundryServer(ThreadingHTTPServer):
         self.hosts = allowed_hosts(address[0], self.server_address[1])
         self.transport = transport  # None until paired; get_transport() builds it from the saved config on demand
         self.transport_lock = threading.Lock()
+        self.sessions = access.Sessions()
+        self.runtime = runtime.Runtime(self, TV_LOCK, reserved)
+        self.events = events.Feed(self.event_snapshot)
+        self.last_status = None
+        self.runtime.start()
+
+    def event_snapshot(self):
+        connected = False
+        if TV_LOCK.acquire(blocking=False):
+            try:
+                reserved()
+                self.last_status = tv.get_status(self.get_transport())
+                connected = True
+            except (WebosFoundryError, RuntimeError, OSError, ApiError):
+                pass
+            finally:
+                TV_LOCK.release()
+        jobs = get_jobs(None, None)
+        jobs["jobs"] = [{key: job[key] for key in ("id", "kind", "profile", "name", "state", "outcome", "created", "finished")}
+                        for job in jobs["jobs"]]
+        return {"status": self.last_status, "connected": connected, "jobs": jobs, "overlay": self.runtime.snapshot()}
+
+    def server_close(self):
+        self.events.close()
+        self.runtime.close()
+        super().server_close()
 
     def get_transport(self):
         with self.transport_lock:
@@ -1094,13 +1413,26 @@ class Handler(BaseHTTPRequestHandler):
                 raise ApiError(*refused)
             if self.command == "GET" and is_static(url.path) and not url.path.startswith("/webhook/"):
                 return self.send_static(url.path)
-            denied = auth_error(url.path, self.headers.get("Authorization"), self.server.token, self.server.loopback,
-                                self.server.auth_mode)
-            if denied:
-                raise ApiError(*denied)
+            header = self.headers.get("Authorization")
+            token = bearer(header)
+            self.identity = self.server.sessions.resolve(token)
+            if self.identity is not None:
+                if not access.allowed(self.identity, self.command, url.path):
+                    raise ApiError(403, "This account is limited to the remote")
+            else:
+                # A supplied credential is never upgraded to loopback/disabled-mode admin.
+                if (header and url.path not in PUBLIC and not url.path.startswith("/webhook/")
+                        and not (token and self.server.token and hmac.compare_digest(token.encode(), self.server.token.encode()))):
+                    raise ApiError(401, "Invalid or expired bearer token")
+                denied = auth_error(url.path, header, self.server.token, self.server.loopback, self.server.auth_mode)
+                if denied:
+                    raise ApiError(*denied)
+                self.identity = {"role": "admin"}
             handler, params = self.resolve(url.path)
-            if (url.path not in LOCAL and not url.path.startswith("/webhook/")
-                    and not re.fullmatch(r"/api/(?:schedule|webhooks|addons|designs)(?:/[^/]+)?", url.path)):
+            local = (url.path in LOCAL or url.path.startswith(("/api/access/", "/api/events", "/api/themes", "/api/rotations"))
+                     or re.fullmatch(r"/api/(?:schedule|webhooks|addons|designs)(?:/.*)?", url.path))
+            needs_tv = url.path.endswith(("/show", "/preview"))
+            if not url.path.startswith("/webhook/") and (not local or needs_tv):
                 try:
                     self.transport = self.server.get_transport()
                 except NotPairedError:
@@ -1159,8 +1491,8 @@ class Handler(BaseHTTPRequestHandler):
             raise ApiError(400, "Send the file as the request body")
         return self.rfile.read(size)
 
-    def json_body(self, required=True):
-        size = self.length(MAX_JSON)
+    def json_body(self, required=True, limit=MAX_JSON):
+        size = self.length(limit)
         if not size:
             if required:
                 raise ApiError(400, "Send a JSON body")
@@ -1259,7 +1591,8 @@ class SchedulerThread(threading.Thread):
                             saved = scenes.load()
                             if name not in saved:
                                 raise ValueError("No such scene: %s" % name)
-                            scenes.run_scene(self.server.get_transport(), saved[name])
+                            with self.server.runtime.producing("schedule"):
+                                scenes.run_scene(self.server.get_transport(), saved[name])
                         finally:
                             TV_LOCK.release()
                     except Exception as error:
@@ -1305,8 +1638,11 @@ class AddonsThread(threading.Thread):
                             print("Addon %s skipped: processing job %s (%s)" %
                                   (addon_id, job.id, job.state.replace("_", " ")), flush=True)
                             continue
+                    if self.server.runtime.held() or any(e["enabled"] for e in rotations.load().values()):
+                        continue
                     card = addons.card_for(addon_id, entry)
-                    notify.overlay_show(self.server.get_transport(), card)
+                    with self.server.runtime.producing("addon"):
+                        notify.overlay_show(self.server.get_transport(), card)
                 except Exception as error:
                     print("Addon %s failed: %s" % (addon_id, error), flush=True)
                 finally:
@@ -1346,7 +1682,7 @@ def main(argv=None):
         print(NOT_PAIRED, flush=True)
     login = ("OFF - anyone who can reach this address controls the TV" if auth_mode == "disabled"
              else "required" if not server.loopback else "optional" if token else "off")
-    print("webOS Foundry: http://%s:%d/  (token %s; Ctrl-C stops; a running job is cancelled and the TV restored first)"
+    print("Overglass: http://%s:%d/  (token %s; Ctrl-C stops; a running job is cancelled and the TV restored first)"
           % (args.host, server.server_address[1], login), flush=True)
     scheduler = SchedulerThread(server)
     scheduler.start()

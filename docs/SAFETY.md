@@ -1,6 +1,6 @@
 # Safety and privacy
 
-webOS Foundry is for a TV **you own and have already rooted**. A rooted TV gives whoever holds root
+Overglass is for a TV **you own and have already rooted**. A rooted TV gives whoever holds root
 every Luna service on the device, including ones that can erase data or damage the panel. The design
 goal here is that day-to-day control uses a key that can do only a short, fixed list of things.
 
@@ -47,7 +47,7 @@ The full grammar is [ARCHITECTURE.md §3](../ARCHITECTURE.md). Verbs that exist:
 * Read-only sensors (`details`) call getters only; the reference never calls pixel-refresher setters
   or the usage `reset`.
 
-The root key you used to root the TV is still fully powerful. webOS Foundry's restricted key does not
+The root key you used to root the TV is still fully powerful. Overglass's restricted key does not
 change that; it only stops *this tool's* credential from being a root shell.
 
 ## What `wof uninstall` does and does not remove
@@ -93,3 +93,34 @@ with `dispatch.sh` gone it can no longer run anything useful.
   TV-side lock. Restoration after a killed connection or power loss was not tested; check the TV's
   volume and Audio Guidance setting if it sounds different afterwards.
 * Not tested: behaviour on other TV models/firmware, loss of power or network during processing.
+
+## PIN accounts and data sources
+
+PIN accounts have admin or remote-only guest roles. Guest requests cannot read screenshots, designs,
+settings, account lists or the event feed. Their default remote allowlist excludes wake and power-off.
+An owner can explicitly change that list. PIN hashes use salted scrypt; sessions expire after eight
+hours and account changes revoke them. Login attempts are limited per address and account. A supplied
+invalid credential is rejected even on loopback or when owner login is disabled.
+
+PINs and bearer tokens travel in cleartext over HTTP. Use HTTPS on an untrusted network. Do not put
+tokens in event-stream URLs; the browser uses authenticated fetch with an Authorization header.
+
+JSON, Home Assistant, feed and lineup URLs make HTTP requests from the server. Public-network
+addresses are the default. Private/LAN sources require explicit opt-in. DNS results are checked and
+connections pinned, redirects are checked again, and credentials are removed on cross-origin
+redirects. Requests have time and body-size limits. Do not enable private access for a URL you do not
+trust.
+
+Design bindings change existing display scalars only. SVG accepts a restricted geometry subset;
+scripts, entities, external resources and embedded HTML are refused. Sharing exports remove bearer
+tokens and recognized credential-like URL parameters and mark missing secrets. Review exported
+content before publishing; arbitrary private text or secret path components cannot be identified
+automatically.
+
+HDMI preview backgrounds are opt-in captured frames. Clear them when finished; they can contain
+private information from the connected device. Ambient dim changes only the overlay opacity. It
+does not write picture settings, OLED controls or hardware brightness registers.
+
+Webhook migration: GET now describes a capability, while POST executes it. A design webhook can fill
+only declared binding targets or existing placeholders. Keep capability URLs private and delete them
+to revoke access.

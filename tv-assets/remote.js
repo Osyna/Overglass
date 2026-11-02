@@ -1,6 +1,6 @@
 'use strict';
 // Remote keys, HDMI switch, volume/mute and power off, run by dispatch.sh under the TV.
-//   node remote.js <action> [value]      value is the HDMI input 1-4 and only valid for "hdmi"
+//   node remote.js <action> [value]      HDMI input 1-4 for "hdmi", volume 0-100 for "volume"
 // Success: the result message as a JSON string on stdout. Failure: message on stderr, exit 3.
 const {spawnSync} = require('child_process');
 
@@ -43,6 +43,9 @@ const fg = () => luna(AM + 'getForegroundAppInfo', {}).appId;
 const shown = (v) => 'Volume ' + v.volume + (v.muteStatus ? ' (muted)' : '');
 
 function remote(a, value) {
+  if (a === 'volume' && (!Number.isInteger(value) || value < 0 || value > 100)) {
+    throw new Error('Volume must be the integer 0-100');
+  }
   if (Object.prototype.hasOwnProperty.call(KEYS, a)) {
     luna(NI + 'sendSpecialKey', {key: KEYS[a]});
     if (a === 'home') until(() => fg() === 'com.webos.app.home', 'TV did not report Home after the key', 5000);
@@ -63,8 +66,10 @@ function remote(a, value) {
     return 'TV is in standby';
   }
   const v = vol();
-  if (a === 'volume_up' || a === 'volume_down') {
-    const target = Math.max(0, Math.min(v.maxVolume, v.volume + (a === 'volume_up' ? 1 : -1)));
+  if (a === 'volume' || a === 'volume_up' || a === 'volume_down') {
+    if (a === 'volume' && value > v.maxVolume) throw new Error('TV maximum volume is ' + v.maxVolume);
+    const target = a === 'volume' ? value :
+      Math.max(0, Math.min(v.maxVolume, v.volume + (a === 'volume_up' ? 1 : -1)));
     if (target !== v.volume) luna(AU + 'setVolume', {soundOutput: 'tv_speaker', volume: target});
     const n = vol();
     if (n.volume !== target) throw new Error('TV volume readback mismatch: ' + n.volume);
@@ -83,6 +88,9 @@ function remote(a, value) {
 try {
   const [action, text] = process.argv.slice(2);
   if (!action || process.argv.length > 4) throw new Error('Usage: <action> [value]');
-  if (text !== undefined && !(action === 'hdmi' && /^[1-4]$/.test(text))) throw new Error('This remote action takes no value');
+  if (text !== undefined && !(action === 'hdmi' && /^[1-4]$/.test(text)) &&
+      !(action === 'volume' && /^(?:[0-9]|[1-9][0-9]|100)(?![\s\S])/.test(text))) {
+    throw new Error(action === 'volume' ? 'Volume must be the integer 0-100' : 'This remote action takes no value');
+  }
   console.log(JSON.stringify(remote(action, text === undefined ? undefined : Number(text))));
 } catch (e) { console.error(e.message); process.exit(3); }

@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="light dark">
-<title>webOS Foundry</title>
+<title>Overglass</title>
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <link rel="manifest" href="/manifest.json">
 <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
@@ -12,11 +12,13 @@
 <meta name="theme-color" content="#111a17" media="(prefers-color-scheme: dark)">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-title" content="webOS Foundry">
+<meta name="apple-mobile-web-app-title" content="Overglass">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
 <link rel="stylesheet" href="/tokens.css">
 <link rel="stylesheet" href="/app.css">
 <script src="/theme.js"></script>
+<script src="/qrcode.js" defer></script>
+<script src="/studio.js" defer></script>
 <script src="/app.js" defer></script>
 <script src="/apps.js" defer></script>
 </head>
@@ -64,9 +66,9 @@
 </svg>
 
 <header class="top">
-  <a class="brand" href="/" aria-label="webOS Foundry home">
+  <a class="brand" href="/" aria-label="Overglass home">
     <span class="mark"><svg><use href="#i-tv"/></svg></span>
-    <span class="brand-name">webOS Foundry</span>
+    <span class="brand-name">Overglass</span>
   </a>
   <nav class="views" aria-label="Sections">
     <button type="button" class="tab" data-view="home" aria-current="page"><svg><use href="#i-home"/></svg><span>Home</span></button>
@@ -89,7 +91,7 @@
   <form method="dialog" id="token-form">
     <div class="sheet-icon"><svg><use href="#i-key"/></svg></div>
     <h2 id="h-token">Enter your access token</h2>
-    <p class="lede" id="token-lede">This page controls your TV, so it asks for a token the first time. It is the <code>server_token</code> from the webOS Foundry config, or the one passed to <code>wof serve --token</code>.</p>
+    <p class="lede" id="token-lede">This page controls your TV, so it asks for a token the first time. It is the <code>server_token</code> from the Overglass config, or the one passed to <code>wof serve --token</code>.</p>
     <div class="field">
       <label for="token-input">Access token</label>
       <input type="password" id="token-input" autocomplete="off" spellcheck="false" autocapitalize="off">
@@ -99,6 +101,7 @@
     <div class="stack">
       <button class="btn primary wide" type="submit" id="token-save">Continue</button>
       <button class="btn quiet" type="button" id="token-clear">Forget saved token</button>
+      <button class="btn quiet" type="button" id="token-use-pin">Use an account PIN instead</button>
       <button class="btn quiet" type="button" id="token-cancel">Not now</button>
     </div>
     <details class="help">
@@ -285,6 +288,13 @@
           <button class="btn icon-only" type="button" data-action="volume_up" data-needs-on aria-label="Volume up"><svg><use href="#i-plus"/></svg></button>
           <button class="btn mute" type="button" id="mute" data-action="mute" data-needs-on aria-pressed="false"><svg><use href="#i-speaker"/></svg><span>Mute</span></button>
         </div>
+        <div class="remote-volume-slider">
+          <label class="field-head" for="remote-volume-slider">Set volume <output id="volume-target" class="num" for="remote-volume-slider" aria-hidden="true">—</output></label>
+          <input id="remote-volume-slider" type="range" min="0" max="40" step="1" value="0" disabled aria-describedby="volume-limit-hint volume-send-msg">
+          <label class="check"><input id="volume-unlock" type="checkbox">Allow volume above 40</label>
+          <p class="hint" id="volume-limit-hint">Limited to 40. Higher levels can be loud.</p>
+          <p class="result-msg" id="volume-send-msg" role="status" hidden></p>
+        </div>
       </div>
     </section>
     </div>
@@ -294,6 +304,12 @@
   <main id="view-apps" class="view" data-view-id="apps" hidden>
     <header class="view-head"><h1>Apps</h1><p class="lede">Add something new to your TV, or manage the apps you have already installed.</p></header>
     <div class="cols cols-apps">
+      <section class="panel bundled-panel" id="panel-bundled" data-needs-route="/api/apps/bundled" aria-labelledby="h-bundled">
+        <header class="panel-head"><h2 id="h-bundled">Included with Overglass</h2></header>
+        <p class="lede">Install the TV apps that this project uses. Their packages are included: no download link or app file needed.</p>
+        <div id="bundled-apps"></div>
+        <p id="bundled-result" class="result-msg" role="status" hidden></p>
+      </section>
       <div class="col">
         <section class="panel" id="panel-install" data-needs-group="Apps" aria-labelledby="h-install">
           <header class="panel-head"><h2 id="h-install">Add an app</h2></header>
@@ -346,7 +362,7 @@
       <div class="col">
         <section class="panel" id="panel-installed" data-needs-group="Apps" aria-labelledby="h-installed">
           <header class="panel-head">
-            <h2 id="h-installed">Installed apps</h2>
+            <h2 id="h-installed">Other installed apps</h2>
             <button class="btn quiet" type="button" id="apps-refresh"><svg><use href="#i-refresh"/></svg><span>Refresh list</span></button>
           </header>
           <div id="apps-list" aria-live="polite"></div>
@@ -415,17 +431,31 @@
             <h2 id="h-webhooks">Run from another app</h2>
             <button class="btn quiet" type="button" id="webhooks-refresh"><svg><use href="#i-refresh"/></svg><span>Reload</span></button>
           </header>
-          <p class="lede">Create a private link that another app can use to run one scene. Anyone with the link can run it without signing in. Delete the link here to stop it working.</p>
+          <p class="lede">Create a private link to run a scene or show a saved design with scalar values. Anyone with this link can use it without signing in. Only POST runs it; delete the link to revoke it.</p>
           <div id="webhooks-list" aria-live="polite"><p class="empty">Loading webhook links…</p></div>
           <form id="webhook-form" class="stack-form group">
             <h3>Create a link</h3>
-            <div class="field"><label for="webhook-scene">Scene name</label><input id="webhook-scene" type="text" list="automation-scenes" maxlength="60" required placeholder="Choose or enter a scene"></div>
+            <label class="field">What the link runs<select id="webhook-target-type"><option value="scene">Scene</option><option value="design">Saved design with scalar values</option></select></label>
+            <div class="field"><label for="webhook-scene" id="webhook-target-label">Scene name</label><input id="webhook-scene" type="text" list="automation-scenes" maxlength="60" required placeholder="Choose or enter a name"></div>
             <div class="field"><label for="webhook-label">Label <span class="sub">— optional</span></label><input id="webhook-label" type="text" maxlength="60" placeholder="Living room shortcut"></div>
             <div><button class="btn primary" id="webhook-save" type="submit">Create link</button></div>
           </form>
           <p class="result-msg" id="webhooks-msg" role="status" hidden></p>
         </section>
       </div>
+    <section class="panel" aria-labelledby="h-rotations" data-needs-route="/api/rotations">
+      <header class="panel-head"><h2 id="h-rotations">Rotate saved designs</h2><button class="btn quiet" id="rotations-refresh" type="button">Reload rotations</button></header>
+      <p class="hint">Cycle through saved designs while this server is running. Manual sends pause automatic displays. Only one rotation or extension owns the screen: pause it before enabling a different source. Hide the current card in Show.</p>
+      <div id="rotations-list"></div>
+      <form id="rotation-form" class="stack-form">
+        <label class="field">Design names, in order (one per line)<textarea id="rotation-designs" rows="4" required aria-describedby="rotation-help"></textarea></label>
+        <p class="hint" id="rotation-help">Use 1–20 names from My designs. Repeating a name repeats that design in the cycle.</p>
+        <label class="field">Switch every (seconds)<input id="rotation-interval" type="number" min="15" max="86400" step="1" value="60" required></label>
+        <label class="check"><input id="rotation-enabled" type="checkbox" checked>Enable this rotation</label>
+        <div class="row"><button class="btn primary" id="rotation-save" type="submit">Save rotation</button><button class="btn quiet" id="rotation-new" type="button">New rotation</button></div>
+      </form>
+      <p class="result-msg" id="rotations-msg" role="status" hidden></p>
+    </section>
     </div>
     <section class="panel" data-needs-group="Addons" aria-labelledby="h-addons">
       <header class="panel-head">
@@ -447,6 +477,10 @@
         <div><h2 id="h-studio">Card studio</h2><p class="hint">Your draft stays here as you move between steps.</p></div>
         <span class="pill" id="ov-unsaved" hidden>Unsaved changes</span>
       </header>
+      <div class="row studio-history"><button class="btn quiet" id="ov-undo" type="button" disabled>Undo</button><button class="btn quiet" id="ov-redo" type="button" disabled>Redo</button><span class="hint">50 draft edits · Ctrl/⌘ Z to undo · Copy/paste and arrow keys work outside text fields.</span></div>
+      <label class="check"><input id="ov-live-edit" type="checkbox">Send edits live to the TV (off by default)</label>
+      <p class="hint">After a short pause, send the newest full draft. Sends are serialized; turning this off stops queued changes, not a request already received by the TV.</p>
+      <p class="result-msg" id="ov-live-msg" role="status" hidden></p>
       <div class="studio-grid">
         <div class="studio-controls">
           <nav class="studio-steps" aria-label="Card studio steps">
@@ -474,6 +508,7 @@
                 <input type="file" id="design-import-file" accept=".json,application/json" hidden>
               </div>
               <p class="result-msg" id="ov-paste-msg" role="status" hidden></p>
+              <div id="ov-import-preview" aria-live="polite"></div>
             </div>
             <details class="help studio-section" id="ov-ai">
               <summary>Ask an AI to make a card</summary>
@@ -498,7 +533,8 @@
             </details>
           </section>
 
-          <section class="studio-step-panel" id="ov-panel-design" data-studio-panel="design" aria-labelledby="ov-step-design" hidden>
+          <details class="studio-step-panel studio-setup" id="ov-panel-design" data-studio-panel="design" aria-labelledby="ov-step-design" hidden>
+            <summary>Card setup <span class="hint">Layout, timing, colours and behavior</span></summary>
             <div class="studio-section">
               <h3>Set the stage</h3>
               <div class="pair">
@@ -516,6 +552,7 @@
                 </div>
               </div>
             </div>
+            <div class="studio-section" id="ov-timeline"></div>
             <div class="studio-section">
               <h3>Choose a look</h3>
               <div class="look-presets" id="ov-look-presets" role="group" aria-label="Card looks"></div>
@@ -524,14 +561,14 @@
                 <p class="hint">Leave a colour unset to use the TV’s default.</p>
                 <div id="ov-look-form"></div>
               </details>
+              <details class="studio-section"><summary>Saved looks on this server</summary>
+                <div class="row"><button class="btn quiet" id="ov-themes-refresh" type="button">Reload looks</button></div>
+                <div id="ov-saved-themes"></div>
+                <form id="ov-theme-form" class="stack-form"><label class="field">Look name<input id="ov-theme-name" maxlength="60" required></label><button class="btn" type="submit">Save current look</button></form>
+                <p class="result-msg" id="ov-theme-msg" role="status" hidden></p>
+              </details>
             </div>
-            <div class="studio-section">
-              <h3>Make it yours</h3>
-              <p class="hint">Choose a part of your card to edit it, or add something new below. Groups arrange their contents together.</p>
-              <div id="ov-builder"></div>
-              <p class="result-msg" id="ov-builder-msg" role="status" hidden></p>
-            </div>
-          </section>
+          </details>
 
           <section class="studio-step-panel" id="ov-panel-finish" data-studio-panel="finish" aria-labelledby="ov-step-finish" hidden>
             <div class="studio-section">
@@ -560,6 +597,29 @@
             <p class="hint">Want this card to appear as part of a routine? Save it first, then add the design to a scene in <button class="btn quiet" type="button" data-goto="automate">Automate</button>.</p>
           </section>
 
+        </div>
+        <details class="studio-preview" id="ov-preview-dock" open>
+          <summary>TV preview <span class="hint">Show or hide preview</span></summary>
+          <figure class="overlay-preview">
+            <div class="tv-stage" id="ov-preview" role="img" aria-label="Your card’s position and appearance on a TV screen"></div>
+            <figcaption class="hint">A guide to how your card will look on a 16:9 screen. The TV may draw text slightly differently.</figcaption>
+            <details class="studio-preview-options"><summary>Preview options &amp; privacy</summary>
+            <label class="check"><input id="ov-safe-area" type="checkbox">Show 5% safe-area guides (preview only)</label>
+            <div class="row"><button class="btn quiet" id="ov-snapshot" type="button">Capture HDMI background</button><button class="btn quiet" id="ov-snapshot-clear" type="button" disabled>Clear background</button></div>
+            <p class="hint">An explicit capture of the HDMI picture, without floating cards. Private to this tab; cleared after five minutes, when you leave Show, or hide the page. Never saved or exported.</p>
+            <p class="result-msg" id="ov-preview-msg" role="status" hidden></p>
+            </details>
+          </figure>
+          <p class="hint">Images from other sites appear as placeholders here. The TV loads the image when you send the card.</p>
+        </details>
+        <section class="studio-widget-editor" id="ov-widget-editor" data-studio-panel="design" aria-labelledby="h-widgets" hidden>
+          <h2 id="h-widgets">Build your card</h2>
+          <p class="hint">Choose an area, select something in Contents, then edit it beside the preview.</p>
+          <div id="ov-builder"></div>
+          <p class="result-msg" id="ov-builder-msg" role="status" hidden></p>
+          <details id="ov-bindings" class="studio-section"></details>
+          <p class="result-msg" id="ov-bindings-msg" role="status" hidden></p>
+        </section>
           <div class="studio-capacity">
             <label class="hint" for="ov-meter">Card capacity</label>
             <meter id="ov-meter" min="0" max="1" value="0" aria-describedby="ov-meter-text">Card capacity</meter>
@@ -578,15 +638,6 @@
             </div>
             <p class="result-msg" id="ov-json-msg" role="status" hidden></p>
           </details>
-        </div>
-        <details class="studio-preview" id="ov-preview-dock" open>
-          <summary>TV preview <span class="hint">Show or hide preview</span></summary>
-          <figure class="overlay-preview">
-            <div class="tv-stage" id="ov-preview" role="img" aria-label="Your card’s position and appearance on a TV screen"></div>
-            <figcaption class="hint">A guide to how your card will look on a 16:9 screen. The TV may draw text slightly differently.</figcaption>
-          </figure>
-          <p class="hint">Images from other sites appear as placeholders here. The TV loads the image when you send the card.</p>
-        </details>
       </div>
     </section>
     <section class="panel designs" data-needs-group="Designs" aria-labelledby="h-designs">
@@ -793,6 +844,28 @@
         </div>
       </section>
 
+      <section class="panel" aria-labelledby="h-pin-login">
+        <h2 id="h-pin-login">Sign in with a PIN</h2>
+        <p class="hint">Use an account created by the TV owner. A guest account only has the remote buttons the owner allows. On plain HTTP, a PIN and session token travel unencrypted; use a trusted LAN or HTTPS.</p>
+        <form id="access-login-form" class="stack-form">
+          <label class="field">Account name<input id="login-name" autocomplete="username" maxlength="60" required></label>
+          <label class="field">PIN<input id="login-pin" type="password" inputmode="numeric" autocomplete="current-password" required></label>
+          <div class="row"><button class="btn primary" type="submit">Sign in with PIN</button><button class="btn quiet" id="access-logout" type="button">Sign out this session</button></div>
+        </form><p class="result-msg" id="access-login-msg" role="status" hidden></p>
+      </section>
+      <section class="panel admin-only" aria-labelledby="h-accounts" data-needs-route="/api/access/users">
+        <header class="panel-head"><h2 id="h-accounts">Accounts and guest remotes</h2><button class="btn quiet" id="access-refresh" type="button">Reload accounts</button></header>
+        <div id="access-users"></div>
+        <form id="access-form" class="stack-form">
+          <label class="field">Account name<input id="access-name" maxlength="60" autocomplete="off" required></label>
+          <label class="field">New PIN<input id="access-pin" type="password" inputmode="numeric" autocomplete="new-password" required></label>
+          <label class="field">Role<select id="access-role"><option value="guest">Guest remote only</option><option value="admin">Administrator</option></select></label>
+          <fieldset><legend>Allowed guest remote buttons</legend><p class="hint">Power off is never granted unless you check it. Administrators have full access regardless of this selection.</p><div id="access-actions" class="days"></div></fieldset>
+          <button class="btn primary" type="submit">Save account</button>
+        </form>
+        <p class="result-msg" id="access-msg" role="status" hidden></p>
+        <h3>Active sessions</h3><div id="access-sessions"></div>
+      </section>
       <section class="panel security" id="panel-security" data-needs-route="/api/config/auth" aria-labelledby="h-security">
         <header class="panel-head"><h2 id="h-security">Who can use this page</h2><span class="hint" id="auth-hint"></span></header>
         <p class="lede">Choose whether a token is needed to control the TV from this page.</p>
@@ -816,6 +889,7 @@
       <section class="panel" aria-labelledby="h-device">
         <h2 id="h-device">This device</h2>
         <p class="lede" id="device-state">Checking whether this device has a saved token.</p>
+        <p class="hint" id="event-status" role="status">Polling updates</p>
         <div class="row"><button class="btn" id="token-btn" type="button"><svg><use href="#i-key"/></svg><span>Change token</span></button></div>
       </section>
 

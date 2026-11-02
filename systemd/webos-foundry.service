@@ -1,6 +1,6 @@
 [Unit]
-Description=webOS Foundry HTTP API and web UI
-Documentation=https://github.com/webos-foundry/webos-foundry
+Description=Overglass HTTP API and web UI
+Documentation=https://github.com/Osyna/Overglass
 After=network-online.target
 Wants=network-online.target
 

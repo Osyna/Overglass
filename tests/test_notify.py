@@ -259,3 +259,237 @@ def test_overlay_schema_agrees_with_the_validator():
         with pytest.raises(ValidationError):
             notify.check_overlay_request(bad)
         assert list(validator.iter_errors(bad)), bad
+
+
+SAFE_SVG = ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20">'
+            '<g transform="translate(1, 1)" opacity=".5"><path d="M0 0L10 10Z" fill="#abc" '
+            'stroke="currentColor" stroke-width="2" fill-rule="evenodd"/>'
+            '<rect x="0" y="0" width="10" height="10" rx="2"/>'
+            '<circle cx="5" cy="5" r="2"/><ellipse cx="4" cy="4" rx="2" ry="1"/>'
+            '<line x1="0" y1="0" x2="2" y2="2"/><polyline points="0,0 1,1"/>'
+            '<polygon points="0,0 1,1 2,0"/></g></svg>')
+
+
+def test_overlay_new_widgets_and_layout_normalize_before_transport():
+    fake = FakeTransport({"notify-overlay": json.dumps({"returnValue": True, "overlay": "shown"})})
+    body = {"animation": {"enter": "slide", "exit": "wipe", "duration_ms": 2000},
+            "offset": {"x": -1920, "y": 1080}, "behavior": {"on_foreground": "shrink", "ambient_dim": True},
+            "root": {"type": "grid", "columns": 3, "gap": 48, "children": [
+                {"type": "ticker", "text": " news ", "speed": 200, "tone": "accent"},
+                {"type": "qr", "text": " https://example.com ", "size": "l"},
+                {"type": "svg", "source": " " + SAFE_SVG + " ", "size": "m"}]}}
+    notify.overlay_show(fake, body)
+    sent = tree_payload(fake.calls[0])
+    assert sent["root"]["children"] == [
+        {"type": "ticker", "text": "news", "speed": 200, "tone": "accent"},
+        {"type": "qr", "text": "https://example.com", "size": "l"},
+        {"type": "svg", "source": SAFE_SVG, "size": "m"}]
+    assert sent["animation"] == body["animation"]
+    assert sent["offset"] == body["offset"] and sent["behavior"] == body["behavior"]
+    assert notify.inspect_overlay(body)["widgets"] == 4
+
+
+@pytest.mark.parametrize("node", [
+    {"type": "grid", "children": [{"type": "divider"}]},
+    {"type": "grid", "columns": True, "children": [{"type": "divider"}]},
+    {"type": "grid", "columns": 0, "children": [{"type": "divider"}]},
+    {"type": "grid", "columns": 4, "children": [{"type": "divider"}]},
+    {"type": "grid", "columns": 1, "children": []},
+    {"type": "grid", "columns": 1, "children": [{"type": "divider"}] * 21},
+    {"type": "grid", "columns": 1, "gap": 49, "children": [{"type": "divider"}]},
+    {"type": "grid", "columns": 1, "align": "start", "children": [{"type": "divider"}]},
+    {"type": "ticker", "text": ""}, {"type": "ticker", "text": " "},
+    {"type": "ticker", "text": "x" * 1001}, {"type": "ticker", "text": "bad\ntext"},
+    {"type": "ticker", "text": "x", "speed": 9}, {"type": "ticker", "text": "x", "speed": 201},
+    {"type": "ticker", "text": "x", "speed": True}, {"type": "ticker", "text": "x", "tone": "pink"},
+    {"type": "qr", "text": ""}, {"type": "qr", "text": "x" * 1001},
+    {"type": "qr", "text": "\ud800"}, {"type": "qr", "text": "x", "size": "xl"},
+    {"type": "svg", "source": SAFE_SVG, "size": "xl"}, {"type": "svg", "source": None},
+])
+def test_new_widgets_reject_invalid_fields_before_transport(node):
+    fake = FakeTransport()
+    with pytest.raises(ValidationError):
+        notify.overlay_show(fake, {"root": node})
+    assert fake.calls == []
+
+
+def test_qr_codepoint_and_utf8_capacity_boundaries():
+    for text in ("x" * 1000, "😀" * 738, "é" * 1000):
+        assert notify.check_overlay_request({"root": {"type": "qr", "text": text}})["root"]["text"] == text
+    with pytest.raises(ValidationError, match="QR text exceeds 2953 UTF-8 bytes"):
+        notify.check_overlay_request({"root": {"type": "qr", "text": "😀" * 739}})
+    text = "😀" * 738 + "a"
+    assert len(text.encode()) == 2953
+    notify.check_overlay_request({"root": {"type": "qr", "text": text}})
+
+
+@pytest.mark.parametrize("source", [
+    "", " ", "<svg>" + " " * 8192 + "</svg>", "<svg><script/></svg>",
+    "<svg><style/></svg>", "<svg><foreignObject/></svg>", "<svg><image/></svg>",
+    '<svg onload="alert(1)"/>', '<svg style="fill:red"/>', '<svg><use href="#a"/></svg>',
+    '<svg><path fill="url(https://evil.test/a)"/></svg>', '<svg xmlns="https://evil.test"/>',
+    '<svg xmlns:xlink="http://www.w3.org/1999/xlink"/>',
+    '<svg><path xlink:href="https://evil.test"/></svg>', '<!DOCTYPE svg><svg/>',
+    '<!DOCTYPE svg [<!ENTITY x SYSTEM "file:///etc/passwd">]><svg>&x;</svg>',
+    '<?xml version="1.0"?><svg/>', '<svg><!--comment--></svg>', '<svg><![CDATA[x]]></svg>',
+    '<svg>&amp;</svg>', '<svg><text>hello</text></svg>', '<svg>hello</svg>',
+    '<svg><g></svg>', '<svg/><svg/>', '<svg><svg/></svg>', '<g/>',
+    '<svg><path fill="red" fill="blue"/></svg>', '<svg><path fill=red/></svg>',
+    '<svg><path opacity="1.1"/></svg>', '<svg><path opacity="nan"/></svg>',
+    '<svg><path transform="url(evil)"/></svg>', '<svg>\n</svg>', '<svg>\u00a0</svg>',
+    '<svg/><path/>', '<svg / >', '<svg><path></path extra="x"></svg>',
+])
+def test_svg_rejects_unsafe_or_malformed_sources(source):
+    fake = FakeTransport()
+    with pytest.raises(ValidationError):
+        notify.overlay_show(fake, {"root": {"type": "svg", "source": source}})
+    assert fake.calls == []
+
+
+def test_svg_helper_and_source_length_boundary():
+    assert notify._check_svg(" " + SAFE_SVG + " ") == SAFE_SVG
+    source = "<svg>" + " " * (8192 - len("<svg></svg>")) + "</svg>"
+    assert len(notify._check_svg(source)) == 8192
+    assert notify._check_svg("<svg/>") == "<svg/>"
+
+
+@pytest.mark.parametrize("fields", [
+    {"animation": []}, {"animation": {"enter": "zoom"}}, {"animation": {"exit": "zoom"}},
+    {"animation": {"duration_ms": -1}}, {"animation": {"duration_ms": 2001}},
+    {"animation": {"duration_ms": True}}, {"animation": {"unknown": 1}},
+    {"offset": []}, {"offset": {"x": -1921}}, {"offset": {"x": 1921}},
+    {"offset": {"y": -1081}}, {"offset": {"y": 1081}}, {"offset": {"x": 1.5}},
+    {"offset": {"x": True}}, {"offset": {"z": 0}},
+    {"behavior": []}, {"behavior": {"on_foreground": "pause"}},
+    {"behavior": {"ambient_dim": 1}}, {"behavior": {"extra": True}},
+    {"dim": True}, {"dim": 0.19}, {"dim": 1.01}, {"dim": float("nan")},
+    {"compact": 1},
+])
+def test_card_options_validate_single_and_region_cards(fields):
+    root = {"type": "divider"}
+    for body in ({"root": root, **fields}, {"regions": [{"position": "center", "root": root, **fields}]}):
+        with pytest.raises(ValidationError):
+            notify.check_overlay_request(body)
+
+
+def test_card_option_defaults_and_boundaries_are_preserved():
+    for fields in ({"animation": {}, "offset": {}, "behavior": {}},
+                   {"animation": {"enter": "none", "exit": "fade", "duration_ms": 0},
+                    "offset": {"x": 1920, "y": -1080}, "behavior": {"on_foreground": "keep", "ambient_dim": False},
+                    "dim": 0.2, "compact": False}):
+        body = {"root": {"type": "divider"}, **fields}
+        assert notify.check_overlay_request(body) == body
+        region = {"position": "center", **body}
+        assert notify.check_overlay_request({"regions": [region]}) == {"regions": [region]}
+
+
+def test_timeline_normalizes_shorthand_regions_and_counts_all_frames():
+    body = {"theme": {"accent": "#ABCDEF"}, "behavior": {"on_foreground": "hide"},
+            "timeline": [{"seconds": 1, "card": {"title": " First "}},
+                         {"seconds": 300, "card": {"regions": [
+                             {"position": "top", "animation": {"enter": "fade"},
+                              "offset": {"x": 0}, "root": {"type": "ticker", "text": " Second "}},
+                             {"position": "right", "root": {"type": "qr", "text": "data"}}]}}]}
+    inspected = notify.inspect_overlay(body)
+    assert inspected["widgets"] == 6  # four shorthand widgets, then two region roots
+    assert inspected["card"]["theme"] == {"accent": "#abcdef"}
+    assert inspected["card"]["timeline"][0]["card"]["root"]["children"][0]["children"][1]["text"] == "First"
+    assert inspected["bytes"] == len(json.dumps(inspected["card"], ensure_ascii=False, separators=(",", ":")).encode())
+    assert notify.check_overlay_request(inspected["card"]) == inspected["card"]
+
+
+def test_timeline_global_widget_cap_accepts_eighty_and_rejects_eighty_one():
+    grid = {"type": "grid", "columns": 1, "children": [{"type": "divider"}] * 19}
+    body = {"timeline": [{"seconds": 1, "card": {"root": grid}} for _ in range(4)]}
+    assert notify.inspect_overlay(body)["widgets"] == 80
+    body["timeline"][0]["card"] = {"root": {**grid, "children": grid["children"] + [{"type": "divider"}]}}
+    with pytest.raises(ValidationError, match="at most 80 widgets"):
+        notify.check_overlay_request(body)
+
+
+def test_timeline_global_byte_cap_applies_across_frames():
+    root = {"type": "grid", "columns": 3, "children": [{"type": "list", "items": ["x" * 120] * 10}] * 20}
+    with pytest.raises(ValidationError, match="too large"):
+        notify.check_overlay_request({"timeline": [{"seconds": 1, "card": {"root": root}}] * 2})
+
+
+@pytest.mark.parametrize("body", [
+    {"timeline": []}, {"timeline": [{"seconds": 1, "card": {"root": {"type": "divider"}}}] * 5},
+    {"timeline": [{"seconds": 0, "card": {"root": {"type": "divider"}}}]},
+    {"timeline": [{"seconds": 301, "card": {"root": {"type": "divider"}}}]},
+    {"timeline": [{"seconds": True, "card": {"root": {"type": "divider"}}}]},
+    {"timeline": [{"seconds": 1, "card": {"hide": True}}]},
+    {"timeline": [{"seconds": 1, "card": {"action": "runtime", "hidden": True}}]},
+    {"timeline": [{"seconds": 1, "card": {"timeline": [{"seconds": 1, "card": {"title": "x"}}]}}]},
+    {"timeline": [{"seconds": 1, "card": {"root": {"type": "divider"}}, "extra": True}]},
+    {"timeline": [{"seconds": 1, "card": {"title": "x"}}], "root": {"type": "divider"}},
+    {"timeline": [{"seconds": 1, "card": {"title": "x"}}], "regions": []},
+    {"timeline": [{"seconds": 1, "card": {"title": "x"}}], "position": "center"},
+    {"timeline": [{"seconds": 1, "card": {"title": "x"}}], "animation": {}},
+])
+def test_timeline_rejects_ambiguous_nested_or_invalid_frames(body):
+    with pytest.raises(ValidationError):
+        notify.check_overlay_request(body)
+
+
+def test_runtime_envelope_is_separate_from_design_validation():
+    for body in ({"action": "runtime"}, {"action": "runtime", "dim": 0.2, "compact": False, "hidden": True},
+                 {"action": "runtime", "dim": 1, "compact": True, "hidden": False}):
+        assert notify.check_overlay_request(body) == body
+        with pytest.raises(ValidationError, match="Nothing to check"):
+            notify.inspect_overlay(body)
+    for body in ({"action": "runtime", "hidden": 1}, {"action": "runtime", "dim": False},
+                 {"action": "runtime", "compact": "yes"}, {"action": "runtime", "dim": 0},
+                 {"action": "runtime", "root": {"type": "divider"}},
+                 {"action": "runtime", "timeline": []}, {"action": "runtime", "behavior": {}}):
+        with pytest.raises(ValidationError):
+            notify.check_overlay_request(body)
+
+
+def test_public_schema_covers_new_nodes_layout_and_timeline_but_not_runtime():
+    jsonschema = pytest.importorskip("jsonschema")
+    schema = notify.overlay_schema()
+    validator = jsonschema.Draft202012Validator(schema)
+    jsonschema.Draft202012Validator.check_schema(schema)
+    root = {"type": "grid", "columns": 1, "children": [
+        {"type": "ticker", "text": "news", "speed": 10, "tone": "info"},
+        {"type": "qr", "text": "data", "size": "s"}, {"type": "svg", "source": SAFE_SVG}]}
+    card = {"root": root, "animation": {"enter": "wipe", "duration_ms": 0},
+            "offset": {"x": -1920, "y": 1080}, "behavior": {"on_foreground": "shrink", "ambient_dim": True}}
+    for body in (card, {"regions": [{"position": "top", **card}]},
+                 {"timeline": [{"seconds": 1, "card": card}, {"seconds": 300, "card": {"root": root}}]}):
+        assert not list(validator.iter_errors(body))
+        assert notify.check_overlay_request(body) == body
+    for body in ({"action": "runtime", "hidden": True}, {**card, "dim": 0.5},
+                 {"root": root, "animation": {"duration_ms": 2001}},
+                 {"root": root, "offset": {"x": 1921}},
+                 {"root": root, "behavior": {"ambient_dim": 1}},
+                 {"timeline": [{"seconds": 0, "card": card}]},
+                 {"timeline": [{"seconds": 1, "card": {"timeline": [{"seconds": 1, "card": card}]}}]}):
+        assert list(validator.iter_errors(body))
+
+
+def test_timeline_keeps_per_tree_depth_and_per_frame_region_limits():
+    root = {"type": "divider"}
+    for _ in range(notify.MAX_TREE_DEPTH):
+        root = {"type": "grid", "columns": 1, "children": [root]}
+    frame = {"regions": [{"position": position, "root": root}
+                         for position in ("top", "bottom", "left", "right")]}
+    body = {"timeline": [{"seconds": 1, "card": frame}]}
+    assert notify.inspect_overlay(body)["widgets"] == 4 * (notify.MAX_TREE_DEPTH + 1)
+    frame["regions"].append({"position": "center", "root": {"type": "divider"}})
+    with pytest.raises(ValidationError, match="regions needs"):
+        notify.check_overlay_request(body)
+    deep = {"type": "grid", "columns": 1, "children": [root]}
+    with pytest.raises(ValidationError, match="nest at most"):
+        notify.check_overlay_request({"timeline": [{"seconds": 1, "card": {"root": deep}}]})
+
+
+@pytest.mark.parametrize("node", [
+    {"type": "compare", "segments": [{"label": "a", "value": "1", "fraction": 0.5, "extra": True},
+                                     {"label": "b", "value": "1", "fraction": 0.5}]},
+    {"type": "meta", "items": [{"label": "a", "value": "b", "extra": True}]},
+])
+def test_nested_widget_items_reject_unknown_fields_like_public_schema(node):
+    with pytest.raises(ValidationError, match="Unknown"):
+        notify.check_overlay_request({"root": node})

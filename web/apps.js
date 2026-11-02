@@ -4,7 +4,7 @@
 
 const INSTALL_BUDGET_S = 90;  // the longest the TV side waits for an install (ARCHITECTURE.md §10.2)
 const SHA256 = /^[0-9a-f]{64}$/;
-const A = { apps: null, listBusy: false, busy: false, file: null, run: null, ticker: null, stepsKey: '' };
+const A = { apps: null, bundled: null, bundledError: '', listBusy: false, busy: false, file: null, run: null, ticker: null, stepsKey: '' };
 
 const mmss = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
 
@@ -15,15 +15,83 @@ function appsMessage(text, tone, retry) {
     retry && [' ', h('button', { class: 'btn quiet', type: 'button', onclick: loadApps, text: 'Try again' })]));
 }
 
+function appControlsBlocked() {
+  return A.busy || A.listBusy || S.reserved || S.paired === false || studioRole === 'guest'
+    || S.status && !S.statusError && S.status.power === 'off';
+}
+
+async function loadBundledApps() {
+  $('panel-bundled').hidden = !supports({ route: '/api/apps/bundled' });
+  A.bundledError = '';
+  if ($('panel-bundled').hidden) { A.bundled = null; return; }
+  try { A.bundled = await call('GET', '/api/apps/bundled'); }
+  catch (err) { A.bundled = null; A.bundledError = 'Could not read included apps: ' + err.message + '. Refresh the app list to try again.'; }
+  renderBundledApps();
+}
+
+function renderBundledApps() {
+  const host = $('bundled-apps');
+  if (S.paired === false) { host.replaceChildren(h('p', { class: 'hint', text: 'Connect your TV first to install its included apps.' })); return; }
+  if (!A.bundled) { host.replaceChildren(h('p', { class: 'hint', text: A.bundledError || 'Reading included apps…' })); return; }
+  const rows = A.bundled.map(app => {
+    const row = h('li', { class: 'app bundled-app' });
+    const install = h('button', { class: app.installed ? 'btn' : 'btn primary', type: 'button',
+      dataset: { bundledId: app.id, bundledAvailable: String(app.available) },
+      'aria-label': (app.installed ? 'Repair ' : 'Install ') + app.title }, icon(app.installed ? 'refresh' : 'download'),
+      h('span', { text: app.installed ? 'Repair' : 'Install on TV' }));
+    install.addEventListener('click', () => installBundledApp(app, install));
+    const actions = h('div', { class: 'row bundled-actions' }, install);
+    if (app.installed) {
+      const remove = h('button', { class: 'btn quiet', type: 'button', 'aria-label': 'Uninstall ' + app.title }, icon('trash'), 'Uninstall');
+      remove.addEventListener('click', () => askRemove(row, app, app.title, remove));
+      actions.append(remove);
+    }
+    row.append(appIcon(app), h('div', { class: 'app-meta' },
+      h('div', { class: 'row' }, h('strong', { text: app.title }), h('span', { class: 'badge', text: app.installed ? 'Installed' : 'Not installed' })),
+      h('p', { class: 'hint', text: app.description }), h('span', { text: app.id + (app.version ? ' · Version ' + app.version : '') }),
+      !app.available && h('p', { class: 'hint', text: 'The bundled package is missing from this server. Update this project installation to enable Install/Repair.' })), actions);
+    return row;
+  });
+  host.replaceChildren(rows.length ? h('ul', { class: 'app-list' }, rows) : h('p', { class: 'hint', text: 'This server reports no included TV apps.' }));
+  syncApps();
+}
+
+async function installBundledApp(app, button) {
+  if (appControlsBlocked() || !app.available) return;
+  const restoreFocus = document.activeElement === button;
+  A.busy = true;
+  button.dataset.state = 'loading';
+  button.setAttribute('aria-busy', 'true');
+  result($('bundled-result'), 'Preparing the included package, installing it on the TV, and checking the installation. Keep this page open.');
+  syncApps();
+  try {
+    const reply = await call('POST', '/api/apps/bundled/' + encodeURIComponent(app.id), { json: {} });
+    if (reply.id !== app.id || reply.installed !== true) throw new Error('The server did not confirm the installed app');
+    app.installed = true;
+    result($('bundled-result'), reply.message, 'ok');
+  } catch (err) {
+    result($('bundled-result'), 'Installation was not confirmed: ' + err.message + '. Make sure the TV is on, then try Install/Repair again.', 'error');
+  } finally {
+    A.busy = false;
+    await loadApps();
+    if (restoreFocus && document.activeElement === document.body && S.view === 'apps') {
+      [...$('bundled-apps').querySelectorAll('button')].find(node => node.dataset.bundledId === app.id)?.focus();
+    }
+  }
+}
+
 async function loadApps() {
+  if (studioRole === 'guest') return;
   if (!supports({ group: 'Apps' })) return;
-  if (S.paired === false) return appsMessage('Connect your TV first. Your apps appear here after that.');
-  if (S.status && !S.statusError && S.status.power === 'off') return appsMessage('The TV is in standby. Turn it on to see its apps.');
+  if (S.paired === false) { renderBundledApps(); return appsMessage('Connect your TV first. Your apps appear here after that.'); }
+  if (S.status && !S.statusError && S.status.power === 'off') { renderBundledApps(); syncApps(); return appsMessage('The TV is in standby. Turn it on to see its apps.'); }
   if (A.listBusy) return;
   A.listBusy = true;
+  syncApps();
   $('apps-refresh').dataset.state = 'loading';
   if (!A.apps) appsMessage('Reading apps from the TV…');
   try {
+    await loadBundledApps();
     const reply = await call('GET', '/api/apps');
     A.apps = Array.isArray(reply) ? reply : (reply && reply.apps) || [];
     renderApps();
@@ -33,19 +101,22 @@ async function loadApps() {
   } finally {
     A.listBusy = false;
     delete $('apps-refresh').dataset.state;
+    syncApps();
   }
 }
 
 function renderApps() {
-  const list = A.apps.filter((app) => app.removable !== false);
+  const list = A.apps.filter(app => app.removable !== false && !A.bundled?.some(included => included.id === app.id));
   if (!list.length) return appsMessage('No added apps yet. Anything you install here shows up in this list.');
   $('apps-list').replaceChildren(h('ul', { class: 'app-list' }, list.map(appRow)));
   syncApps();
 }
 
 function syncApps() {
-  for (const btn of document.querySelectorAll('#apps-list button')) btn.disabled = A.busy;
-  $('apps-refresh').disabled = A.busy;
+  const blocked = appControlsBlocked();
+  for (const btn of document.querySelectorAll('#apps-list button, #bundled-apps button')) btn.disabled = blocked || btn.dataset.bundledAvailable === 'false';
+  $('apps-refresh').disabled = blocked;
+  syncAppForms();
 }
 
 // Only same-origin icons can load (CSP img-src 'self'); the TV's own file paths never can, so those get a letter tile.
@@ -89,6 +160,9 @@ function askRemove(row, app, name, trigger) {
 }
 
 async function removeApp(row, app, name, ask, go) {
+  if (appControlsBlocked()) return;
+  A.busy = true;
+  syncApps();
   go.dataset.state = 'loading';
   for (const btn of ask.querySelectorAll('button')) btn.disabled = true;
   try {
@@ -100,6 +174,9 @@ async function removeApp(row, app, name, ask, go) {
     for (const btn of ask.querySelectorAll('button')) btn.disabled = false;
     row.querySelector('.app-error')?.remove();
     row.append(h('p', { class: 'app-error', text: `Could not remove ${name}: ${err.message}` }));
+  } finally {
+    A.busy = false;
+    syncApps();
   }
 }
 
@@ -124,8 +201,8 @@ function pickApp(file) {
 }
 
 function syncAppForms() {
-  $('app-upload').disabled = !A.file || A.busy;
-  $('app-url-install').disabled = !$('app-url').value.trim() || A.busy;
+  $('app-upload').disabled = !A.file || appControlsBlocked();
+  $('app-url-install').disabled = !$('app-url').value.trim() || appControlsBlocked();
 }
 
 function urlBody() {
@@ -205,6 +282,7 @@ function renderProgress() {
 }
 
 async function runInstall(name, kind, send) {
+  if (appControlsBlocked()) return;
   A.busy = true;
   syncApps();
   syncAppForms();
@@ -291,6 +369,7 @@ function renderAuth() {
 }
 
 async function loadAuth() {
+  if (studioRole === 'guest') return;
   if (!supports({ route: '/api/config/auth' })) return;
   try {
     S.authMode = (await call('GET', '/api/config/auth')).mode;

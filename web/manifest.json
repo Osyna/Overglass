@@ -1,6 +1,6 @@
 {
-  "name": "webOS Foundry",
-  "short_name": "Foundry",
+  "name": "Overglass",
+  "short_name": "Overglass",
   "description": "Control your LG webOS TV: remote, apps, messages and picture settings.",
   "start_url": "/",
   "scope": "/",

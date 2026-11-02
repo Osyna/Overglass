@@ -5,11 +5,11 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "webos-foundry"
 version = "0.1.0"
-description = "CLI, HTTP API, web UI and Home Assistant integration for a rooted LG webOS TV"
+description = "Overglass: CLI, HTTP API, web UI and Home Assistant integration for a rooted LG webOS TV"
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.9"
-authors = [{ name = "webOS Foundry contributors" }]
+authors = [{ name = "Overglass contributors" }]
 classifiers = [
   "Development Status :: 4 - Beta",
   "Environment :: Console",
@@ -24,8 +24,8 @@ classifiers = [
 dependencies = []
 
 [project.urls]
-Homepage = "https://github.com/webos-foundry/webos-foundry"
-Issues = "https://github.com/webos-foundry/webos-foundry/issues"
+Homepage = "https://github.com/Osyna/Overglass"
+Issues = "https://github.com/Osyna/Overglass/issues"
 
 [project.scripts]
 wof = "webos_foundry.cli:main"

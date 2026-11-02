@@ -47,7 +47,7 @@ class WebosFoundryConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             error = await _validate(self.hass, host, port, user_input[CONF_TOKEN])
             if error is None:
                 return self.async_create_entry(
-                    title=f"webOS Foundry ({host})",
+                    title=f"Overglass ({host})",
                     data={CONF_HOST: host, CONF_PORT: port, CONF_TOKEN: user_input[CONF_TOKEN]},
                 )
             errors["base"] = error

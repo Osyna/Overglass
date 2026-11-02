@@ -1,4 +1,4 @@
-"""Revocable capability URLs that run one saved scene."""
+"""Revocable capability URLs that run one saved scene or render a saved design."""
 import json
 import os
 import secrets
@@ -13,14 +13,17 @@ NAME_MAX = 60
 LOCK = threading.Lock()
 
 
-def _check_entry(scene, label):
-    if not isinstance(scene, str) or not (1 <= len(scene) <= NAME_MAX) or scene.strip() != scene:
-        raise ValidationError("A scene name must be 1-%d characters with no leading/trailing space" % NAME_MAX)
+def _check_entry(scene, label, design=None):
+    target, kind = (design, "design") if design is not None else (scene, "scene")
+    if design is not None and scene is not None:
+        raise ValidationError("A webhook takes either scene or design, not both")
+    if not isinstance(target, str) or not (1 <= len(target) <= NAME_MAX) or target.strip() != target:
+        raise ValidationError("A %s name must be 1-%d characters with no leading/trailing space" % (kind, NAME_MAX))
     if label is None:
         label = ""
     if not isinstance(label, str) or len(label) > NAME_MAX:
         raise ValidationError("A webhook label must be at most %d characters" % NAME_MAX)
-    return {"scene": scene, "label": label}
+    return {kind: target, "label": label}
 
 
 def load(config_dir_override=None) -> dict:
@@ -33,9 +36,9 @@ def load(config_dir_override=None) -> dict:
     if not isinstance(saved, dict):
         raise ValidationError("webhooks.json is malformed")
     for token, entry in saved.items():
-        if not token or not isinstance(entry, dict) or set(entry) != {"scene", "label"}:
+        if not token or not isinstance(entry, dict) or set(entry) not in ({"scene", "label"}, {"design", "label"}):
             raise ValidationError("webhooks.json is malformed")
-        _check_entry(entry["scene"], entry["label"])
+        _check_entry(entry.get("scene"), entry["label"], entry.get("design"))
     return saved
 
 
@@ -56,8 +59,8 @@ def _save(saved, config_dir_override):
         raise
 
 
-def create(scene, label=None, config_dir_override=None) -> str:
-    entry = _check_entry(scene, label)
+def create(scene=None, label=None, config_dir_override=None, *, design=None) -> str:
+    entry = _check_entry(scene, label, design)
     with LOCK:
         saved = load(config_dir_override)
         token = secrets.token_urlsafe(24)
@@ -81,3 +84,15 @@ def resolve(token, config_dir_override=None):
     if not isinstance(token, str):
         return None
     return load(config_dir_override).get(token)
+
+
+def render(entry, values=None, config_dir_override=None):
+    """Apply only declared scalar targets, then resolve and validate before transport."""
+    from . import bindings, designs
+    if not isinstance(entry, dict) or set(entry) != {"design", "label"}:
+        raise ValidationError("Only design webhooks accept scalar values")
+    _check_entry(None, entry["label"], entry["design"])
+    saved = designs.load(config_dir_override)
+    if entry["design"] not in saved:
+        raise ValidationError("No such design: %s" % entry["design"])
+    return bindings.apply_values(saved[entry["design"]], {} if values is None else values)

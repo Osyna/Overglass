@@ -22,7 +22,7 @@ body:
     id: version
     attributes:
       label: Version
-      description: Which version of webos-foundry are you running?
+      description: Which version of Overglass are you running?
     validations:
       required: true
   - type: input

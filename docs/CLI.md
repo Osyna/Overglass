@@ -22,7 +22,10 @@ Commands that talk to the TV only ever send verbs from the dispatcher grammar
 | [`wof design`](#wof-design) | Save a finished overlay card under a name and show it again |
 | [`wof scene`](#wof-scene) | Save and run a named sequence of steps |
 | [`wof schedule`](#wof-schedule) | Run a scene automatically at a time of day |
-| [`wof webhook`](#wof-webhook) | A private link that runs one scene |
+| [`wof rotation`](#wof-rotation) | Cycle saved designs at a configured interval |
+| [`wof theme`](#wof-theme) | Save and reuse overlay looks |
+| [`wof access`](#wof-access) | Create PIN accounts and remote-only guests |
+| [`wof webhook`](#wof-webhook) | A private POST capability for a scene or design |
 | [`wof connector`](#wof-connector) | Pollable data sources rendered as an overlay card |
 | [`wof addon`](#wof-addon) | Install a connector to auto-refresh on the TV with one command |
 | [`wof screenshot`](#wof-screenshot) / [`wof stream`](#wof-stream) | Capture the HDMI picture |
@@ -136,17 +139,20 @@ wof remote ACTION [VALUE]
 ```
 
 `ACTION` is one of `wake`, `power_off`, `home`, `back`, `up`, `down`, `left`, `right`, `ok`, `mute`,
-`unmute`, `volume_up`, `volume_down`, `hdmi` (with `VALUE` 1-4).
+`unmute`, `volume_up`, `volume_down`, `hdmi` (with `VALUE` 1-4), `volume` (integer `VALUE` 0-100).
 
 ```sh
 wof remote hdmi 2
 wof remote volume_up
+wof remote volume 20    # set an exact TV speaker level, with read-back
 wof remote wake          # UDP Wake-on-LAN from this machine; needs `mac` in the config
 ```
 
 Each action waits for the TV to confirm the change and prints its confirmation message. `wake` only
 sends the magic packet and does not touch SSH; read `wof status` to confirm the TV woke. Volume is
-the TV speaker's 0-100 scale, moved one step at a time with read-back.
+the TV speaker's 0-100 scale: use `volume_up` / `volume_down` for one step, or `volume N` for an exact level.
+An exact level above the TV's reported maximum is rejected. Changing the level can unmute the TV;
+the confirmation reports its actual mute state. The Remote page's default 40 cap does not restrict CLI commands.
 
 ## wof settings
 
@@ -237,7 +243,7 @@ wof overlay hide
 
 The CLI's shorthand flags compile into an equivalent JSON widget tree before it reaches the TV
 (stack, row, text, image, badge, dot, progress, countdown, clock, list, divider, compare, sparkline,
-section, event, stat, status, meta — depth ≤ 5, ≤ 80 widgets, ≤ 49152 bytes; a card may also carry a
+section, event, stat, status, meta, grid, ticker, qr, svg; depth ≤ 5, ≤ 80 widgets, ≤ 49152 bytes; a card may carry a
 `theme` and up to 4 `regions`, e.g. a full-width top bar plus a right-hand panel; full schema:
 [ARCHITECTURE.md §3a](../ARCHITECTURE.md)). For a custom tree, write the card as JSON — by hand, in
 the web UI's card studio, or by asking an assistant with the output of `wof overlay schema` — then
@@ -295,24 +301,28 @@ wof schedule set movie-night 20:00 --days fri,sat
 ```
 wof webhook list [--json]
 wof webhook create SCENE [--label TEXT]
+wof webhook create --design DESIGN [--label TEXT]
 wof webhook delete TOKEN
 ```
 
-Mints a private URL (`/webhook/<token>`, no sign-in required) that runs one named scene — for
-triggering from another app, a phone shortcut, or a smart-home routine. `create` prints the token and
-the relative URL; prefix it with your server's address to get the full link. Delete the webhook to
-revoke it; anyone holding the URL can run that scene until then.
+Creates a private POST URL for a named scene or design. `create` prints the token and relative URL;
+prefix it with your server's address. Delete the webhook to revoke it. GET describes the target
+without executing it. A design trigger accepts `{"values": {...}}` for existing scalar binding
+targets or `{{placeholder}}` fields. Layout, URLs and credentials cannot be changed by the payload.
 
 ```sh
 wof webhook create movie-night --label "Movie night"
 # token t0k3n...  url /webhook/t0k3n...
-curl http://host:8765/webhook/t0k3n...
+curl -X POST http://host:8765/webhook/t0k3n...
 ```
 
 ## wof connector
 
 ```
 wof connector football [--league bl1] [--show]
+wof connector football --view table --league bl1 --season 2025 [--show]
+wof connector football --view lineups --lineup-url https://provider.example/match.json [--show]
+wof connector json|homeassistant|weather|calendar|rss [--param KEY=VALUE ...] [--show]
 ```
 
 Polls a built-in data source and prints the resulting overlay card as JSON; `--show` sends it to the
@@ -358,6 +368,12 @@ wof design list [--json]
 wof design set NAME FILE.json
 wof design delete NAME
 wof design show NAME
+wof design history NAME
+wof design restore NAME REVISION_ID
+wof design rename NAME NEW_NAME
+wof design export NAME
+wof design import FILE.json [--name NAME] [--overwrite]
+wof design resolve FILE.json
 ```
 
 A design is one complete overlay card (theme, layout or regions, widgets, seconds — the same body
@@ -372,6 +388,47 @@ wof design set match-day ~/match-day.json
 wof design list
 wof design show match-day
 ```
+
+History keeps up to 100 previous revisions. Restore records the current version first; rename
+moves its history. Export prints a version-1 sharing bundle with known credentials removed.
+Import rejects name collisions unless overwrite is explicit. Imported bindings identify secrets
+that must be re-entered. `resolve` contacts configured sources and prints a validated card without
+showing it; private network sources require explicit opt-in.
+
+## wof theme
+
+```
+wof theme list
+wof theme set NAME FILE.json
+wof theme delete NAME
+```
+
+The JSON file contains the overlay theme fields, not a complete card. `-` reads stdin.
+
+## wof rotation
+
+```
+wof rotation list
+wof rotation set DESIGN [DESIGN ...] [--interval SECONDS] [--id ID] [--disabled]
+wof rotation delete ID
+```
+
+Intervals are 15–86400 seconds. `wof serve` must run. Only one rotation or addon can own automatic
+display; disable the active owner before enabling another. Manual sends/hides pause automatic
+display; explicitly enable the chosen rotation/addon to resume.
+
+## wof access
+
+```
+wof access list
+wof access set NAME [--role admin|guest] [--action ACTION ...]
+wof access delete NAME
+```
+
+`set` prompts privately for a 6–12 digit PIN. Guests default to remote-only actions without wake or
+power-off. Explicit `--action` values replace that allowlist. Editing/deleting an account revokes
+existing sessions. Never send PINs over an untrusted plain-HTTP connection.
+
 
 ## wof screenshot
 

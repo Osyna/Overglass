@@ -185,17 +185,6 @@ def set_setting(transport, category, key, value, context) -> str:
     return text if prefixed else LABELS[(category, key)] + ": " + text
 
 
-def _check_remote(action, value):
-    # Same rules as the dispatcher; checking here keeps wake (which never reaches the dispatcher) validated too.
-    if action not in REMOTE_ACTIONS:
-        raise ValidationError("Unknown remote action")
-    if action == "hdmi":
-        if type(value) is not int or not 1 <= value <= 4:
-            raise ValidationError("HDMI input must be the integer 1-4")
-    elif value is not None:
-        raise ValidationError("This remote action takes no value")
-
-
 def magic_packet(mac):
     if not isinstance(mac, str) or not MAC_RE.fullmatch(mac):
         raise ValidationError("The configured MAC address is invalid")
@@ -218,11 +207,11 @@ def _send_udp(packet, address):
 def remote(transport, action, value=None, *, config=None) -> str:
     """Returns a message string. 'wake' only sends a UDP magic packet (config.mac) and never touches the
     transport: poll get_status() to confirm power."""
-    _check_remote(action, value)
+    command = dispatcher.build_remote(action, value)
     if action == "wake":
         config = config or Config.require()
         if not config.mac:
             raise NotPairedError("No MAC address configured; run `wof config set mac AA:BB:CC:DD:EE:FF` first")
         _send_udp(magic_packet(config.mac), _broadcast_address(config.broadcast))
         return "Wake packet sent; the TV is not confirmed on yet"
-    return _message(transport.run(dispatcher.build_remote(action, value), timeout=45), "reply")
+    return _message(transport.run(command, timeout=45), "reply")

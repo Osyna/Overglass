@@ -151,6 +151,22 @@ def test_remote_actions_and_validation():
         tv.remote(FakeTransport({"remote": "5"}), "home")
 
 
+@pytest.mark.parametrize("value", [0, 40, 41, 100])
+def test_absolute_volume_sends_one_canonical_command(value):
+    fake = FakeTransport({"remote": json.dumps("Volume %d" % value)})
+    assert tv.remote(fake, "volume", value) == "Volume %d" % value
+    assert fake.commands == ["remote volume %d" % value]
+    assert fake.calls[0].timeout == 45
+
+
+@pytest.mark.parametrize("value", [None, True, False, 1.0, 1.5, -1, 101, "40", "40; id", "40\n", [], {}])
+def test_absolute_volume_rejects_before_transport(value):
+    fake = FakeTransport()
+    with pytest.raises(ValidationError, match="Volume must be the integer 0-100"):
+        tv.remote(fake, "volume", value)
+    assert fake.calls == []
+
+
 def test_remote_transport_errors_propagate():
     with pytest.raises(TransportError):
         tv.remote(FakeTransport({"remote": TransportError("down")}), "home")

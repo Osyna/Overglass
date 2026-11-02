@@ -1,7 +1,7 @@
 # Findings: what a rooted webOS 10.x TV exposes
 
 This is evidence, not marketing. It records what was probed on **one rooted LG OLED C-series
-TV (webOS 10.x, SoC family `o22n3`)**, as root, over SSH, in the project that webOS Foundry was
+TV (webOS 10.x, SoC family `o22n3`)**, as root, over SSH, in the project that Overglass was
 generalised from. Nothing here was verified on other models or firmware, and anything marked
 "not tested" really was not. Names such as `luna://…` are webOS's internal Luna bus service URIs.
 
@@ -18,18 +18,18 @@ Practical notes:
 | Capability | Call / source | Notes |
 | --- | --- | --- |
 | On-screen toast | `com.webos.notification/createToast {"message":…}`, `closeToast {toastId}` | Seen in a capture that includes the UI layer |
-| HDMI screenshot | `com.webos.service.capture/executeOneShot {"method":"VIDEO",path,format,width,height}` | Clear (non-HDCP) source only; `DISPLAY` adds LG's own system UI (toasts) but **not** a third-party overlay app's floating window — verified live on the real TV (webOS Foundry's overlay app, a separate `WebAppMgr --app-id=…` renderer, is absent from captures by either method; confirm an overlay rendered via its own CDP devtools port instead, e.g. `luna-send … applicationManager/launch` then `GET /json` on the app's `--remote-debugging-port`) |
+| HDMI screenshot | `com.webos.service.capture/executeOneShot {"method":"VIDEO",path,format,width,height}` | Clear (non-HDCP) source only; `DISPLAY` adds LG's own system UI (toasts) but **not** a third-party overlay app's floating window — verified live on the real TV (Overglass's overlay app, a separate `WebAppMgr --app-id=…` renderer, is absent from captures by either method; confirm an overlay rendered via its own CDP devtools port instead, e.g. `luna-send … applicationManager/launch` then `GET /json` on the app's `--remote-debugging-port`) |
 | Capture rate (Luna) | same call, 64×36–480×270 | ≈170 ms/frame (≈6 fps), serialised; 1080p JPG ≈290 ms, 4K ≈600 ms. For 30-60 fps see "Native fast capture" below |
-| Overlay windows | a web app with `"transparent": true, "defaultWindowType": "overlay"` | Drawn over HDMI; foreground app unchanged. See "Overlay app". **Tested live this session: only one `overlay`-type window can be visible at a time, system-wide, regardless of app id.** Installed a second app (`dev.webosfoundry.overlay2`, a plain id clone) and launched it while the first was already showing: the first's `WebAppMgr` renderer process was torn down and the second took over (a brief window where both processes coexist, then the loser exits — confirmed via `ps -ef`/CDP on both app ids). The reverse (launch the first again while the second is up) behaves the same: last-launched wins. **Consequence:** webOS Foundry cannot show two independent overlay *windows* at once by launching a second app instance. It does not need to: the overlay app's window is full-screen and transparent, so one card request can carry up to four `regions` (a full-width top bar, a right-hand panel, a corner toast...) drawn as separate cards in that single window — a broadcast-style dual-pane layout is one request, not two windows (ARCHITECTURE.md §3a). |
+| Overlay windows | a web app with `"transparent": true, "defaultWindowType": "overlay"` | Drawn over HDMI; foreground app unchanged. See "Overlay app". **Tested live this session: only one `overlay`-type window can be visible at a time, system-wide, regardless of app id.** Installed a second app (`dev.webosfoundry.overlay2`, a plain id clone) and launched it while the first was already showing: the first's `WebAppMgr` renderer process was torn down and the second took over (a brief window where both processes coexist, then the loser exits — confirmed via `ps -ef`/CDP on both app ids). The reverse (launch the first again while the second is up) behaves the same: last-launched wins. **Consequence:** Overglass cannot show two independent overlay *windows* at once by launching a second app instance. It does not need to: the overlay app's window is full-screen and transparent, so one card request can carry up to four `regions` (a full-width top bar, a right-hand panel, a corner toast...) drawn as separate cards in that single window — a broadcast-style dual-pane layout is one request, not two windows (ARCHITECTURE.md §3a). |
 | TTS announcement | `com.webos.service.tts/speak {"text","clear":true}` | Error 8101 unless setting `option.audioGuidance` is `on`; follows TV-speaker volume |
 | Ambient light | `pqcontroller/getInfo {"key":"eyeQLux"}` | Lux integer; includes the screen's own light |
 | OLED care, read-only | `oledepl/getOledPanelUTT`, `getPanelTemperature`, `getPixelRefresherInfoList`, `getGlobalStressReduction` | Panel hours counter; **never call its setters** |
 | Power history | `micomservice/listPowerOnOffHistoryWithUTT {"startIndex":0,"nCount":N}` | Reasons such as `ON_BY_REMOTE_KEY`, `ON_BY_WOW_ONOFF` |
 | Usage statistics | `usercontextmanager/getRank`, `getHistory {"fromDate":yyyymmdd,"eventType":"app"}` | Per-HDMI-input sessions and durations; **never call `reset`** |
-| BLE scanning | `bluetooth2/le/startScan {"subscribe":true}` | Raw advertisements and RSSI (not used by webOS Foundry) |
+| BLE scanning | `bluetooth2/le/startScan {"subscribe":true}` | Raw advertisements and RSSI (not used by Overglass) |
 | Signal details | `videooutput/getStatus`, `eim/getAllInputStatus`, `eim/getHDMISignalInfo` | Resolution, refresh, VRR/ALLM/HDR, cable presence |
 | Sleep timer | settings category `time`, key `sleepTimer` | Read proven; write uses the same API as the AI settings |
-| Custom TFLite on CPU | the TV's `libtensorflow-lite.so` C API via an `LD_PRELOAD` harness, or `/usr/bin/airunner` | LG's person detector ran in ≈330 ms/frame (not used by webOS Foundry) |
+| Custom TFLite on CPU | the TV's `libtensorflow-lite.so` C API via an `LD_PRELOAD` harness, or `/usr/bin/airunner` | LG's person detector ran in ≈330 ms/frame (not used by Overglass) |
 
 Other facts the project relies on:
 
@@ -67,7 +67,7 @@ Other facts the project relies on:
 
 ### Exposed, high-risk methods
 
-These exist and root can call them. webOS Foundry's dispatcher has no verb that reaches them
+These exist and root can call them. Overglass's dispatcher has no verb that reaches them
 ([SAFETY.md](SAFETY.md)): `systemservice/erase/*`, `micomservice` firmware and power commands,
 `oledepl` pixel-refresh setters, `usercontextmanager/reset`, `/proc/lg/*/pwm_duty`.
 
@@ -79,7 +79,7 @@ AirPlay (`:7000`), SSAP (`:3000`/`:3001`) and LPD (`:515`) on the LAN.
 ## Native fast capture
 
 The Luna screenshot tops out around 6 fps. The TV's own `/usr/lib/libvtcapture.so.1` can stream the
-HDMI video plane much faster; webOS Foundry ships `vtcap`, a small C client of that library
+HDMI video plane much faster; Overglass ships `vtcap`, a small C client of that library
 (`tv-assets/vtcap/`), and yields RGB24 frames.
 
 **Why a role is needed.** `vtCapture_create()` registers an LS2 name
@@ -125,7 +125,7 @@ A small web app can draw one card over whatever is on screen, including HDMI. It
 from [webos-av-overlay](https://github.com/SammySco/webos-av-overlay): `appinfo.json` sets
 `"transparent": true` and `"defaultWindowType": "overlay"`, and the page calls
 `PalmSystem.setInputRegion` with a 1×1 region and `PalmSystem.window.setFocus(false)`. Launch
-parameters carry the card; `handlesRelaunch` updates a visible card in place. webOS Foundry's app id
+parameters carry the card; `handlesRelaunch` updates a visible card in place. Overglass's app id
 is `dev.webosfoundry.overlay`, installed through `appInstallService/dev/install`.
 
 Verified on the reference TV:
@@ -168,3 +168,26 @@ not run custom models.
 * Both pipelines reserve the TV (one at a time under a TV-side `flock`); outputs are published only
   after state restoration is verified. Failed or interrupted runs keep a private TV workspace with a
   `restore.json` for recovery. Network loss and power failure during a run were not tested.
+
+## Overlay engine verification, 2026-11-02
+
+On the reference C5, Node reports v16.20.2. A full overlay install included the local QR encoder and
+WOFF2 assets. Through the actual overlay inspector:
+
+* A two-column grid rendered text, clock, ticker, QR, SVG and progress widgets.
+* Updating text/progress retained the original text DOM node and changed the progress fill to 90%.
+* Roboto Condensed reached the browser font loader's `loaded` state.
+* The application-manager running query returned `running: true` while the overlay was displayed.
+* Ambient monitoring applied `brightness(0.2)` using the available lux reading, without changing
+  TV picture settings.
+* A finite timeline advanced from its first card to its second card in the same overlay app.
+
+Switching HDMI 1 to HDMI 2 dismissed the overlay process on this firmware before its shrink policy
+could be inspected. HDMI 1 was restored; the running query then returned false. The monitor must not
+relaunch an overlay after such a dismissal. Shrink/hide runtime transitions are covered in Chromium
+and backend tests; survival across a retail-TV foreground/input switch is firmware-dependent.
+
+The production renderer also has 27 committed Chromium pixel references with fixed time, viewport,
+fonts and image fixtures. Exact comparisons passed; a one-pixel browser DOM mutation was rejected.
+These references test the application surface, not the final TV compositor. See
+[OVERLAY-VISUAL.md](OVERLAY-VISUAL.md) for capture and comparison commands.

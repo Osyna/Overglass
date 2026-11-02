@@ -40,9 +40,9 @@
 
   --font-ui: "Avenir Next", Avenir, "Segoe UI", "Noto Sans", sans-serif;
   --font-mono: ui-monospace, "SF Mono", "Cascadia Mono", "DejaVu Sans Mono", monospace;
-  --font-tv: "LG Smart UI", "LG Display", "DroidSans", sans-serif;
-  --font-tv-condensed: "LG Smart UI Condensed", "Roboto Condensed", "Arial Narrow", sans-serif;
-  --font-tv-mono: "LG Smart UI Mono", "DroidSansMono", monospace;
+  --font-tv: "Inter", "LG Smart UI", "LG Display", "DroidSans", sans-serif;
+  --font-tv-condensed: "Roboto Condensed", "LG Smart UI Condensed", "Arial Narrow", sans-serif;
+  --font-tv-mono: "JetBrains Mono", "LG Smart UI Mono", "DroidSansMono", monospace;
   --text-xs: 0.8125rem;
   --text-sm: 0.9375rem;
   --text-base: 1rem;
@@ -92,6 +92,8 @@
   --tv-badge-success-ink: rgb(8 30 16);
   --tv-badge-warning-ink: rgb(40 25 0);
   --tv-badge-alert-ink: rgb(40 10 6);
+  --tv-qr-ink: #000;
+  --tv-qr-paper: #fff;
   --tv-shadow: 0 12px 40px rgb(0 0 0 / 0.45);
   --tv-shadow-edge: 0 0 40px rgb(0 0 0 / 0.45);
 }

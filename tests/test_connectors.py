@@ -1,8 +1,5 @@
 import copy
-import io
 import json
-import urllib.error
-import urllib.request
 
 import pytest
 
@@ -38,11 +35,11 @@ def api(monkeypatch):
     calls = []
     data = copy.deepcopy(MATCHES)
 
-    def urlopen(url, timeout):
-        calls.append((url, timeout))
-        return io.BytesIO(json.dumps(data).encode())
+    def fetch_json(url):
+        calls.append((url, 8))
+        return copy.deepcopy(data)
 
-    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(football, "fetch_json", fetch_json)
     return data, calls
 
 
@@ -110,19 +107,19 @@ def test_football_empty_matchday_is_a_valid_card(api):
     assert body["root"]["children"][2]["children"][-1]["text"] == "No matches available"
 
 
-@pytest.mark.parametrize("error", [urllib.error.URLError("offline"), TimeoutError("timed out")])
+@pytest.mark.parametrize("error", [RuntimeError("network error"), TimeoutError("timed out")])
 def test_football_network_errors_are_clean(monkeypatch, error):
-    def urlopen(url, timeout):
-        raise error
+    def fetch_json(url):
+        raise RuntimeError("Could not fetch data endpoint") from error
 
-    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(football, "fetch_json", fetch_json)
     with pytest.raises(RuntimeError, match="Could not fetch"):
         football.poll({})
 
 
 @pytest.mark.parametrize("raw", [b"not json", b"{}", b"[null]", b"[{\"leagueName\": \"League\"}]"])
 def test_football_malformed_responses_are_clean(monkeypatch, raw):
-    monkeypatch.setattr(urllib.request, "urlopen", lambda url, timeout: io.BytesIO(raw))
+    monkeypatch.setattr(football, "fetch_json", lambda url: json.loads(raw))
     with pytest.raises(RuntimeError, match="OpenLigaDB returned malformed football data"):
         football.poll({})
 

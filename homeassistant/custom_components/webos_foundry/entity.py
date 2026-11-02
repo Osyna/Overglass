@@ -14,7 +14,7 @@ def device_info(entry: ConfigEntry) -> DeviceInfo:
         identifiers={(DOMAIN, entry.entry_id)},
         name=f"webOS TV ({entry.data[CONF_HOST]})",
         manufacturer="LG",
-        model="webOS TV (webOS Foundry)",
+        model="webOS TV (Overglass)",
     )
 
 

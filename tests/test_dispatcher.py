@@ -9,8 +9,12 @@ B64 = "QUJD"
 CASES = {
     "status": (["status"], ["status ", "status x", "Status", ""]),
     "details": (["details"], ["details 1", "detail"]),
-    "remote": (["remote home", "remote wake", "remote volume_down", "remote hdmi 1", "remote hdmi 4"],
+    "remote": (["remote home", "remote wake", "remote volume_down", "remote hdmi 1", "remote hdmi 4",
+                "remote volume 0", "remote volume 9", "remote volume 40", "remote volume 99", "remote volume 100"],
                ["remote hdmi", "remote hdmi 0", "remote hdmi 5", "remote hdmi 12", "remote nope", "remote home 1",
+                "remote volume", "remote volume true", "remote volume 1.5", "remote volume -1", "remote volume 101",
+                "remote volume 00", "remote volume 01", "remote volume 040", "remote volume +1",
+                "remote volume 1e1", "remote volume 1 2", "remote volume 40; id", "remote volume 40\n",
                 "remote  home", "remote home; id", "remote home\n"]),
     "settings-list": (["settings-list"], ["settings-list x"]),
     "settings-set": (["settings-set aiPicture ai_Picture " + B64, "settings-set a b QQ==", "settings-set a b " + "A" * 4000],
@@ -140,4 +144,16 @@ def test_builders_reject_bad_arguments(call):
 def test_whitelists():
     assert d.INSTALL_FILES == ("status.sh", "details.js", "notify.js", "settings.js", "remote.js",
                                "process-image.js", "process-audio.js", "apps.js", "dispatch.sh")
-    assert "hdmi" in d.REMOTE_ACTIONS and "wake" in d.REMOTE_ACTIONS and len(set(d.REMOTE_ACTIONS)) == 14
+    assert {"hdmi", "wake", "volume"} <= set(d.REMOTE_ACTIONS) and len(set(d.REMOTE_ACTIONS)) == 15
+
+
+@pytest.mark.parametrize("value", [0, 1, 40, 41, 99, 100])
+def test_absolute_volume_builder(value):
+    assert d.build_remote("volume", value) == "remote volume %d" % value
+    assert d.verb_of(d.build_remote("volume", value)) == "remote"
+
+
+@pytest.mark.parametrize("value", [None, True, False, 1.0, 1.5, -1, 101, "40", "40; id", "40\n", [], {}])
+def test_absolute_volume_builder_rejects_invalid_values(value):
+    with pytest.raises(ValidationError, match="Volume must be the integer 0-100"):
+        d.build_remote("volume", value)

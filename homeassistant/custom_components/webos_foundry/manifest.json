@@ -1,12 +1,12 @@
 {
   "domain": "webos_foundry",
-  "name": "webOS Foundry",
+  "name": "Overglass",
   "codeowners": [],
   "config_flow": true,
-  "documentation": "https://github.com/webos-foundry/webos-foundry/tree/main/homeassistant/custom_components/webos_foundry",
+  "documentation": "https://github.com/Osyna/Overglass/tree/main/homeassistant/custom_components/webos_foundry",
   "integration_type": "device",
   "iot_class": "local_polling",
-  "issue_tracker": "https://github.com/webos-foundry/webos-foundry/issues",
+  "issue_tracker": "https://github.com/Osyna/Overglass/issues",
   "requirements": [],
   "version": "0.1.0"
 }

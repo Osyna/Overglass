@@ -1,30 +1,44 @@
-"""Current-matchday football scores and goal events from the public, key-free OpenLigaDB API."""
-import json
+"""Football matches and league tables from the public, key-free OpenLigaDB API.
+
+Tables use /getbltable/{league}/{season}. OpenLigaDB does not publish lineups:
+view='lineups' requires lineup_url to a real, user-supplied JSON provider.
+The provider schema is {match: str, home: {name: str, players: [{name: str,
+number?: int, position?: str}], formation?: str}, away: <same>}. Each team
+has 1-30 actual players, rendered in provider order; no squad is inferred.
+Optional lineup_token uses a Bearer header; private providers require opt-in.
+"""
 import re
 import time
-import urllib.error
-import urllib.request
 from datetime import datetime, timezone
-from http.client import HTTPException
 
 from .. import notify
 from ..errors import ValidationError
+from ..datafetch import fetch_json
+from ._shared import PRIVATE, card, number, private, text
 
 API_URL = "https://api.openligadb.de/getmatchdata/"
 MAX_MATCHES = 6
 MAX_GOALS_SHOWN = 6  # for the featured (first) match only
-TIMEOUT = 8
+MAX_TABLE_TEAMS = 20
 LEAGUE_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,39}")
 CREST_RE = re.compile(r"https://[^\s\"'<>]+")
 
 META = {
     "name": "Football Scoreboard",
-    "description": "Live scores, crests and goal-by-goal events for a league's current matchday.",
+    "description": "OpenLigaDB scores and real league tables; lineups require your own genuine JSON source.",
     "category": "sports",
     "params_schema": [
         {"key": "league", "label": "League", "type": "select", "default": "bl1", "choices": [
             {"value": "bl1", "label": "Bundesliga"}, {"value": "bl2", "label": "2. Bundesliga"},
             {"value": "bl3", "label": "3. Liga"}, {"value": "dfb", "label": "DFB-Pokal"}]},
+        {"key": "view", "label": "View", "type": "select", "default": "matches", "choices": [
+            {"value": "matches", "label": "Matches"}, {"value": "table", "label": "League table"},
+            {"value": "lineups", "label": "Lineups (your JSON provider)"}]},
+        {"key": "season", "label": "Season start year (required for table)", "type": "number", "min": 1900, "max": 2200, "step": 1},
+        {"key": "lineup_url", "label": "Real per-match lineup JSON URL", "type": "string",
+         "description": "OpenLigaDB has no lineups. Supply {match,home:{name,players:[{name,number?,position?}]},away:{name,players:[...]}}."},
+        {"key": "lineup_token", "label": "Lineup provider Bearer token (optional)", "type": "secret"},
+        PRIVATE,
     ],
     "default_interval_seconds": 90,
 }
@@ -119,14 +133,29 @@ def poll(params: dict) -> dict:
     league = params.get("league", "bl1")
     if not isinstance(league, str) or not LEAGUE_RE.fullmatch(league):
         raise ValidationError("League must be a shortcut of 1-40 letters, numbers, underscores or hyphens")
+    view = params.get("view", "matches")
+    if view not in ("matches", "table", "lineups"):
+        raise ValidationError("Football view must be matches, table or lineups")
+    season = params.get("season")
+    if season not in (None, ""):
+        season = number(params, "season", 1900, 2200, integer=True)
+    else:
+        season = None
+    if view == "table":
+        if season is None:
+            raise ValidationError("A season start year is required for the league table")
+        return _table(league, season)
+    if view == "lineups":
+        return _lineups(params)
     started = time.monotonic()
     try:
-        with urllib.request.urlopen(API_URL + league, timeout=TIMEOUT) as response:
-            matches = json.load(response)
-    except (urllib.error.URLError, OSError, HTTPException) as error:
-        raise RuntimeError("Could not fetch OpenLigaDB football data: %s" % error) from None
+        matches = fetch_json(API_URL + league + ("/%d" % season if season is not None else ""))
     except ValueError:
         raise RuntimeError("OpenLigaDB returned malformed football data") from None
+    except RuntimeError as error:
+        if str(error) == "Data endpoint returned malformed JSON":
+            raise RuntimeError("OpenLigaDB returned malformed football data") from None
+        raise RuntimeError("Could not fetch OpenLigaDB football data") from None
     latency_ms = int((time.monotonic() - started) * 1000)
 
     try:
@@ -162,3 +191,63 @@ def poll(params: dict) -> dict:
                                                                     "children": children}})
     except (KeyError, TypeError, ValueError, AttributeError):
         raise RuntimeError("OpenLigaDB returned malformed football data") from None
+
+
+def _table(league, season):
+    data = fetch_json("https://api.openligadb.de/getbltable/%s/%d" % (league, season))
+    try:
+        if not isinstance(data, list):
+            raise ValueError
+        rows = []
+        for rank, team in enumerate(data[:MAX_TABLE_TEAMS], 1):
+            name = text(team["teamName"], 50)
+            fields = [team[key] for key in ("points", "matches", "won", "draw", "lost", "goals", "opponentGoals")]
+            if not all(type(value) is int and value >= 0 for value in fields):
+                raise ValueError
+            points, played, won, draw, lost, goals, against = fields
+            rows.append(text("%d. %s · %d pts · P%d W%d D%d L%d · %d:%d" %
+                        (rank, name, points, played, won, draw, lost, goals, against), 120))
+        children = [{"type": "list", "items": rows[start:start + 10]} for start in range(0, len(rows), 10)]
+        if not rows:
+            children = [{"type": "text", "text": "No league table available", "color": "fg-2"}]
+        if len(data) > MAX_TABLE_TEAMS:
+            children.append({"type": "text", "text": "Showing %d of %d teams" % (MAX_TABLE_TEAMS, len(data)), "size": "s"})
+        return card("%s · %d/%d" % (league.upper(), season, season + 1), children, "OpenLigaDB · ODbL 1.0")
+    except (KeyError, TypeError, ValueError, AttributeError, RuntimeError):
+        raise RuntimeError("OpenLigaDB returned malformed league table data") from None
+
+
+def _lineups(params):
+    url = params.get("lineup_url")
+    token = params.get("lineup_token", "")
+    if not isinstance(url, str) or not url:
+        raise ValidationError("OpenLigaDB has no lineups; provide a genuine per-match lineup_url")
+    if not isinstance(token, str):
+        raise ValidationError("lineup_token must be text")
+    data = fetch_json(url, headers={"Authorization": "Bearer " + token} if token else None, allow_private=private(params))
+    try:
+        title = text(data["match"])
+        children = []
+        for side in ("home", "away"):
+            team = data[side]
+            name = text(team["name"], 80)
+            if "formation" in team:
+                name += " · " + text(team["formation"], 30)
+            players = team["players"]
+            if not isinstance(players, list) or not 1 <= len(players) <= 30:
+                raise ValueError
+            rows = []
+            for player in players:
+                name_player = text(player["name"], 60)
+                if "number" in player:
+                    if type(player["number"]) is not int or not 0 <= player["number"] <= 999:
+                        raise ValueError
+                    name_player = "%d · %s" % (player["number"], name_player)
+                if "position" in player:
+                    name_player += " · " + text(player["position"], 30)
+                rows.append(name_player)
+            children.append({"type": "section", "title": text(name, 40), "icon": "ball"})
+            children.extend({"type": "list", "items": rows[start:start + 10]} for start in range(0, len(rows), 10))
+        return card(title, children, "User-supplied lineup provider")
+    except (KeyError, TypeError, ValueError, AttributeError, RuntimeError):
+        raise RuntimeError("Lineup provider returned malformed per-match data") from None

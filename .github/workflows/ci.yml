@@ -2,26 +2,33 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, master]
   pull_request:
+
+permissions:
+  contents: read
 
 jobs:
   python:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-python@v7.1.0
         with:
           python-version: "3.12"
-      - run: python3 -m pip install --upgrade pip pytest
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: "22"
+      - run: sudo apt-get update -qq && sudo apt-get install -y zbar-tools
+      - run: python3 -m pip install --upgrade pip pytest aiohttp voluptuous PyYAML jsonschema
       - run: python3 -m py_compile webos_foundry/*.py scripts/*.py homeassistant/custom_components/webos_foundry/*.py
       - run: python3 -m pytest tests/ -q
 
   tv-assets:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-node@v7.1.0
         with:
           node-version: "20"
       - run: sh -n tv-assets/dispatch.sh tv-assets/status.sh tv-assets/vtcap/build.sh
@@ -33,8 +40,9 @@ jobs:
   web:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-node@v7.1.0
         with:
-          node-version: "20"
-      - run: node --check web/app.js
+          node-version: "22"
+      - run: node --check web/app.js && node --check web/studio.js
+      - run: node web/check-ui.mjs && node web/check-overlay.mjs && node web/check-automate.mjs && node web/check-studio.mjs

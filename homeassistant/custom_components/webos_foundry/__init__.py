@@ -1,4 +1,4 @@
-"""webOS Foundry: Home Assistant integration over the `wof serve` HTTP API."""
+"""Overglass: Home Assistant integration over the `wof serve` HTTP API."""
 from __future__ import annotations
 
 from datetime import timedelta

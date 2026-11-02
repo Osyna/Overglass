@@ -17,6 +17,8 @@ from pathlib import Path
 
 import pytest
 
+from webos_foundry import install, notify
+
 ROOT = Path(__file__).resolve().parent.parent
 SERVER = ROOT / "tv-server" / "server.js"
 HOOK = ROOT / "tv-server" / "init.d-hook.sh"
@@ -72,6 +74,16 @@ case $1 in
       echo '{"returnValue":true,"statusText":"Downloading...","progress":50}'; echo '{"returnValue":true,"statusText":"Finished"}'; fi ;;
   app-uninstall)
     if [ -e "$FAKE_DIR/app_fail" ]; then echo '{"returnValue":false,"errorText":"No such app"}'; else echo '{"returnValue":true}'; fi ;;
+  install-overlay)
+    cat > "$FAKE_DIR/received.ipk"
+    if [ -e "$FAKE_DIR/app_fail" ]; then echo "Overlay install did not complete" >&2; exit 1; fi
+    [ -e "$FAKE_DIR/readback_missing" ] || touch "$FAKE_DIR/overlay_installed"
+    echo "Overlay installed" ;;
+  install-status)
+    if [ -e "$FAKE_DIR/install-status.out" ]; then cat "$FAKE_DIR/install-status.out"; else
+      if [ -e "$FAKE_DIR/overlay_installed" ]; then overlay=true; else overlay=false; fi
+      printf '{"files":{},"overlay":%s,"vtcap":false}\n' "$overlay"
+    fi ;;
   *) echo "webos-foundry: unknown request" >&2; exit 64 ;;
 esac
 """
@@ -124,7 +136,9 @@ class TvServer:
         env = {**os.environ, "WOF_TV_DISPATCH": str(self.dispatch), "WOF_TV_WEB": str(self.web),
                "WOF_TV_CONFIG": str(self.config), "WOF_TV_LOG": str(self.log), "WOF_TV_HOST": "127.0.0.1",
                "WOF_TV_PORT": "0", "FAKE_DIR": str(self.fake_dir)}
-        self.proc = subprocess.Popen([NODE, str(SERVER)], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        self.server = tmp / "server.js"
+        shutil.copyfile(SERVER, self.server)
+        self.proc = subprocess.Popen([NODE, str(self.server)], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         self.stdout = self.proc.stdout.readline()
         assert "listening on http://127.0.0.1:" in self.stdout, self.stdout + (self.proc.stderr.read() if self.proc.poll() else "")
         self.port = int(self.stdout.rsplit(":", 1)[1])
@@ -241,7 +255,7 @@ def test_catalogue_has_no_processing_group(tv):
     assert "Processing" in routes[("GET", "/api")]["notes"] and "/api/jobs" in routes[("GET", "/api")]["notes"]
     assert catalogue["unavailable"][0]["group"] == "Processing" and "/api/jobs" in catalogue["unavailable"][0]["paths"]
     wake = [v["name"] for v in routes[("POST", "/api/remote/{action}")]["values"]]
-    assert "wake" not in wake and "hdmi" in wake and len(wake) == 13
+    assert "wake" not in wake and "hdmi" in wake and "volume" in wake and len(wake) == 14
     assert tv.json("GET", "/api/jobs")[0] == 404  # no such route
 
 
@@ -311,6 +325,16 @@ def test_remote_hdmi_and_validation(tv):
     assert len(tv.calls()) == 1  # nothing invalid reached the dispatcher
 
 
+def test_remote_volume_and_validation(tv):
+    for value in (0, 40, 41, 100):
+        assert tv.json("POST", "/api/remote/volume", {"value": value}) == (
+            200, {"action": "volume", "message": "Sent volume"})
+    for body in (None, {}, {"value": None}, {"value": -1}, {"value": 101}, {"value": True},
+                 {"value": False}, {"value": 1.5}, {"value": "40"}, {"value": []}, {"value": {}}):
+        assert tv.json("POST", "/api/remote/volume", body)[0] == 400, body
+    assert tv.calls() == ["remote volume " + str(value) for value in (0, 40, 41, 100)]
+
+
 def test_wake_is_refused_honestly(tv):
     status, body = tv.json("POST", "/api/remote/wake")
     assert status == 501 and "Wake-on-LAN" in body["error"] and tv.calls() == []
@@ -360,6 +384,152 @@ def test_toast_say_overlay(tv):
                 {"image": "ftp://x"}, {"hide": True, "title": "x"}, {"lines": "no"}, {"title": "x", "seconds": 301}):
         assert tv.json("POST", "/api/overlay", bad)[0] == 400, bad
     assert len(tv.calls()) == n
+
+
+ENGINE_TEXT = {"type": "text", "text": "x"}
+ENGINE_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><g transform="translate(1,2)" opacity=".5"><path d="M0 0L24 24Z" fill="#abc"/><circle cx="12" cy="12" r="4" stroke="currentColor"/></g></svg>'
+ENGINE_WIDGET_CARD = {
+    "root": {"type": "grid", "columns": 3, "gap": 48, "children": [
+        {"type": "ticker", "text": "News", "speed": 200, "tone": "accent"},
+        {"type": "qr", "text": "https://example.com", "size": "m"},
+        {"type": "svg", "source": ENGINE_SVG, "size": "l"},
+    ]},
+    "animation": {"enter": "slide", "exit": "wipe", "duration_ms": 2000},
+    "offset": {"x": -1920, "y": 1080},
+    "behavior": {"on_foreground": "shrink", "ambient_dim": True},
+    "dim": 0.2, "compact": False,
+}
+ENGINE_REGIONS = {"regions": [
+    {"position": position, **ENGINE_WIDGET_CARD} for position in ["top", "right", "bottom", "left"]
+], "behavior": {"ambient_dim": True}, "dim": 1, "compact": True}
+ENGINE_TIMELINE = {"seconds": 0, "theme": {"font": "mono"}, "timeline": [
+    {"seconds": 1, "card": ENGINE_WIDGET_CARD}, {"seconds": 300, "card": ENGINE_REGIONS},
+]}
+ENGINE_EIGHTY = {"timeline": [
+    {"seconds": 1, "card": {"root": {"type": "stack", "children": [ENGINE_TEXT] * 19}}} for _ in range(4)
+]}
+
+
+@pytest.mark.parametrize("card", [
+    ENGINE_WIDGET_CARD, ENGINE_REGIONS, ENGINE_TIMELINE, ENGINE_EIGHTY,
+    {"root": ENGINE_TEXT, "animation": {}, "offset": {}, "behavior": {}},
+    {"root": ENGINE_TEXT, "offset": {"x": 1920, "y": -1080}},
+    *[{"root": ENGINE_TEXT, "animation": {"enter": effect, "exit": effect, "duration_ms": 0}}
+      for effect in ["none", "fade", "slide", "wipe"]],
+    *[{"root": ENGINE_TEXT, "behavior": {"on_foreground": mode, "ambient_dim": False}}
+      for mode in ["keep", "hide", "shrink"]],
+    {"root": {"type": "grid", "columns": 1, "gap": 0, "children": [ENGINE_TEXT] * 20}},
+    {"root": {"type": "ticker", "text": "x" * 1000, "speed": 10}},
+    {"root": {"type": "qr", "text": "界" * 984 + "a"}},
+    {"root": {"type": "qr", "text": "😀" * 738}},
+    {"root": {"type": "svg", "source": "  <svg/>  "}},
+    {"root": {"type": "svg", "source": "<svg>" + " " * 8181 + "</svg>"}},
+    {"title": " Frame ", "animation": {"enter": "fade"}, "offset": {"x": 1}, "behavior": {"on_foreground": "keep"}},
+    {"timeline": [{"seconds": 1, "card": {"title": " Shorthand frame "}}]},
+    {"action": "runtime"},
+    {"action": "runtime", "dim": 0.2, "compact": True, "hidden": True},
+    {"action": "runtime", "dim": 1, "compact": False, "hidden": False},
+])
+def test_overlay_engine_contract_roundtrip(tv, card):
+    expected = notify.check_overlay_request(card)
+    assert tv.json("POST", "/api/overlay", card)[0] == 200
+    sent = json.loads((tv.fake_dir / "overlay-stdin.json").read_text())
+    assert sent == expected
+    if "action" not in card:
+        status, verdict = tv.json("POST", "/api/overlay/validate", card)
+        assert status == 200 and verdict["card"] == expected
+        if card is ENGINE_EIGHTY:
+            assert verdict["widgets"] == 80
+        if card is ENGINE_TIMELINE:
+            assert verdict["widgets"] == 20
+
+
+ENGINE_UNSAFE_SVG = [
+    "", "<g/>", "<svg/><svg/>", "<svg><svg/></svg>", "<svg><g></svg>", "<svg>", "<svg/>tail",
+    "<svg><script/></svg>", "<svg><foreignObject/></svg>", '<svg><use href="#x"/></svg>',
+    '<svg onload="alert(1)"/>', '<svg style="fill:red"/>', '<svg fill="url(https://evil)"/>',
+    '<svg fill="url(#x)"/>', '<svg xmlns="https://evil"/>', '<svg xmlns:x="x"/>',
+    '<svg><g xmlns="http://www.w3.org/2000/svg"/></svg>', '<svg width="1" width="2"/>',
+    '<svg width="1"height="2"/>', '<svg width=1/>', '<svg opacity="50%"/>', '<svg opacity="1.1"/>',
+    '<svg transform="url(x)"/>', "<svg><text>hello</text></svg>", "<svg>&amp;</svg>", "<svg>&#65;</svg>",
+    "<!DOCTYPE svg><svg/>", '<?xml version="1.0"?><svg/>', "<svg><!--comment--></svg>",
+    "<svg><![CDATA[x]]></svg>", "<svg>\n</svg>", "<svg>é</svg>", "<svg/></svg>",
+    "<svg>" + " " * 8182 + "</svg>",
+]
+
+
+@pytest.mark.parametrize("card", [
+    *[{"root": {"type": "svg", "source": source}} for source in ENGINE_UNSAFE_SVG],
+    *[{"root": {"type": "grid", "columns": columns, "children": [ENGINE_TEXT]}} for columns in [0, 4, 1.5, True]],
+    {"root": {"type": "grid", "columns": 1, "children": []}},
+    {"root": {"type": "grid", "columns": 1, "children": [ENGINE_TEXT] * 21}},
+    *[{"root": {"type": "grid", "columns": 1, "gap": gap, "children": [ENGINE_TEXT]}} for gap in [-1, 49, True]],
+    {"root": {"type": "grid", "columns": 1, "align": "start", "children": [ENGINE_TEXT]}},
+    *[{"root": {"type": kind, "text": text}} for kind in ["ticker", "qr"] for text in ["", " ", "x" * 1001, "a\nb"]],
+    *[{"root": {"type": "ticker", "text": "x", "speed": speed}} for speed in [9, 201, 1.5, True]],
+    {"root": {"type": "ticker", "text": "x", "tone": "red"}},
+    {"root": {"type": "qr", "text": "界" * 985}},
+    {"root": {"type": "qr", "text": "😀" * 739}},
+    {"root": {"type": "qr", "text": "x", "size": "xl"}},
+    {"root": {"type": "svg", "source": "<svg/>", "size": "xl"}},
+    *[{"root": ENGINE_TEXT, "animation": animation} for animation in [
+        {"enter": "zoom"}, {"exit": "zoom"}, {"duration_ms": -1}, {"duration_ms": 2001},
+        {"duration_ms": 1.5}, {"duration_ms": True}, {"extra": 1}, None]],
+    *[{"root": ENGINE_TEXT, "offset": offset} for offset in [
+        {"x": -1921}, {"x": 1921}, {"y": -1081}, {"y": 1081}, {"x": 1.5}, {"x": True}, {"z": 0}, None]],
+    *[{"root": ENGINE_TEXT, "behavior": behavior} for behavior in [
+        {"on_foreground": "close"}, {"ambient_dim": 1}, {"extra": True}, None]],
+    *[{"root": ENGINE_TEXT, "dim": dim} for dim in [0.19, 1.01, True, "1", None]],
+    {"root": ENGINE_TEXT, "compact": 1},
+    {"root": {**ENGINE_TEXT, "constructor": "bad"}},
+    {"root": {"type": "meta", "items": [{"label": "a", "value": "b", "extra": 1}]}},
+    {"timeline": []}, {"timeline": [{"seconds": 1, "card": {"root": ENGINE_TEXT}}] * 5},
+    *[{"timeline": [{"seconds": seconds, "card": {"root": ENGINE_TEXT}}]} for seconds in [0, 301, 1.5, True]],
+    *[{"timeline": [{"seconds": 1, "card": card}]} for card in [
+        {"hide": True}, {"action": "runtime"}, {"timeline": [{"seconds": 1, "card": {"root": ENGINE_TEXT}}]}]],
+    {"timeline": [{"seconds": 1, "card": {"root": ENGINE_TEXT}, "extra": 1}]},
+    {"timeline": [{"seconds": 1, "card": {"root": ENGINE_TEXT}}], "root": ENGINE_TEXT},
+    {"timeline": [{"seconds": 1, "card": {"root": ENGINE_TEXT}}], "regions": []},
+    {"timeline": [{"seconds": 1, "card": {"root": ENGINE_TEXT}}], "animation": {}},
+    {"regions": [{"position": "top", "root": ENGINE_TEXT}], "offset": {}},
+    {"action": "runtime", "root": ENGINE_TEXT}, {"action": "runtime", "behavior": {}},
+    {"action": "runtime", "dim": 0.1}, {"action": "runtime", "hidden": 1}, {"action": "runtime", "compact": 1},
+    {"action": "other"}, {"hide": False}, {"hide": True, "action": "runtime"},
+])
+def test_overlay_engine_contract_rejects_before_dispatch(tv, card):
+    calls = len(tv.calls())
+    assert tv.json("POST", "/api/overlay", card)[0] == 400
+    assert len(tv.calls()) == calls
+    with pytest.raises(notify.ValidationError):
+        notify.check_overlay_request(card)
+
+
+def test_overlay_engine_shared_budget_and_lifecycle_validation(tv):
+    eighty_one = json.loads(json.dumps(ENGINE_EIGHTY))
+    eighty_one["timeline"][-1]["card"]["root"]["children"].append(ENGINE_TEXT)
+    assert tv.json("POST", "/api/overlay", eighty_one)[0] == 400
+    for lifecycle in [{"hide": True}, {"action": "runtime", "hidden": True}]:
+        assert tv.json("POST", "/api/overlay/validate", lifecycle)[0] == 400
+    root = ENGINE_TEXT
+    for _ in range(5):
+        root = {"type": "grid", "columns": 1, "children": [root]}
+    assert tv.json("POST", "/api/overlay", {"root": root})[0] == 200
+    assert tv.json("POST", "/api/overlay", {"root": {"type": "stack", "children": [root]}})[0] == 400
+
+
+def test_overlay_engine_body_capacity_and_normalized_cap(tv):
+    large_svg = {"type": "svg", "source": "<svg>" + " " * 8181 + "</svg>"}
+    card = {"root": {"type": "grid", "columns": 3, "children": [large_svg] * 5}}
+    assert 40000 < len(json.dumps(card).encode()) < 49152
+    assert tv.json("POST", "/api/overlay", card)[0] == 200
+    card["root"]["children"].append(large_svg)
+    assert 49152 < len(json.dumps(card).encode()) < 64 * 1024
+    calls = len(tv.calls())
+    status, answer = tv.json("POST", "/api/overlay", card)
+    assert status == 400 and "too large" in answer["error"]
+    assert len(tv.calls()) == calls
+    body = b"x" * (64 * 1024 + 1)
+    assert tv.request("POST", "/api/overlay", body, {"Content-Type": "application/json"})[0] == 413
 
 
 def test_screenshot(tv):
@@ -785,3 +955,82 @@ def test_hook_reports_failure(hook):
     result = hook("start")
     assert result.returncode == 1 and "server.js is missing" in result.stderr
     assert hook("bogus").returncode == 2
+
+
+@pytest.fixture
+def bundled_tv(tv):
+    tv.bundle = tv.tmp / "bundled/dev.webosfoundry.overlay.ipk"
+    tv.bundle.parent.mkdir()
+    tv.package = install.package_overlay(ROOT / "tv-assets/overlay")
+    tv.bundle.write_bytes(tv.package)
+    return tv
+
+
+def test_bundled_catalog_and_install_use_private_real_package(bundled_tv):
+    tv = bundled_tv
+    metadata = json.loads((ROOT / "tv-assets/overlay/appinfo.json").read_text())
+    status, catalog = tv.json("GET", "/api/apps/bundled")
+    assert status == 200 and len(catalog) == 1
+    assert catalog[0]["id"] == metadata["id"] and catalog[0]["version"] == metadata["version"]
+    assert catalog[0]["available"] is True and catalog[0]["installed"] is False
+    status, result = tv.json("POST", "/api/apps/bundled/" + metadata["id"], {})
+    assert (status, result) == (200, {"id": metadata["id"], "installed": True, "message": "Overlay renderer installed"})
+    assert (tv.fake_dir / "received.ipk").read_bytes() == tv.package
+    assert tv.calls() == ["install-status", "install-overlay", "install-status"]
+    assert tv.json("GET", "/api/apps/bundled")[1][0]["installed"] is True
+    assert tv.request("GET", "/bundled/dev.webosfoundry.overlay.ipk")[0] == 404
+    assert tv.request("GET", "/../bundled/dev.webosfoundry.overlay.ipk")[0] == 404
+
+
+def test_bundled_missing_package_is_unavailable_and_actionable(tv):
+    status, catalog = tv.json("GET", "/api/apps/bundled")
+    assert status == 200 and catalog[0]["available"] is False and catalog[0]["installed"] is False
+    status, result = tv.json("POST", "/api/apps/bundled/dev.webosfoundry.overlay")
+    assert status == 503 and "wof install --tv-server" in result["error"]
+    assert tv.calls() == ["install-status"]
+
+
+@pytest.mark.parametrize("kind", ["empty", "oversized", "symlink"])
+def test_bundled_invalid_private_package_cannot_be_installed(bundled_tv, kind):
+    tv = bundled_tv
+    if kind == "empty":
+        tv.bundle.write_bytes(b"")
+    elif kind == "oversized":
+        tv.bundle.write_bytes(b"x" * (install.FILE_MAX + 1))
+    else:
+        tv.bundle.unlink()
+        tv.bundle.symlink_to(tv.tmp / "secret.txt")
+    assert tv.json("GET", "/api/apps/bundled")[1][0]["available"] is False
+    assert tv.json("POST", "/api/apps/bundled/dev.webosfoundry.overlay")[0] == 503
+    assert tv.calls() == ["install-status"]
+
+
+def test_bundled_install_requires_successful_install_and_readback(bundled_tv):
+    tv = bundled_tv
+    path = "/api/apps/bundled/dev.webosfoundry.overlay"
+    tv.flag("readback_missing")
+    status, result = tv.json("POST", path)
+    assert status == 502 and "confirm" in result["error"]
+    assert tv.calls() == ["install-overlay", "install-status"]
+    tv.flag("app_fail")
+    status, result = tv.json("POST", path)
+    assert status == 502 and "did not complete" in result["error"]
+    assert tv.calls()[-1] == "install-overlay"
+    tv.flag("app_fail", False)
+    (tv.fake_dir / "install-status.out").write_text('{"overlay":"yes"}')
+    assert tv.json("POST", path)[0] == 502
+    tv.flag("busy")
+    assert tv.json("POST", path)[0] == 409
+
+
+def test_bundled_install_refuses_unknown_ids_options_and_bad_auth(bundled_tv):
+    tv = bundled_tv
+    path = "/api/apps/bundled/dev.webosfoundry.overlay"
+    assert tv.json("POST", "/api/apps/bundled/com.example.app")[0] == 404
+    for body in ({"url": "https://example.org/app.ipk"}, {"path": "/tmp/app.ipk"}, {"force": True}):
+        assert tv.json("POST", path, body)[0] == 400
+    assert tv.json("POST", path + "?url=anything")[0] == 400
+    for method, endpoint in (("GET", "/api/apps/bundled"), ("POST", path)):
+        assert tv.json(method, endpoint, auth=False)[0] == 401
+        assert tv.json(method, endpoint, auth="Bearer wrong")[0] == 401
+    assert tv.calls() == []

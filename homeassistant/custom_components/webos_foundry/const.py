@@ -1,4 +1,4 @@
-"""Constants for the webOS Foundry integration."""
+"""Constants for the Overglass integration."""
 
 DOMAIN = "webos_foundry"
 DEFAULT_PORT = 8765  # must match `wof serve`'s default port

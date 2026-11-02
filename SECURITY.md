@@ -3,7 +3,7 @@
 ## Reporting a vulnerability
 
 There is no private maintainer mailbox. Open an issue at
-<https://github.com/webos-foundry/webos-foundry/issues> describing the problem.
+<https://github.com/Osyna/Overglass/issues> describing the problem.
 
 **Do not post real tokens, private keys, IP or MAC addresses, `config.json` contents, screenshots from
 your TV, or full logs in an issue.** Redact them, or describe how to reproduce with placeholders. If a

@@ -10,7 +10,7 @@ from typing import Optional
 from .errors import ValidationError
 
 REMOTE_ACTIONS = ("wake", "power_off", "home", "back", "up", "down", "left", "right", "ok",
-                  "hdmi", "volume_up", "volume_down", "mute", "unmute")
+                  "hdmi", "volume", "volume_up", "volume_down", "mute", "unmute")
 INSTALL_FILES = ("status.sh", "details.js", "notify.js", "settings.js", "remote.js",
                  "process-image.js", "process-audio.js", "apps.js", "dispatch.sh")
 REMOTE_DIR = "/var/lib/webosbrew/webos-foundry"
@@ -26,12 +26,12 @@ HOOK_PREFIX = "webos-foundry-"
 _HOOK = HOOK_PREFIX + r"[a-z0-9-]{1,48}"
 TREE_MODES = ("put", "begin", "more", "end")  # put = whole file; begin/more/end = chunks of one file (atomic rename on end)
 MAX_TREE_PATH = 200
-_REMOTE_PLAIN = "|".join(action for action in REMOTE_ACTIONS if action != "hdmi")
+_REMOTE_PLAIN = "|".join(action for action in REMOTE_ACTIONS if action not in ("hdmi", "volume"))
 
 GRAMMAR = {verb: re.compile(pattern) for verb, pattern in {
     "status": r"status",
     "details": r"details",
-    "remote": r"remote (?:(?:%s)|hdmi [1-4])" % _REMOTE_PLAIN,
+    "remote": r"remote (?:(?:%s)|hdmi [1-4]|volume (?:[0-9]|[1-9][0-9]|100))" % _REMOTE_PLAIN,
     "settings-list": r"settings-list",
     "settings-set": r"settings-set %s %s %s{1,4000}={0,2}" % (_NAME, _NAME, _B64),
     "notify-toast": r"notify-toast %s{1,400}={0,2}" % _B64,
@@ -101,6 +101,10 @@ def build_remote(action, value=None) -> str:
         if type(value) is not int or not 1 <= value <= 4:
             raise ValidationError("HDMI input must be the integer 1-4")
         return _built("remote", "remote hdmi %d" % value)
+    if action == "volume":
+        if type(value) is not int or not 0 <= value <= 100:
+            raise ValidationError("Volume must be the integer 0-100")
+        return _built("remote", "remote volume %d" % value)
     if value is not None:
         raise ValidationError("This remote action takes no value")
     return _built("remote", "remote " + action)

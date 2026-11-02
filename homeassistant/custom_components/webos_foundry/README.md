@@ -1,4 +1,4 @@
-# webOS Foundry for Home Assistant
+# Overglass for Home Assistant
 
 Talks only to the `wof serve` HTTP API (`http://<host>:<port>`, `Authorization: Bearer <token>`). It never uses SSH and holds no key; the TV is paired on the machine that runs `wof serve`.
 
@@ -10,7 +10,7 @@ HACS custom repositories need `custom_components/` at the repository root, which
 cp -r homeassistant/custom_components/webos_foundry <HA config>/custom_components/
 ```
 
-Restart Home Assistant, then **Settings → Devices & services → Add integration → webOS Foundry**.
+Restart Home Assistant, then **Settings → Devices & services → Add integration → Overglass**.
 
 Server side: `wof serve --bind 0.0.0.0 --token <token>` (a non-loopback bind refuses to start without a token). Enter that host, the port (default 8765) and the token. Setup checks `GET /api/health` (must report a paired TV), then `GET /api/status` with the token. A wrong token later triggers Home Assistant's re-authentication.
 

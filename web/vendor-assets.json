@@ -1,0 +1,54 @@
+{
+  "qrcode-generator": {
+    "version": "1.4.4",
+    "upstream": "https://github.com/kazuhikoarase/qrcode-generator",
+    "sources": [
+      "https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.js",
+      "https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode_UTF8.js"
+    ],
+    "license": "https://raw.githubusercontent.com/kazuhikoarase/qrcode-generator/master/LICENSE",
+    "note": "Complete upstream qrcode.js followed by upstream qrcode_UTF8.js, enabling UTF-8 byte encoding by default."
+  },
+  "fonts": [
+    {
+      "family": "Inter",
+      "file": "fonts/Inter-Regular.woff2",
+      "package": "@fontsource/inter",
+      "version": "5.3.0",
+      "subset": "latin",
+      "weight": 400,
+      "source": "https://cdn.jsdelivr.net/npm/@fontsource/inter@5.3.0/files/inter-latin-400-normal.woff2",
+      "license": "https://cdn.jsdelivr.net/npm/@fontsource/inter@5.3.0/LICENSE"
+    },
+    {
+      "family": "Roboto Condensed",
+      "file": "fonts/RobotoCondensed-Regular.woff2",
+      "package": "@fontsource/roboto-condensed",
+      "version": "5.3.0",
+      "subset": "latin",
+      "weight": 400,
+      "source": "https://cdn.jsdelivr.net/npm/@fontsource/roboto-condensed@5.3.0/files/roboto-condensed-latin-400-normal.woff2",
+      "license": "https://cdn.jsdelivr.net/npm/@fontsource/roboto-condensed@5.3.0/LICENSE"
+    },
+    {
+      "family": "JetBrains Mono",
+      "file": "fonts/JetBrainsMono-Regular.woff2",
+      "package": "@fontsource/jetbrains-mono",
+      "version": "5.3.0",
+      "subset": "latin",
+      "weight": 400,
+      "source": "https://cdn.jsdelivr.net/npm/@fontsource/jetbrains-mono@5.3.0/files/jetbrains-mono-latin-400-normal.woff2",
+      "license": "https://cdn.jsdelivr.net/npm/@fontsource/jetbrains-mono@5.3.0/LICENSE"
+    }
+  ],
+  "sha256": {
+    "qrcode.js": "c4f1540eb78e42ce06cb355607afe44052c4e50a08e73aaf0c0f95987397e2ca",
+    "qrcode-LICENSE.txt": "3a850fa5f08101db6f40676c2786e10bd2cd5fff7b12ffdf1e0c434d4e49d90c",
+    "fonts/Inter-Regular.woff2": "8909904ab6c872eb994093482a88a28eca2cd95912d7b6fecd72103b0dc07edc",
+    "fonts/Inter-LICENSE.txt": "3b0a5fca3d17942cde889069889dedbbbd075e9b599968c82a95f4d944e9b345",
+    "fonts/RobotoCondensed-Regular.woff2": "543c03fff71d1b39590af102e0852c2dbce46f4dbe4faaebafbef6edc82e78f5",
+    "fonts/RobotoCondensed-LICENSE.txt": "82baba1bc6be17e47b138e90ab99ad134168f931282b68bc560102ab1db743c1",
+    "fonts/JetBrainsMono-Regular.woff2": "14425ba9c695763c1547f48a206b7aa60350a33ae23de09f0407877f3fcd89eb",
+    "fonts/JetBrainsMono-LICENSE.txt": "403581b69dac5cff4079205e01c6b467e56af449ecbd7247693ddb1baafa005b"
+  }
+}

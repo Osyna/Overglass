@@ -70,9 +70,14 @@ class Element {
 }
 const elements = new Map();
 const context = vm.createContext({
-  assert, TextEncoder, setTimeout() {}, clearTimeout() {}, location: { origin: 'http://localhost:8765' },
+  assert, TextEncoder, URL, setTimeout() {}, clearTimeout() {}, location: { origin: 'http://localhost:8765' },
+  navigator: {}, window: { addEventListener() {} },
   document: {
-    addEventListener() {}, querySelectorAll() { return []; },
+    body: new Element('body'), addEventListener() {},
+    querySelectorAll(selector) {
+      if (!selector.startsWith('#apps-list') && !selector.startsWith('#bundled-apps')) return [];
+      return selector.split(',').flatMap(part => { const [id, tag] = part.trim().split(/\s+/); return elements.get(id.slice(1))?.querySelectorAll(tag) || []; });
+    },
     createElement: tag => new Element(tag), createElementNS: (ns, tag) => new Element(tag),
     getElementById: id => {
       if (id === 'scene-builder' && !elements.has(id)) return null;
@@ -81,7 +86,9 @@ const context = vm.createContext({
     },
   },
 });
+vm.runInContext(fs.readFileSync(new URL('./studio.js', import.meta.url), 'utf8'), context);
 vm.runInContext(fs.readFileSync(new URL('./app.js', import.meta.url), 'utf8'), context);
+vm.runInContext(fs.readFileSync(new URL('./apps.js', import.meta.url), 'utf8'), context);
 await vm.runInContext(`(async () => {
   automationData.scenes = { '<scene>': { steps: [{ type: 'wait', seconds: 0 }] } };
   renderAutomation('scenes');
@@ -198,6 +205,8 @@ await vm.runInContext(`(async () => {
   assert.equal(installed.enabled, true, 'do not mutate cached extension settings before server confirmation');
   const disabledCard = addonCard(addon, { ...installed, enabled: false });
   assert.match(disabledCard.children[0].children[2].textContent, /Installed · Disabled/);
+  await disabledCard.querySelector('form').listeners.submit({ preventDefault() {} });
+  assert.equal(requests.pop()[4].enabled, false, 'editing a paused extension does not silently resume automatic display');
   await button(disabledCard, 'Enable').listeners.click();
   assert.equal(requests.pop()[4].enabled, true);
   button(enabledCard, 'Uninstall').listeners.click();
@@ -297,7 +306,7 @@ await vm.runInContext(`(async () => {
   assert.equal(requests.length, 0, 'unapplied JSON blocks saving');
   overlayJsonDirty = false;
 
-  // Rename asks first, copies the entire card, then removes only the old name after a successful PUT.
+  // Confirmed rename is one atomic request and preserves server-owned revision history.
   const renameRow = automationRow('designs', '<match day>', hud);
   const reviewRename = async (row, nextName) => {
     const form = row.querySelector('.design-rename');
@@ -320,15 +329,11 @@ await vm.runInContext(`(async () => {
   assert.equal(requests.length, 0, 'cancelled rename keeps the old design');
   renameAsk = await reviewRename(renameRow, 'evening / TV');
   await button(renameAsk, 'Rename').listeners.click();
-  assert.equal(requests.length, 2);
-  let renamePut = requests.shift();
-  let renameDelete = requests.shift();
-  assert.equal(renamePut[2], 'PUT');
-  assert.equal(renamePut[3], '/api/designs/evening%20%2F%20TV');
-  assert.equal(JSON.stringify(renamePut[4]), JSON.stringify(hud), 'rename preserves regions, duration, and Look');
-  assert.equal(renameDelete[2], 'DELETE');
-  assert.equal(renameDelete[3], '/api/designs/%3Cmatch%20day%3E');
-  assert.equal(renameDelete[4], undefined);
+  assert.equal(requests.length, 1);
+  const renameRequest = requests.shift();
+  assert.equal(renameRequest[2], 'POST');
+  assert.equal(renameRequest[3], '/api/designs/%3Cmatch%20day%3E/rename');
+  assert.equal(JSON.stringify(renameRequest[4]), JSON.stringify({ name: 'evening / TV' }));
   assert.equal(JSON.stringify(automationData.designs['<match day>']), JSON.stringify(hud), 'cached design is not changed optimistically');
   const successfulMutation = changeAutomation;
   changeAutomation = async (...args) => { requests.push(args); return undefined; };
@@ -336,8 +341,8 @@ await vm.runInContext(`(async () => {
   renameDesign('<match day>', hud, failedRenameRow);
   const failedRenameAsk = await reviewRename(failedRenameRow, 'Cannot save');
   await button(failedRenameAsk, 'Rename').listeners.click();
-  assert.equal(requests.length, 1, 'a failed PUT must never delete the original');
-  assert.equal(requests.pop()[2], 'PUT');
+  assert.equal(requests.length, 1, 'a failed rename never issues a destructive delete');
+  assert.equal(requests.pop()[2], 'POST');
   changeAutomation = successfulMutation;
 
   // Guided scenes produce the same API envelope as the advanced JSON editor.
@@ -357,6 +362,8 @@ await vm.runInContext(`(async () => {
     assert.equal(step.type, type);
   }
   for (const seconds of [0, 10]) assert.equal(sceneFromSteps([{ type: 'wait', seconds }]).steps[0].seconds, seconds);
+  for (const value of [0, 40, 100]) assert.equal(sceneFromSteps([{ type: 'remote', action: 'volume', value }]).steps[0].value, value);
+  for (const value of [-1, 101, 20.5, '20', true, null, undefined]) assert.throws(() => sceneFromSteps([{ type: 'remote', action: 'volume', value }]));
   assert.equal(sceneFromSteps(Array.from({ length: 20 }, () => ({ type: 'wait', seconds: 0 }))).steps.length, 20);
   for (const steps of [[], Array.from({ length: 21 }, () => ({ type: 'wait', seconds: 0 })), null, {},
     [{ type: 'unknown' }], [{ type: 'remote', action: '' }], [{ type: 'setting', category: '', key: 'brightness', value: 50 }],
@@ -397,6 +404,7 @@ await vm.runInContext(`(async () => {
   // Exercise the shared request guard with real addon loading and mutations.
   changeAutomation = realChangeAutomation;
   loadAutomation = realLoadAutomation;
+  const realSupports = supports;
   supports = () => true;
   result = (el, text, tone) => { el.textContent = text; el.dataset.tone = tone; };
   const panel = h('section', { class: 'panel' }, $('addons-list'), $('addons-refresh'));
@@ -429,5 +437,52 @@ await vm.runInContext(`(async () => {
   assert.equal($('addons-msg').dataset.tone, 'error');
   assert.match($('addons-msg').textContent, /paired TV/);
   assert.equal(automationBusy.has('addons'), false);
+
+  // Included apps install from their bundled ID, report readback errors, and share the app-operation guard.
+  const included = { id: 'dev.webosfoundry.overlay', title: '<Overlay renderer>', description: 'Draw designs over the picture.', version: '1.0.1', installed: false, available: true };
+  let bundledInstalled = false, installError = '', completeInstall, bundlePosts = 0, bundleGets = 0;
+  S.api = null; S.status = { power: 'on' }; S.statusError = null; S.paired = true; S.reserved = false; studioRole = ''; S.view = 'apps';
+  supports = realSupports;
+  call = async (method, path) => {
+    if (method === 'GET' && path === '/api/apps/bundled') { bundleGets++; return [{ ...included, installed: bundledInstalled }]; }
+    if (method === 'GET' && path === '/api/apps') return [...(bundledInstalled ? [{ ...included, removable: true }] : []), { id: 'org.example.player', title: 'Player', removable: true }];
+    if (method === 'POST') {
+      bundlePosts++;
+      if (completeInstall) await new Promise(resolve => { completeInstall = resolve; });
+      if (installError) throw new Error(installError);
+      bundledInstalled = true; return { id: included.id, installed: true, message: 'Installed and verified' };
+    }
+    if (method === 'DELETE') { bundledInstalled = false; return { message: 'Removed' }; }
+    throw new Error('Unexpected request');
+  };
+  await loadApps();
+  assert.equal($('apps-list').querySelectorAll('li').length, 1);
+  const installButton = $('bundled-apps').querySelector('button');
+  completeInstall = true; const installing = installButton.listeners.click(); await Promise.resolve();
+  assert.equal(installButton.disabled, true); assert.equal($('app-url-install').disabled, true);
+  await installBundledApp(A.bundled[0], installButton); assert.equal(bundlePosts, 1, 'double clicks do not start another install');
+  completeInstall(); await installing; completeInstall = null;
+  assert.equal(A.bundled[0].installed, true); assert.equal($('bundled-result').dataset.tone, 'ok');
+  assert.equal($('apps-list').querySelectorAll('li').length, 1, 'the installed included app appears only in its own section');
+  let repair = $('bundled-apps').querySelector('button'); assert.equal(repair.disabled, false);
+  installError = 'Installation readback failed'; await repair.listeners.click();
+  assert.equal($('bundled-result').dataset.tone, 'error'); assert.equal(A.busy, false); assert.match($('bundled-result').textContent, /not confirmed/);
+  A.bundled[0].available = false; renderBundledApps(); repair = $('bundled-apps').querySelector('button');
+  assert.equal(repair.disabled, true); await installBundledApp(A.bundled[0], repair); assert.equal(bundlePosts, 2);
+  A.bundled[0].available = true;
+  for (const blocked of ['reservation', 'standby', 'guest']) {
+    S.reserved = blocked === 'reservation'; S.status.power = blocked === 'standby' ? 'off' : 'on'; studioRole = blocked === 'guest' ? 'guest' : '';
+    syncApps(); await installBundledApp(A.bundled[0], repair); assert.equal(bundlePosts, 2);
+  }
+  S.reserved = false; S.status.power = 'on'; studioRole = ''; renderBundledApps();
+  const bundledRow = $('bundled-apps').querySelector('li'), uninstall = $('bundled-apps').querySelectorAll('button')[1];
+  uninstall.listeners.click(); const confirmation = bundledRow.querySelector('.app-confirm');
+  await button(confirmation, 'Remove').listeners.click();
+  assert.equal(A.bundled[0].installed, false, 'removal refreshes the included-app status');
+  S.api = { routes: [{ path: '/api/apps', group: 'Apps' }] };
+  bundledInstalled = true;
+  const beforeBundleGet = bundleGets; await loadApps();
+  assert.equal($('panel-bundled').hidden, true); assert.equal(bundleGets, beforeBundleGet);
+  assert.equal($('apps-list').querySelectorAll('li').length, 2, 'older servers retain the normal installed-app list');
 })()`, context);
 console.log('check-automate: ok (guided scene output, safe text, schedule toggles, private copy-only URLs, extension catalog/forms/install/preview/toggles/uninstall with placement and Look, saved-design thumbnails/load/show/delete/save/confirmed rename, busy guards and errors)');

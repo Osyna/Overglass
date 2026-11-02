@@ -11,7 +11,7 @@ toast:
         text:
     config_entry_id: &entry
       name: TV
-      description: Which webOS Foundry TV; optional when only one is configured.
+      description: Which Overglass TV; optional when only one is configured.
       required: false
       selector:
         config_entry:
@@ -44,7 +44,7 @@ overlay_show:
   description: >-
     Show a card on the TV: either title/body/lines/image/kind (needs at least one), or a full
     JSON widget tree under root for a custom layout (see ARCHITECTURE.md section 3a in the
-    webOS Foundry repo for the widget types).
+    Overglass repo for the widget types).
   fields:
     title:
       name: Title
@@ -118,7 +118,7 @@ overlay_hide:
 
 remote:
   name: Remote
-  description: Send one remote action to the TV (wake, power_off, home, back, up, down, left, right, ok, mute, unmute, volume_up, volume_down, hdmi).
+  description: Send one remote action to the TV (wake, power_off, home, back, up, down, left, right, ok, mute, unmute, volume, volume_up, volume_down, hdmi).
   fields:
     action:
       name: Action
@@ -129,13 +129,14 @@ remote:
         text:
     value:
       name: Value
-      description: Only for hdmi - the input number, 1-4.
+      description: Required for hdmi (input 1-4) or volume (TV speaker level 0-100). Other actions take no value.
       required: false
       example: 1
       selector:
         number:
-          min: 1
-          max: 4
+          min: 0
+          max: 100
+          step: 1
     config_entry_id: *entry
 
 set_setting:

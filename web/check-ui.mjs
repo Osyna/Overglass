@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 const dir = path.dirname(fileURLToPath(import.meta.url));
 const read = (f) => fs.readFileSync(path.join(dir, f), 'utf8');
 const html = read('index.html');
-const js = ['theme.js', 'app.js', 'apps.js'].map(read).join('\n');
+const js = ['theme.js', 'studio.js', 'app.js', 'apps.js'].map(read).join('\n');
 const failures = [];
 const check = (ok, message) => { if (!ok) failures.push(message); };
 
@@ -83,7 +83,9 @@ const STUDIO_IDS = ['ov-templates', 'ov-paste', 'ov-paste-apply', 'ov-paste-msg'
   'ov-schema-copy', 'ov-schema-download', 'ov-ai-msg', 'design-import', 'design-import-file', 'ov-layout',
   'ov-card-seconds', 'ov-look-form', 'ov-look-presets', 'ov-builder', 'ov-builder-msg', 'ov-json',
   'ov-json-apply', 'ov-json-reset', 'ov-json-msg', 'ov-meter', 'ov-meter-text', 'ov-preview', 'ov-preview-dock',
-  'ov-send', 'design-form', 'design-name', 'design-save', 'design-export', 'design-copy', 'designs-list'];
+  'ov-send', 'design-form', 'design-name', 'design-save', 'design-export', 'design-copy', 'designs-list',
+  'ov-undo', 'ov-redo', 'ov-safe-area', 'ov-snapshot', 'ov-snapshot-clear', 'ov-live-edit', 'ov-bindings', 'ov-timeline',
+  'ov-saved-themes', 'ov-theme-form', 'ov-import-preview', 'rotation-form', 'access-login-form', 'access-form', 'event-status'];
 for (const id of STUDIO_IDS) check(idSet.has(id), `Studio is missing #${id}`);
 const tags = [...html.matchAll(/<\/?([a-z][\w-]*)\b[^>]*>/gi)];
 const ancestors = new Map();
@@ -146,7 +148,10 @@ check(!/<style[\s>]/.test(html), 'inline <style>');
 check(!/<script(?![^>]*\ssrc=)/.test(html), 'inline <script>');
 check(!/\son[a-z]+="/.test(html), 'inline event handler attribute');
 check(!/https?:\/\/(?!127\.0\.0\.1|localhost|www\.w3\.org|example\.com)/.test(html + read('app.css') + read('tokens.css')), 'off-origin URL in markup or CSS');
-check(!/@import|url\(/.test(read('app.css') + read('tokens.css')), 'CSS pulls in another resource (CSP allows only same-origin files, and there are none)');
+check(!/@import/.test(read('app.css') + read('tokens.css')), 'CSS must not import another stylesheet');
+for (const match of (read('app.css') + read('tokens.css')).matchAll(/url\(["']?([^"')]+)["']?\)/g)) {
+  check(/^\/fonts\/[\w.-]+\.woff2$/.test(match[1]) && fs.existsSync(path.join(dir, match[1].slice(1))), 'CSS resource must be an existing local font: ' + match[1]);
+}
 check(!/\.setAttribute\('style'/.test(js), "setAttribute('style') is blocked by CSP");
 
 // Tokens: no raw colours outside tokens.css.

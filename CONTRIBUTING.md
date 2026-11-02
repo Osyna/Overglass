@@ -5,10 +5,14 @@ Thanks for helping. Most changes need **no TV**: the whole test suite runs offli
 ## Setup and tests
 
 ```sh
-git clone https://github.com/webos-foundry/webos-foundry
-cd webos-foundry
-pip install -e . pytest
-pytest
+git clone https://github.com/Osyna/Overglass
+cd Overglass
+pip install -e . pytest aiohttp voluptuous PyYAML jsonschema
+python -m pytest tests/ -q
+node web/check-ui.mjs
+node web/check-overlay.mjs
+node web/check-automate.mjs
+node web/check-studio.mjs
 ```
 
 * Every test uses a `FakeTransport` or mocked HTTP; nothing opens a socket to a TV. Do not add tests
@@ -17,6 +21,10 @@ pytest
 * TV-side scripts: `node --check tv-assets/*.js` and `sh -n tv-assets/*.sh` are the offline syntax checks.
 * The Home Assistant integration talks only to the HTTP API (no SSH) and may use `aiohttp`, already a
   Home Assistant core dependency.
+* Node 22 runs the web gates. `zbarimg` enables the independent QR decoding regression.
+* Pixel comparisons also need Chromium and Python/Pillow. Use the browser/OS version recorded in
+  `web/visual-references/manifest.json`; [OVERLAY-VISUAL.md](docs/OVERLAY-VISUAL.md) documents reviewed
+  baseline updates, exact comparisons and the one-pixel negative control.
 
 ## Ground rules
 

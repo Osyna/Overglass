@@ -1,5 +1,5 @@
 'use strict';
-// webOS Foundry, on-TV server: the same HTTP API and web UI as `wof serve`, but it runs ON the TV and reaches the
+// Overglass, on-TV server: the same HTTP API and web UI as `wof serve`, but it runs ON the TV and reaches the
 // TV-side dispatcher locally (`sh dispatch.sh` with the request in $SSH_ORIGINAL_COMMAND) instead of over SSH.
 // No npm dependencies: the TV has no package registry. Route shapes mirror webos_foundry/server.py field for field;
 // see ARCHITECTURE.md section 10.4 and docs/TV-SERVER.md. Not implemented here: /api/jobs (file processing) and
@@ -16,6 +16,7 @@ const ENV = process.env;
 const DISPATCH_PATH = ENV.WOF_TV_DISPATCH || '/var/lib/webosbrew/webos-foundry/dispatch.sh';
 const WEB_DIR = ENV.WOF_TV_WEB || path.join(__dirname, 'web');
 const CONFIG_PATH = ENV.WOF_TV_CONFIG || path.join(__dirname, 'config.json');
+const BUNDLED_OVERLAY_PATH = path.join(__dirname, 'bundled', 'dev.webosfoundry.overlay.ipk');
 const LOG_PATH = ENV.WOF_TV_LOG || '/tmp/webos-foundry-tv-server.log';
 const LISTEN_HOST = ENV.WOF_TV_HOST || '0.0.0.0';
 const LISTEN_PORT = ENV.WOF_TV_PORT === undefined ? 8766 : Number(ENV.WOF_TV_PORT);
@@ -32,7 +33,7 @@ const NOTICE = 'No token set yet: see the log at /tmp/webos-foundry-tv-server.lo
 const BUSY = 'TV is busy with AI processing or another change; try again shortly.';
 const MAGIC = 'C5F1'; // vtcap's stream header, rewritten to WOF1 for the browser (same as server.py)
 
-const REMOTE_ACTIONS = ['power_off', 'home', 'back', 'up', 'down', 'left', 'right', 'ok', 'hdmi', 'volume_up',
+const REMOTE_ACTIONS = ['power_off', 'home', 'back', 'up', 'down', 'left', 'right', 'ok', 'hdmi', 'volume', 'volume_up',
   'volume_down', 'mute', 'unmute'];
 // Only these settings can ever be read or written: [category, key, label].
 const SETTINGS = [
@@ -53,7 +54,7 @@ const TEXT_WEIGHTS = ['normal', 'strong'];
 const TEXT_COLORS = ['fg', 'fg-2', ...TONES];
 const LIST_STYLES = ['bullet', 'number', 'plain'];
 const WIDGET_TYPES = ['stack', 'row', 'text', 'image', 'badge', 'dot', 'progress', 'countdown', 'list', 'divider',
-                      'compare', 'sparkline', 'section', 'event', 'stat', 'status', 'meta', 'clock'];
+                      'compare', 'sparkline', 'section', 'event', 'stat', 'status', 'meta', 'clock', 'grid', 'ticker', 'qr', 'svg'];
 const IMAGE_SHAPES = ['square', 'circle'];
 const IMAGE_SIZES = ['s', 'm', 'l'];
 const ICONS = ['ball', 'bolt', 'chart', 'trophy', 'pulse', 'layers', 'clock', 'pin', 'sun', 'card', 'swap', 'target',
@@ -164,6 +165,8 @@ function dispatch(command, timeoutMs, payload) { // resolves stdout (Buffer); pa
       env: Object.assign({}, process.env, {SSH_ORIGINAL_COMMAND: command}),
       timeout: timeoutMs, maxBuffer: MAX_OUTPUT, encoding: 'buffer',
     }, (error, stdout, stderr) => (error ? reject(dispatchError(error.code, stderr, error.killed, error.message)) : resolve(stdout)));
+    // A busy dispatcher can exit before consuming a package; its exit code, not EPIPE, explains the failure.
+    child.stdin.on('error', (error) => { if (error.code !== 'EPIPE') reject(new ApiError(502, error.message)); });
     if (payload) child.stdin.end(payload); else child.stdin.end();
   });
 }
@@ -306,6 +309,117 @@ function checkInt(value, lo, hi, what) {
   return value;
 }
 
+function strictFields(value, allowed, what) {
+  const unknown = Object.keys(value).filter((key) => !allowed.includes(key));
+  if (unknown.length) throw bad('Unknown ' + what + ' field: ' + unknown.join(', '));
+}
+
+function checkSvg(source) {
+  const fail = () => { throw bad('SVG must be a safe inline geometry document of at most 8192 characters'); };
+  if (typeof source !== 'string' || source.length > 8192 || /[^\x20-\x7e]|&|<!|<\?/.test(source)) fail();
+  source = source.replace(/^ +| +$/g, '');
+  const tags = ['svg', 'g', 'path', 'rect', 'circle', 'ellipse', 'line', 'polyline', 'polygon'];
+  const scalars = ['width', 'height', 'x', 'y', 'x1', 'y1', 'x2', 'y2', 'cx', 'cy', 'r', 'rx', 'ry', 'stroke-width'];
+  const scalar = /^-?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:%|px)?$/;
+  const paint = /^(?:none|currentColor|transparent|black|white|red|green|blue|yellow|gray|grey|#[0-9a-fA-F]{3}(?:[0-9a-fA-F]{3})?)$/;
+  const stack = [];
+  let rootSeen = false;
+  let pos = 0;
+  while (pos < source.length) {
+    if (source[pos] === ' ') { pos += 1; continue; }
+    const tag = /^<(\/?)([A-Za-z][A-Za-z0-9-]*)([^<>]*?)(\/?)>/.exec(source.slice(pos));
+    if (!tag || !tags.includes(tag[2])) fail();
+    const name = tag[2];
+    if (tag[1]) {
+      if (tag[4] || !/^ *$/.test(tag[3]) || stack.pop() !== name) fail();
+    } else {
+      if (!stack.length) {
+        if (rootSeen || name !== 'svg') fail();
+        rootSeen = true;
+      } else if (name === 'svg') fail();
+      let attrs = tag[3];
+      const seen = new Set();
+      while (attrs && !/^ *$/.test(attrs)) {
+        const attr = /^ +([A-Za-z][A-Za-z0-9-]*) *= *(["'])(.*?)\2/.exec(attrs);
+        if (!attr || seen.has(attr[1])) fail();
+        const key = attr[1], value = attr[3];
+        seen.add(key);
+        let valid = false;
+        if (key === 'xmlns') valid = !stack.length && value === 'http://www.w3.org/2000/svg';
+        else if (scalars.includes(key)) valid = scalar.test(value);
+        else if (key === 'fill' || key === 'stroke') valid = paint.test(value);
+        else if (['opacity', 'fill-opacity', 'stroke-opacity'].includes(key)) {
+          valid = /^-?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)$/.test(value) && Number(value) >= 0 && Number(value) <= 1;
+        } else if (key === 'viewBox' || key === 'points') valid = /^[-+0-9.eE, ]+$/.test(value);
+        else if (key === 'd') valid = /^[MmZzLlHhVvCcSsQqTtAa0-9eE+., -]+$/.test(value);
+        else if (key === 'transform') valid = /^(?: *(?:matrix|translate|scale|rotate|skewX|skewY)\( *[-+0-9.eE, ]+\) *)+$/.test(value);
+        else if (key === 'fill-rule') valid = ['nonzero', 'evenodd'].includes(value);
+        else if (key === 'stroke-linecap') valid = ['butt', 'round', 'square'].includes(value);
+        else if (key === 'stroke-linejoin') valid = ['miter', 'round', 'bevel'].includes(value);
+        if (!valid) fail();
+        attrs = attrs.slice(attr[0].length);
+      }
+      if (!tag[4]) stack.push(name);
+    }
+    pos += tag[0].length;
+  }
+  if (!rootSeen || stack.length) fail();
+  return source;
+}
+
+function checkCardOptions(raw, out) {
+  if ('animation' in raw) {
+    if (!isObject(raw.animation)) throw bad('animation must be a JSON object');
+    strictFields(raw.animation, ['enter', 'exit', 'duration_ms'], 'animation');
+    out.animation = {};
+    for (const key of ['enter', 'exit']) {
+      if (key in raw.animation) out.animation[key] = checkEnum(raw.animation[key], ['none', 'fade', 'slide', 'wipe'], key);
+    }
+    if ('duration_ms' in raw.animation) out.animation.duration_ms = checkInt(raw.animation.duration_ms, 0, 2000, 'duration_ms');
+  }
+  if ('offset' in raw) {
+    if (!isObject(raw.offset)) throw bad('offset must be a JSON object');
+    strictFields(raw.offset, ['x', 'y'], 'offset');
+    out.offset = {};
+    if ('x' in raw.offset) out.offset.x = checkInt(raw.offset.x, -1920, 1920, 'offset x');
+    if ('y' in raw.offset) out.offset.y = checkInt(raw.offset.y, -1080, 1080, 'offset y');
+  }
+  if ('behavior' in raw) {
+    if (!isObject(raw.behavior)) throw bad('behavior must be a JSON object');
+    strictFields(raw.behavior, ['on_foreground', 'ambient_dim'], 'behavior');
+    out.behavior = {};
+    if ('on_foreground' in raw.behavior) out.behavior.on_foreground = checkEnum(raw.behavior.on_foreground, ['keep', 'hide', 'shrink'], 'on_foreground');
+    if ('ambient_dim' in raw.behavior) {
+      if (typeof raw.behavior.ambient_dim !== 'boolean') throw bad('ambient_dim must be a boolean');
+      out.behavior.ambient_dim = raw.behavior.ambient_dim;
+    }
+  }
+  if ('dim' in raw) {
+    if (typeof raw.dim !== 'number' || !Number.isFinite(raw.dim) || raw.dim < 0.2 || raw.dim > 1) throw bad('dim must be a number 0.2-1');
+    out.dim = raw.dim;
+  }
+  if ('compact' in raw) {
+    if (typeof raw.compact !== 'boolean') throw bad('compact must be a boolean');
+    out.compact = raw.compact;
+  }
+}
+
+function checkRuntime(raw) {
+  if (raw.action === 'state') {
+    strictFields(raw, ['action'], 'overlay state');
+    return {action: 'state'};
+  }
+  strictFields(raw, ['action', 'dim', 'compact', 'hidden'], 'runtime');
+  if (raw.action !== 'runtime') throw bad('Unknown overlay action');
+  const out = {action: 'runtime'};
+  checkCardOptions(raw, out);
+  if ('hidden' in raw) {
+    if (typeof raw.hidden !== 'boolean') throw bad('hidden must be a boolean');
+    out.hidden = raw.hidden;
+  }
+  return out;
+}
+
 function checkNode(node, depth, counter) {
   // Validates and normalises one widget tree node (ARCHITECTURE.md section 3a), recursively.
   // counter is a {n} box so the total-node cap applies across the whole tree, not one level.
@@ -316,13 +430,14 @@ function checkNode(node, depth, counter) {
   const kind = node.type;
   if (!WIDGET_TYPES.includes(kind)) throw bad('Unknown widget type: ' + JSON.stringify(kind));
   const out = {type: kind};
-  if (kind === 'stack' || kind === 'row') {
-    const limit = kind === 'stack' ? 20 : 10;
+  if (kind === 'stack' || kind === 'row' || kind === 'grid') {
+    const limit = kind === 'row' ? 10 : 20;
     if (!Array.isArray(node.children) || node.children.length < 1 || node.children.length > limit) {
       throw bad(kind + ' needs 1-' + limit + ' children');
     }
     if ('gap' in node) out.gap = checkInt(node.gap, 0, 48, 'gap');
-    if ('align' in node) out.align = checkEnum(node.align, ['start', 'center', 'end'], 'align');
+    if (kind === 'grid') out.columns = checkInt(node.columns, 1, 3, 'columns');
+    else if ('align' in node) out.align = checkEnum(node.align, ['start', 'center', 'end'], 'align');
     out.children = node.children.map((child) => checkNode(child, depth + 1, counter));
   } else if (kind === 'text') {
     out.text = clean(node.text, 400, 'text');
@@ -399,8 +514,22 @@ function checkNode(node, depth, counter) {
     if ('format' in node) out.format = checkEnum(node.format, CLOCK_FORMATS, 'clock format');
     if ('label' in node) out.label = clean(node.label, 40, 'label');
   } // divider has no fields
-  const unknown = Object.keys(node).filter((key) => !(key in out)); // every accepted key was copied into out
-  if (unknown.length) throw bad('Unknown ' + kind + ' field: ' + unknown.join(', '));
+  if (kind === 'ticker' || kind === 'qr') {
+    out.text = clean(node.text, 1000, kind + ' text');
+    if (!out.text) throw bad(kind + ' text must not be empty');
+    if (kind === 'ticker') {
+      if ('speed' in node) out.speed = checkInt(node.speed, 10, 200, 'ticker speed');
+      optionalTone(node, out);
+    } else {
+      if (Buffer.byteLength(out.text, 'utf8') > 2953) throw bad('QR text exceeds 2953 UTF-8 bytes');
+      try { encodeURIComponent(out.text); } catch (e) { throw bad('QR text must be valid Unicode'); }
+      if ('size' in node) out.size = checkEnum(node.size, IMAGE_SIZES, 'size');
+    }
+  } else if (kind === 'svg') {
+    out.source = checkSvg(node.source);
+    if ('size' in node) out.size = checkEnum(node.size, IMAGE_SIZES, 'size');
+  }
+  strictFields(node, Object.keys(out), kind);
   return out;
 }
 
@@ -417,6 +546,7 @@ function checkSegment(segment) {
   const out = {label: clean(segment.label, 24, 'segment label'), value: clean(segment.value, 16, 'segment value'),
     fraction: checkFraction(segment.fraction, 'segment fraction')};
   optionalTone(segment, out);
+  strictFields(segment, Object.keys(out), 'compare segment');
   return out;
 }
 
@@ -424,6 +554,7 @@ function checkMetaItem(item) {
   if (!isObject(item)) throw bad('Each meta item must be a JSON object');
   const out = {label: clean(item.label, 24, 'meta label'), value: clean(item.value, 40, 'meta value')};
   if ('icon' in item) out.icon = checkEnum(item.icon, ICONS, 'icon');
+  strictFields(item, Object.keys(out), 'meta item');
   return out;
 }
 
@@ -490,57 +621,62 @@ function compileCard(card) {
   return {type: 'stack', gap: 12, children: head.concat(body)};
 }
 
-function checkOverlayRequest(body) {
-  // Validate a POST /api/overlay body. Either {"hide": true} alone, a card {"position"?, "size"?,
-  // "seconds"?, "theme"?, "root": <widget tree>}, a multi-region card {"seconds"?, "theme"?,
-  // "regions": [{"position", "size"?, "root"}]}, or the shorthand {"title"?, "body"?, "lines"?,
-  // "image"?, "kind"?, "position"?, "size"?, "seconds"?} compiled into an equivalent tree here --
-  // the dispatcher and the TV only ever see trees.
-  if (!isObject(body)) throw bad('The card must be a JSON object');
-  if (body.hide === true) {
-    if (Object.keys(body).length !== 1) throw bad('Use {"hide": true} alone to hide the overlay');
-    return {hide: true};
-  }
+function checkNormalCard(raw, counter, allowTimeline) {
+  if (!isObject(raw)) throw bad('Overlay card must be a JSON object');
   const out = {};
-  if ('seconds' in body) out.seconds = checkInt(body.seconds, 0, 300, 'seconds');
-  if ('theme' in body) out.theme = checkTheme(body.theme);
-  const counter = {n: 0};
-  if ('regions' in body) {
-    const unknown = Object.keys(body).filter((k) => !['seconds', 'theme', 'regions'].includes(k));
-    if (unknown.length) throw bad('Unknown overlay field: ' + unknown.join(', '));
-    if (!Array.isArray(body.regions) || body.regions.length < 1 || body.regions.length > MAX_REGIONS) {
-      throw bad('regions needs 1-' + MAX_REGIONS + ' entries');
-    }
+  const common = ['seconds', 'theme', 'behavior', 'dim', 'compact'];
+  if ('seconds' in raw) out.seconds = checkInt(raw.seconds, 0, 300, 'seconds');
+  if ('theme' in raw) out.theme = checkTheme(raw.theme);
+  checkCardOptions(raw, out);
+  if ('timeline' in raw) {
+    if (!allowTimeline) throw bad('Nested timelines are not allowed');
+    strictFields(raw, common.concat('timeline'), 'overlay');
+    if (!Array.isArray(raw.timeline) || raw.timeline.length < 1 || raw.timeline.length > 4) throw bad('timeline needs 1-4 frames');
+    out.timeline = raw.timeline.map((frame) => {
+      if (!isObject(frame)) throw bad('Each timeline frame must be a JSON object');
+      strictFields(frame, ['seconds', 'card'], 'timeline frame');
+      return {seconds: checkInt(frame.seconds, 1, 300, 'frame seconds'), card: checkNormalCard(frame.card, counter, false)};
+    });
+  } else if ('regions' in raw) {
+    strictFields(raw, common.concat('regions'), 'overlay');
+    if (!Array.isArray(raw.regions) || raw.regions.length < 1 || raw.regions.length > MAX_REGIONS) throw bad('regions needs 1-' + MAX_REGIONS + ' entries');
     const seen = new Set();
-    out.regions = body.regions.map((region) => {
-      if (!isObject(region) || !('root' in region) || Object.keys(region).some((k) => !['position', 'size', 'root'].includes(k))) {
-        throw bad('Each region is {"position", "size"?, "root"}');
-      }
+    out.regions = raw.regions.map((region) => {
+      if (!isObject(region)) throw bad('Each region must be a JSON object');
+      strictFields(region, ['position', 'size', 'root', 'animation', 'offset', 'behavior', 'dim', 'compact'], 'region');
       const checked = {position: checkEnum(region.position, CARD_POSITIONS, 'region position')};
       if (seen.has(checked.position)) throw bad('Each region needs a different position');
       seen.add(checked.position);
       if ('size' in region) checked.size = checkEnum(region.size, CARD_SIZES, 'size');
+      checkCardOptions(region, checked);
       checked.root = checkNode(region.root, 0, counter);
       return checked;
     });
   } else {
-    if ('position' in body) out.position = checkEnum(body.position, CARD_POSITIONS, 'position');
-    if ('size' in body) out.size = checkEnum(body.size, CARD_SIZES, 'size');
-    const extras = ['position', 'size', 'seconds', 'theme'];
-    if ('root' in body) {
-      const unknown = Object.keys(body).filter((k) => !extras.includes(k) && k !== 'root');
-      if (unknown.length) throw bad('Unknown overlay field: ' + unknown.join(', '));
-      out.root = checkNode(body.root, 0, counter);
+    const single = common.concat(['position', 'size', 'animation', 'offset']);
+    if ('position' in raw) out.position = checkEnum(raw.position, CARD_POSITIONS, 'position');
+    if ('size' in raw) out.size = checkEnum(raw.size, CARD_SIZES, 'size');
+    if ('root' in raw) {
+      strictFields(raw, single.concat('root'), 'overlay');
+      out.root = checkNode(raw.root, 0, counter);
     } else {
-      const unknown = Object.keys(body).filter((k) => !extras.includes(k) && !SHORTHAND_FIELDS.includes(k));
-      if (unknown.length) throw bad('Unknown overlay field: ' + unknown.join(', '));
+      strictFields(raw, single.concat(SHORTHAND_FIELDS), 'overlay');
       const card = {};
-      SHORTHAND_FIELDS.forEach((key) => { if (key in body) card[key] = body[key]; });
+      SHORTHAND_FIELDS.forEach((key) => { if (key in raw) card[key] = raw[key]; });
       out.root = checkNode(compileCard(cleanShorthand(card)), 0, counter);
     }
   }
-  const encoded = Buffer.from(JSON.stringify(out), 'utf8');
-  if (encoded.length > MAX_TREE_BYTES) throw bad('Card is too large (at most ' + MAX_TREE_BYTES + ' bytes of JSON)');
+  return out;
+}
+
+function checkOverlayRequest(raw) {
+  if (!isObject(raw)) throw bad('Overlay card must be a JSON object');
+  if ('hide' in raw) {
+    if (raw.hide !== true || Object.keys(raw).length !== 1) throw bad('Use {"hide": true} alone to hide the overlay');
+    return {hide: true};
+  }
+  const out = 'action' in raw ? checkRuntime(raw) : checkNormalCard(raw, {n: 0}, true);
+  if (Buffer.byteLength(JSON.stringify(out), 'utf8') > MAX_TREE_BYTES) throw bad('Card is too large (at most ' + MAX_TREE_BYTES + ' bytes of JSON)');
   return out;
 }
 
@@ -594,8 +730,10 @@ async function postRemote(ctx) {
   const value = (await ctx.jsonBody(false)).value;
   if (action === 'hdmi') {
     if (!Number.isInteger(value) || value < 1 || value > 4) throw bad('HDMI input must be the integer 1-4');
+  } else if (action === 'volume') {
+    if (!Number.isInteger(value) || value < 0 || value > 100) throw bad('Volume must be an integer from 0 to 100');
   } else if (value !== undefined && value !== null) throw bad('This remote action takes no value');
-  const command = action === 'hdmi' ? 'remote hdmi ' + value : 'remote ' + action;
+  const command = 'remote ' + action + (action === 'hdmi' || action === 'volume' ? ' ' + value : '');
   return withTvLock(async () => {
     const reply = tvJson(await dispatch(command, 45000), 'reply');
     const message = isObject(reply) ? reply.message : reply;
@@ -661,9 +799,10 @@ async function postOverlay(ctx) {
 
 async function postOverlayValidate(ctx) {
   const card = checkOverlayRequest(await ctx.jsonBody(true));
-  if (card.hide) throw bad('Nothing to check in a hide request');
+  if (card.hide || card.action) throw bad('Nothing to check in a lifecycle request');
   const count = (node) => 1 + (node.children || []).reduce((sum, child) => sum + count(child), 0);
-  const roots = card.regions ? card.regions.map((region) => region.root) : [card.root];
+  const cards = card.timeline ? card.timeline.map((frame) => frame.card) : [card];
+  const roots = cards.reduce((all, frame) => all.concat(frame.regions ? frame.regions.map((region) => region.root) : [frame.root]), []);
   return {ok: true, card, widgets: roots.reduce((sum, root) => sum + count(root), 0),
     bytes: Buffer.byteLength(JSON.stringify(card), 'utf8')};
 }
@@ -731,6 +870,44 @@ function getStream(ctx) {
 }
 
 // ---- apps (dispatcher verbs app-list / app-install / app-uninstall; TV-side mechanism: apps.js)
+
+const BUNDLED_OVERLAY = {id: 'dev.webosfoundry.overlay', title: 'Overglass Overlay',
+  description: 'Displays Overglass overlay cards on the TV.', version: '1.0.1'};
+const BUNDLED_MISSING = 'Bundled overlay package is unavailable; run wof install --tv-server from a project checkout ' +
+  'to stage it on the TV, then try again.';
+const OVERLAY_MAX = 2097152; // dispatch.sh's bounded install-overlay stdin
+
+function bundledOverlayPackage() {
+  try {
+    const stat = fs.lstatSync(BUNDLED_OVERLAY_PATH);
+    if (!stat.isFile() || stat.size < 1 || stat.size > OVERLAY_MAX) throw new Error('Invalid bundled package');
+    const data = fs.readFileSync(BUNDLED_OVERLAY_PATH);
+    if (data.length !== stat.size) throw new Error('Bundled package changed');
+    return data;
+  } catch (error) { throw new ApiError(503, BUNDLED_MISSING); }
+}
+
+async function overlayInstalled() {
+  const status = tvJson(await dispatch('install-status', 20000), 'install status');
+  if (!isObject(status) || typeof status.overlay !== 'boolean') throw new ApiError(502, 'TV returned a malformed install status');
+  return status.overlay;
+}
+
+async function getBundledApps() {
+  let available = true;
+  try { bundledOverlayPackage(); } catch (error) { available = false; }
+  return withTvLock(async () => [Object.assign({}, BUNDLED_OVERLAY, {available, installed: await overlayInstalled()})]);
+}
+
+async function postBundledApp(ctx) {
+  if (ctx.params.id !== BUNDLED_OVERLAY.id) throw new ApiError(404, 'No such bundled app');
+  if (Object.keys(ctx.query).length || Object.keys(await ctx.jsonBody(false)).length) throw bad('Bundled app installation takes no options');
+  return withTvLock(async () => {
+    await dispatch('install-overlay', 120000, bundledOverlayPackage());
+    if (!await overlayInstalled()) throw new ApiError(502, 'The TV did not confirm the overlay renderer is installed');
+    return {id: BUNDLED_OVERLAY.id, installed: true, message: 'Overlay renderer installed'};
+  });
+}
 
 async function getApps() {
   const apps = tvJson(await dispatch('app-list', 20000), 'app list');
@@ -802,6 +979,7 @@ const REMOTE = {
   right: ['Right key', 'networkinput/sendSpecialKey {"key":"RIGHT"}'],
   ok: ['OK key', 'networkinput/sendSpecialKey {"key":"ENTER"}'],
   hdmi: ['Switch input; body {"value": 1-4}', 'applicationManager/launch {"id":"com.webos.app.hdmiN"}, then getForegroundAppInfo until it is in front'],
+  volume: ['Set TV speaker volume; body {"value": 0-100}, limited by the TV maximum', 'audio/master/setVolume, then getVolume readback'],
   volume_up: ['Volume +1 on the TV speaker', 'audio/master/setVolume, then getVolume readback'],
   volume_down: ['Volume \u22121 on the TV speaker', 'audio/master/setVolume, then getVolume readback'],
   mute: ['Mute the TV speaker', 'audio/master/muteVolume {"mute":true}, then getVolume readback'],
@@ -886,7 +1064,7 @@ const ROUTES = [
       '(for example the vtcap role is not installed: run wof install). Close the connection to stop it.',
     stream: true, example: {path: '/api/screen/stream?width=160&height=90&fps=30'}}),
   route('POST', '/api/remote/{action}', 'Remote', 'Send one remote action and wait for the TV to confirm it.', postRemote, {
-    body: 'Optional JSON. Only hdmi takes a body: {"value": 1-4}', returns: '{"action": "\u2026", "message": "what the TV confirmed"}',
+    body: 'JSON required for hdmi: {"value": 1-4}, or volume: {"value": 0-100}; values must be integers. Optional otherwise.', returns: '{"action": "\u2026", "message": "what the TV confirmed"}',
     values: Object.keys(REMOTE).map((name) => ({name, detail: REMOTE[name][0], tv: REMOTE[name][1]})),
     tv: [], notes: TV_LOCK_NOTE + ' There is no wake action: this server runs on the TV and cannot send itself a Wake-on-LAN packet (answers 501).',
     example: {path: '/api/remote/hdmi', body: {value: 1}}}),
@@ -911,6 +1089,16 @@ const ROUTES = [
          'luna://com.webos.appInstallService/dev/install, streamed until "state":"installed"'],
     notes: 'Raw IPK upload is not supported by the on-TV server (415): host the file somewhere the TV can fetch it.',
     example: {path: '/api/apps', body: {url: 'https://example.org/app.ipk', sha256: '0'.repeat(64)}}}),
+  route('GET', '/api/apps/bundled', 'Apps', 'Bundled TV apps available for one-click installation.', getBundledApps, {
+    returns: '[{"id", "title", "description", "version", "installed": bool, "available": bool}]',
+    tv: ['dispatch install-status; package availability comes from the private staged overlay IPK'],
+    notes: 'Admin token required. No third-party apps.', example: {path: '/api/apps/bundled'}}),
+  route('POST', '/api/apps/bundled/{id}', 'Apps', 'Install the bundled overlay renderer without a PC.', postBundledApp, {
+    body: 'No body or an empty JSON object; no options.',
+    returns: '{"id": str, "installed": true, "message": str} after TV readback confirms installation',
+    tv: ['dispatch install-overlay with the private bundled IPK on stdin, then install-status'],
+    notes: '404 for unknown ids, 409 when the TV is busy, 503 if the staged package is missing.',
+    example: {path: '/api/apps/bundled/dev.webosfoundry.overlay'}}),
   route('DELETE', '/api/apps/{id}', 'Apps', 'Uninstall an app by id.', deleteApp, {
     returns: '{"message": "App removed"}',
     tv: ['dispatch verb app-uninstall \u2192 node apps.js uninstall: luna://com.webos.appInstallService/dev/remove, ' +
@@ -993,7 +1181,7 @@ function staticFile(urlPath) { // {data, kind} or null; only regular files under
 }
 
 const NOTICE_PAGE = Buffer.from('<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width">' +
-  '<title>webOS Foundry</title><h1>webOS Foundry</h1><p>' + NOTICE.replace(/`/g, '') + '</p></html>');
+  '<title>Overglass</title><h1>Overglass</h1><p>' + NOTICE.replace(/`/g, '') + '</p></html>');
 
 async function handle(req, res) {
   const url = new URL(req.url, 'http://tv');
@@ -1043,7 +1231,7 @@ function main() {
   server.listen(LISTEN_PORT, LISTEN_HOST, () => {
     const address = server.address();
     log('listening on ' + address.address + ':' + address.port);
-    console.log('webos-foundry tv-server listening on http://' + address.address + ':' + address.port);
+    console.log('Overglass TV server listening on http://' + address.address + ':' + address.port);
   });
   const stop = () => { if (live.active) live.active.kill('SIGTERM'); server.close(); setTimeout(() => process.exit(0), 200).unref(); };
   process.on('uncaughtException', (error) => log('uncaught: ' + error.stack)); // no supervisor on the TV: stay up

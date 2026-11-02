@@ -1,4 +1,4 @@
-"""Thin async client for the webOS Foundry HTTP API (``wof serve``).
+"""Thin async client for the Overglass HTTP API (``wof serve``).
 
 Deliberately free of Home Assistant imports so it can be tested on its own.
 """

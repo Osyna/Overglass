@@ -1,5 +1,5 @@
 #!/bin/sh
-# webOS Foundry on-TV server boot hook (POSIX sh). Installed as /var/lib/webosbrew/init.d/webos-foundry-tv-server
+# Overglass on-TV server boot hook (POSIX sh). Installed as /var/lib/webosbrew/init.d/webos-foundry-tv-server
 # (mode 755); webosbrew runs every script in that directory as root at boot, and the installer runs it once by hand:
 #   sh /var/lib/webosbrew/init.d/webos-foundry-tv-server [start|stop]
 # start (default) is re-entrant: it stops the server it started before, then starts a fresh detached one.
@@ -30,7 +30,7 @@ stop_server() {
 
 start_server() {
   stop_server
-  [ -f "$DIR/server.js" ] || { echo "webos-foundry-tv-server: $DIR/server.js is missing" >&2; exit 1; }
+  [ -f "$DIR/server.js" ] || { echo "Overglass TV server: $DIR/server.js is missing" >&2; exit 1; }
   cd "$DIR" || exit 1
   if command -v setsid >/dev/null 2>&1; then
     setsid node "$DIR/server.js" >>"$LOG" 2>&1 </dev/null &
@@ -39,7 +39,7 @@ start_server() {
   fi
   echo "$!" >"$PIDFILE"
   sleep 1
-  kill -0 "$(cat "$PIDFILE")" 2>/dev/null || { echo "webos-foundry-tv-server: node exited at once; see $LOG" >&2; rm -f "$PIDFILE"; exit 1; }
+  kill -0 "$(cat "$PIDFILE")" 2>/dev/null || { echo "Overglass TV server: node exited at once; see $LOG" >&2; rm -f "$PIDFILE"; exit 1; }
 }
 
 case ${1-start} in

@@ -45,6 +45,28 @@ server's configured hosts answers `421`, and cross-origin / cross-site non-GET r
 
 | Method | Path | Group | Summary |
 | --- | --- | --- | --- |
+| `POST` | `/api/access/login` | Access | Exchange an account PIN for an expiring session. |
+| `GET` | `/api/access/users` | Access | List accounts without PIN hashes (admin only). |
+| `GET` | `/api/access/users/{name}` | Access | Read one account without credentials (admin only). |
+| `PUT` | `/api/access/users/{name}` | Access | Save a PIN account and revoke its old sessions (admin only). |
+| `DELETE` | `/api/access/users/{name}` | Access | Delete an account and revoke its sessions (admin only). |
+| `GET` | `/api/access/sessions` | Access | List session IDs and expiry, never bearer secrets (admin only). |
+| `DELETE` | `/api/access/sessions/{id}` | Access | Revoke a session immediately (admin only). |
+| `POST` | `/api/access/logout` | Access | Revoke the calling PIN session. |
+| `GET` | `/api/events` | Status | Authenticated fetch SSE of shared bounded TV state (admin only). |
+| `GET` | `/api/themes` | Themes | List validated reusable themes. |
+| `PUT` | `/api/themes/{name}` | Themes | Save a validated reusable theme. |
+| `DELETE` | `/api/themes/{name}` | Themes | Delete a reusable theme. |
+| `POST` | `/api/designs/import` | Designs | Import a sanitized versioned design bundle. |
+| `POST` | `/api/designs/resolve` | Designs | Resolve safe JSON/Home Assistant scalar bindings without showing. |
+| `GET` | `/api/designs/{name}/history` | Designs | List at most 100 saved revisions. |
+| `POST` | `/api/designs/{name}/restore` | Designs | Restore a revision, recording the current card first. |
+| `POST` | `/api/designs/{name}/rename` | Designs | Rename a design together with its revision history. |
+| `GET` | `/api/designs/{name}/export` | Designs | Export a sanitized share bundle with secrets removed. |
+| `GET` | `/api/rotations` | Rotations | List timed saved-design rotations. |
+| `POST` | `/api/rotations` | Rotations | Create a saved-design rotation. |
+| `PUT` | `/api/rotations/{id}` | Rotations | Replace a saved-design rotation. |
+| `DELETE` | `/api/rotations/{id}` | Rotations | Remove a saved-design rotation. |
 | `GET` | `/api` | Reference | This catalogue: TV address, processing profiles and every route. |
 | `GET` | `/api/health` | Reference | Whether this install is paired with a TV, and its address. The only route besides GET /api that needs no token. |
 | `POST` | `/api/pair` | Setup | Pair with a TV using its root SSH key: the one-time setup step, done entirely from the browser. |
@@ -60,9 +82,10 @@ server's configured hosts answers `421`, and cross-origin / cross-site non-GET r
 | `DELETE` | `/api/scenes/{name}` | Scenes | Remove a saved scene. |
 | `POST` | `/api/scenes/{name}/run` | Scenes | Run every step of a saved scene, in order, stopping at the first failure. |
 | `GET` | `/api/webhooks` | Webhooks | List webhook tokens, scenes and display labels. |
-| `POST` | `/api/webhooks` | Webhooks | Create a revocable URL for one saved scene. |
+| `POST` | `/api/webhooks` | Webhooks | Create a revocable URL for one saved scene or design. |
 | `DELETE` | `/api/webhooks/{token}` | Webhooks | Revoke one webhook URL. |
-| `GET` | `/webhook/{token}` | Webhooks | Run the one scene granted by this capability URL. |
+| `GET` | `/webhook/{token}` | Webhooks | Read the capability target without running it. |
+| `POST` | `/webhook/{token}` | Webhooks | Run a capability scene or render a design with scalar values. |
 | `GET` | `/api/schedule` | Schedule | List local scene schedules. |
 | `POST` | `/api/schedule` | Schedule | Create a local scene schedule. |
 | `PUT` | `/api/schedule/{id}` | Schedule | Replace an existing local schedule entry. |
@@ -88,6 +111,8 @@ server's configured hosts answers `421`, and cross-origin / cross-site non-GET r
 | `GET` | `/api/jobs/{id}/result` | Processing | Download the processed file of a done job. |
 | `GET` | `/api/apps` | Apps | Apps installed on the TV that can be removed (Homebrew and sideloaded apps). |
 | `POST` | `/api/apps` | Apps | Install an app (IPK): from a URL the TV downloads itself, or from an IPK uploaded as the request body. |
+| `GET` | `/api/apps/bundled` | Apps | Bundled TV apps available for one-click installation. |
+| `POST` | `/api/apps/bundled/{id}` | Apps | Install the bundled overlay renderer from project source. |
 | `DELETE` | `/api/apps/{id}` | Apps | Uninstall an app by its id. |
 | `GET` | `/api/config/auth` | Settings | Whether this server asks for a login token. |
 | `PATCH` | `/api/config/auth` | Settings | Turn the login token requirement off or back on (saved in the config). |
@@ -151,12 +176,18 @@ Shorthand fields are all optional but need at least one of `title`, `body`, `lin
 `theme` is `{"accent"?, "surface"?, "text"?, "muted"?, "line"?: "#rrggbb", "opacity"? 0.2-1, "radius"? 0-32,
 "scale"? 0.75-1.5, "font"? sans|condensed|mono}`. A `root` tree replaces the shorthand entirely (the two are
 mutually exclusive in one request): a node is `{"type": stack|row|text|image|badge|dot|progress|countdown|
-clock|list|divider|compare|sparkline|section|event|stat|status|meta, ...fields, "children"?: [...]}`.
+clock|list|divider|compare|sparkline|section|event|stat|status|meta|grid|ticker|qr|svg, ...fields, "children"?: [...]}`.
 `{"seconds"?, "theme"?, "regions": [{"position", "size"?, "root"}, ...]}` (1-4 regions with distinct
 positions) draws several cards in the one overlay window — a top bar plus a side panel, say. Caps: depth
-≤ 5, ≤ 80 widgets total across all regions, ≤ 49152 bytes of the final JSON. Full per-type field list:
+≤ 5, ≤ 80 widgets total across all regions/timeline frames, ≤ 49152 bytes of the final JSON. Full per-type field list:
 [ARCHITECTURE.md §3a](../ARCHITECTURE.md). Unknown fields are refused. A TV in standby or an invalid card
 answers `502` with the TV script's message. Response `{"message": "Overlay card shown"}` or `"... hidden"`.
+
+Single cards and regions also accept `animation:{enter?,exit?,duration_ms?}` and floating `offset:{x?,y?}`.
+`behavior:{on_foreground?:keep|hide|shrink,ambient_dim?:boolean}` opts into actual TV telemetry.
+`{"timeline":[{"seconds":1..300,"card":<card>},...]}` plays up to four cards without nested timelines.
+Omit outer `seconds` or use zero for the full sequence; a positive value is an overall deadline.
+Repeated value updates retain unchanged renderer nodes and timers.
 
 ```sh
 curl -s -X POST -H "Authorization: Bearer TOKEN" -H "Content-Type: application/json" \
@@ -172,7 +203,7 @@ curl -s -X POST -H "Authorization: Bearer TOKEN" -H "Content-Type: application/j
 
 Two helpers for people (and assistants) writing cards by hand. Neither touches the TV; both work
 before pairing. `GET /api/overlay/schema` returns a JSON Schema (draft 2020-12) of the whole card body
-— envelope, theme, regions, all 18 widgets with their enums and limits — generated from the server's
+(envelope, theme, regions, timelines, all 22 widgets with their enums and limits), generated from the server's
 own validation constants, so it cannot drift from what `POST /api/overlay` accepts (`wof overlay
 schema` prints the same). Hand it to ChatGPT, a JSON editor or a code generator.
 
@@ -212,7 +243,9 @@ server keeps no frames.
 ### `POST /api/remote/{action}`
 
 `action` is one of `wake`, `power_off`, `home`, `back`, `up`, `down`, `left`, `right`, `ok`, `mute`,
-`unmute`, `volume_up`, `volume_down`, `hdmi`. Only `hdmi` takes a body: `{"value": 1-4}`. Returns
+`unmute`, `volume`, `volume_up`, `volume_down`, `hdmi`. `hdmi` requires `{"value": 1-4}`;
+`volume` requires an integer `{"value": 0-100}` and sets the TV speaker directly, with read-back.
+Values above the TV's reported maximum are rejected, not clamped. Other actions take no value. Returns
 `{"action": "...", "message": "what the TV confirmed"}`. `wake` is a LAN Wake-on-LAN broadcast from the
 server host (needs `mac` in the config) and does not prove the TV woke; read `/api/status`. Answers `409` while a job holds the TV.
 
@@ -220,6 +253,10 @@ server host (needs `mac` in the config) and does not prove the TV woke; read `/a
 curl -s -X POST -H "Authorization: Bearer TOKEN" -H "Content-Type: application/json" \
   -d '{"value": 2}' http://host:8765/api/remote/hdmi
 ```
+
+The Remote page caps its slider and + button at 40 until “Allow volume above 40” is checked.
+That opt-in resets on page load; checking or unchecking it never changes the TV volume.
+The API and CLI retain the full 0–100 range. Volume changes can unmute the TV; the confirmation reports the actual mute state.
 
 ### `GET /api/settings` and `PUT /api/settings/{category}/{key}`
 
@@ -232,6 +269,43 @@ picture mode since the read is refused. Returns `{"message": "..."}`.
 ```sh
 curl -s -X PUT -H "Authorization: Bearer TOKEN" -H "Content-Type: application/json" \
   -d '{"value": "on", "context": {}}' http://host:8765/api/settings/sound/aiSound
+```
+
+### `GET /api/apps/bundled`
+
+Lists the TV apps included with this project. The current entry is the overlay renderer:
+
+```json
+[{"id":"dev.webosfoundry.overlay","title":"Overglass Overlay","description":"Displays Overglass overlay cards on the TV.","version":"1.0.1","installed":true,"available":true}]
+```
+
+`installed` comes from the TV's installation status. `available` means this server can supply
+the bundled package: project source on the PC, or the private staged IPK on the on-TV server.
+Missing package files do not turn an existing installation into "not installed".
+
+### `POST /api/apps/bundled/{id}`
+
+Accepts no body or `{}`. Only `dev.webosfoundry.overlay` is accepted; URL, path, query, and
+other installation options are rejected. This is separate from the third-party IPK installer.
+The TV installer must complete and installation readback must succeed before the response is:
+
+```json
+{"id":"dev.webosfoundry.overlay","installed":true,"message":"Overlay renderer installed"}
+```
+
+Existing authentication and guest restrictions apply. Unknown IDs return `404`, invalid options
+return `400`, and a TV reserved by processing or another change returns `409`. Unavailable source
+or staged packages return `503`; installer/readback failures are errors, not successful installs.
+The dispatcher holds the processing lock before writing the temporary IPK.
+
+`wof install --tv-server` stages the renderer package outside the public web directory. Once
+staged, the on-TV endpoint works without a PC. Re-run that command from an updated checkout to
+refresh its package.
+
+```sh
+curl --fail -H "Authorization: Bearer $TOKEN" http://host:8765/api/apps/bundled
+curl --fail -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{}' http://host:8765/api/apps/bundled/dev.webosfoundry.overlay
 ```
 
 ### Processing jobs
@@ -299,19 +373,23 @@ curl -s -X POST -H "Authorization: Bearer TOKEN" -H "Content-Type: application/j
 
 ### Webhooks
 
-A private capability URL that runs one saved scene, with no sign-in. Trust model and token details:
-[ARCHITECTURE.md](../ARCHITECTURE.md) (search `## Webhook quick triggers`).
+A capability targets one saved scene or design. Management uses admin authentication; the capability
+URL itself is sufficient to invoke its target. Keep it private and delete it to revoke access.
 
-* `GET /api/webhooks` (needs the normal bearer token) -> `{"webhooks": {token: {"scene", "label"}}}`.
-* `POST /api/webhooks` body `{"scene", "label"?}` -> `{"token", "url": "/webhook/<token>", "message": ...}`.
+* `GET /api/webhooks` returns saved scene/design targets and labels.
+* `POST /api/webhooks` accepts `{"scene":name,"label"?}` or `{"design":name,"label"?}`.
 * `DELETE /api/webhooks/{token}` revokes it.
-* `GET /webhook/{token}` -- **no bearer token, ever; the token is the credential** -- runs the scene,
-  `{"message": "Webhook fired: N step(s) run"}`; `404` unknown token or a since-deleted scene.
+* `GET /webhook/{token}` describes the target and never executes it.
+* `POST /webhook/{token}` executes. For a design, optional `{"values":{"score":"2 : 1"}}` fills
+  existing `{{score}}` display placeholders or declared scalar binding targets.
+
+Migration: replace GET triggers with POST. Unknown values or structural/URL changes are rejected.
 
 ```sh
 curl -s -X POST -H "Authorization: Bearer TOKEN" -H "Content-Type: application/json" \
-  -d '{"scene": "movie-night", "label": "Movie night"}' http://host:8765/api/webhooks
-curl -s http://host:8765/webhook/TOKEN   # no Authorization header
+  -d '{"design":"match-day","label":"Score"}' http://host:8765/api/webhooks
+curl -s -X POST -H "Content-Type: application/json" \
+  -d '{"values":{"score":"2 : 1"}}' http://host:8765/webhook/TOKEN
 ```
 
 ## Maintaining this page

@@ -1,4 +1,4 @@
-# webOS Foundry — architecture contract
+# Overglass — architecture contract
 
 This file is the frozen interface every module, script and integration builds against. It exists
 so the CLI, the HTTP server, the TV-side scripts and the Home Assistant integration can be built
@@ -7,7 +7,7 @@ updating every caller listed under "Consumers".
 
 Prerequisite: the TV is already rooted (Homebrew Channel / webosbrew, e.g. via the separate
 `slopbro` exploit or any other rooting method) and reachable over SSH as `root` with some existing
-key or password. webOS Foundry never roots a TV and never asks for the LG account.
+key or password. Overglass never roots a TV and never asks for the LG account.
 
 ## 1. Repository layout
 
@@ -102,7 +102,7 @@ is written once by `wof pair` (§6).
 | --- | --- | --- |
 | `status` | `status` | `sh .../status.sh` |
 | `details` | `details` | `node .../details.js` |
-| `remote` | `remote (wake\|power_off\|home\|back\|up\|down\|left\|right\|ok\|mute\|unmute\|volume_up\|volume_down)` or `remote hdmi [1-4]` | `node .../remote.js <action> [value]` |
+| `remote` | `remote (wake\|power_off\|home\|back\|up\|down\|left\|right\|ok\|mute\|unmute\|volume_up\|volume_down)`, `remote hdmi [1-4]`, or `remote volume (100\|[1-9]?[0-9])` | `node .../remote.js <action> [value]` |
 | `settings-list` | `settings-list` | `node .../settings.js list` |
 | `settings-set` | `settings-set [A-Za-z][A-Za-z0-9_]* [A-Za-z][A-Za-z0-9_]* [A-Za-z0-9+/]{1,4000}={0,2}` (category, key, base64 of `{value, context}`) | `node .../settings.js set <category> <key> <b64>` |
 | `notify-toast` | `notify-toast [A-Za-z0-9+/]{1,400}={0,2}` | `node .../notify.js toast <b64>` |
@@ -172,9 +172,9 @@ server-side (`notify._compile_card`, the only place that knows both shapes — t
 but trees), unchanged for every existing caller (web UI's basic card form, the Home Assistant
 `overlay_show` service, `wof overlay`).
 
-**Node** is `{"type": one of the 18 below, ...type fields, "children"?: [node, ...]}`. Depth ≤ 5,
-total nodes ≤ 80 **across every region of one card**, serialised JSON ≤ 49152 bytes raw (dispatch.sh's
-stdin upload allows 65536, a more generous hard ceiling behind this pre-flight check). `tone` is one of
+**Node** is `{"type": one of the 22 below, ...type fields, "children"?: [node, ...]}`. Depth ≤ 5,
+total nodes ≤ 80 **across every region and timeline frame**, serialised JSON ≤ 49152 bytes raw
+(dispatch.sh's stdin upload allows 65536, a separate transport ceiling). `tone` is one of
 `info|success|warning|alert|accent`; `accent` is the theme's accent colour, so a widget follows the
 theme instead of a fixed semantic colour. `icon` is one of 16 built-in 24px stroke glyphs: `ball bolt
 chart trophy pulse layers clock pin sun card swap target info bell star flag` (path data lives in
@@ -200,6 +200,33 @@ chart trophy pulse layers clock pin sun card swap target info bell star flag` (p
 | `stat` | `label` ≤40, `left` ≤16, `right` ≤16, `fraction` 0-1, `tone`? | one two-sided comparison row: label, left value, bar filled to `fraction` from the left, right value |
 | `status` | `label` ≤40, `state` online\|offline\|degraded\|unknown, `detail`? ≤24 | a source row: label, coloured dot + state, right-aligned detail (a latency, a time) |
 | `meta` | `items` 1-4 of `{label ≤24, value ≤40, icon?}` | small-label-over-value cells separated by rules (venue, matchday, conditions) |
+| `grid` | `columns` 1–3, `gap`? 0–48, `children` 1–20 | CSS grid with equally sized columns |
+| `ticker` | `text` ≤1000, `speed`? 10–200 pixels/second, `tone`? | continuously scrolling headline, paused for reduced motion |
+| `qr` | `text` ≤1000 characters and ≤2953 UTF-8 bytes, `size`? s\|m\|l | genuine QR symbol with quiet zone, generated locally by the vendored MIT QR encoder |
+| `svg` | `source` ≤8192, `size`? s\|m\|l | restricted single-line ASCII SVG geometry: no script, events, external references, styles, entities or embedded HTML |
+
+**Motion and placement.** Single cards and individual regions accept `animation: {enter?, exit?,
+duration_ms?}` (`none|fade|slide|wipe`, 0–2000 ms) and `offset: {x?, y?}` (−1920..1920 / −1080..1080
+pixels). Offsets move floating cards; edge bars/panels remain docked. Repeated sends reconcile existing
+DOM nodes: changed values patch in place, type changes replace only the affected subtree, removed
+optional fields clear, and unchanged clocks/tickers, focus, entrance motion and expiry survive.
+
+**Timelines.** `{"timeline": [{"seconds": 1..300, "card": <single or regions card>}, ...]}` plays
+1–4 cards sequentially in one app lifetime. Nested timelines are refused. Widget/byte limits cover the
+entire sequence, not each frame separately. Omit outer `seconds` or set it to zero to play the complete
+finite sequence; a positive outer `seconds` is an overall deadline. Manual replacement or hide cancels
+pending frames.
+
+**Behavior.** `behavior: {on_foreground?: keep|hide|shrink, ambient_dim?: boolean}` opts into server
+monitoring of real foreground app/input changes and ambient lux. No TV picture settings are changed.
+Runtime presentation updates (`action:"runtime"` with `dim`, `compact`, `hidden`) are separate from
+card sends and never restart timelines. The server verifies the overlay is still running before an
+update, so a dismissed card is not resurrected.
+
+**Fonts.** Inter, Roboto Condensed and JetBrains Mono WOFF2 files are bundled locally for both renderer
+and preview, with OFL licenses and source/hash manifests. Recursive IPK packaging includes these and
+the vendored QR encoder; no font or script is downloaded at display time.
+
 
 **Three independent validators**, defence in depth exactly like every other verb: `notify.py`
 (`check_overlay_request`/`_check_node`, before the server ever contacts the TV), `notify.js` (`tree()`/
@@ -307,7 +334,7 @@ integration's `api.py` (same bearer-token calls).
 ## 6. Pairing flow (what `wof pair` actually does)
 
 1. User runs `wof pair --host 192.168.1.50 --root-key ~/.ssh/tv_root_key` (the key they already have
-   from rooting; webOS Foundry never generates or needs this long-term).
+   from rooting; Overglass never generates or needs this long-term).
 2. A one-off `SSHTransport`-like object connects with that key, pins the host key into a fresh
    `known_hosts` file inside the config dir (`StrictHostKeyChecking=accept-new` **only for this one
    bootstrap connection**, never again).
@@ -642,14 +669,12 @@ catalog both pick it up.
 
 ## Saved designs
 
-A design is one validated overlay card — theme, layout (a `root` or `regions`), widgets, `seconds` — under
-a name, so a card a user built once in the web UI's card studio can be shown again from the UI, the
-CLI, a scene or Home Assistant. `webos_foundry/designs.py` stores `{name: card}` in
-`config_dir()/designs.json` (atomic tempfile + `os.replace`, an `RLock` around read-modify-write, the
-same pattern as every other store). `check_design` is exactly `notify.check_overlay_request` minus
-`{"hide": true}`; the stored form is the validated/normalised card, so showing it later re-validates a
-known-good body. Names follow scene rules (1-60 characters, no leading/trailing space); route path
-parameters are URL-decoded by `server.resolve`, so a name with a space is stored as typed.
+A design is a validated overlay card (single tree, regions or timeline), optional scalar bindings,
+theme and display settings under a name. `designs.py` stores `{name: card}` privately in
+`designs.json`. Runtime/state/hide commands cannot be saved as designs. `check_design` validates the
+card with `notify.check_overlay_request` and the separate binding-target allowlist. Showing a design
+resolves its current data sources and validates the resulting card before transport.
+Names contain 1–60 characters without leading/trailing space; route parameters are URL-decoded.
 
 | Route | Behaviour |
 | --- | --- |
@@ -670,31 +695,108 @@ CLI: `wof design list [--json]`, `wof design set <name> FILE.json` (`-` for stdi
 
 ## Webhook quick triggers
 
-The Python server exposes revocable capability URLs for saved scenes. `webos_foundry/webhooks.py` stores
-`{token: {"scene": name, "label": text}}` in `config_dir()/webhooks.json`, using a private mode-0600
-temporary file followed by `os.replace`. Tokens are generated by `secrets.token_urlsafe(24)`; callers cannot
-choose them. Scene names are 1–60 characters without leading/trailing spaces; optional display labels are
-at most 60 characters and default to an empty string. A scene need not exist when a webhook is created:
-the current saved scene is resolved when the URL is triggered.
+`webhooks.py` stores capability URLs targeting either a saved scene or a saved design in private
+`webhooks.json`. Names resolve when the URL is fired. Generated tokens cannot start with a dash, so
+they can be passed back to CLI commands without becoming options.
 
 | Route | Authentication | Result |
-|---|---|---|
-| `GET /api/webhooks` | Normal API bearer-token policy | `{"webhooks": {token: {"scene", "label"}}}` including full tokens for copying |
-| `POST /api/webhooks` | Normal API bearer-token policy | Body `{"scene", "label"?}`; returns `{"token", "url": "/webhook/<token>", "message": "Webhook created"}` |
-| `DELETE /api/webhooks/{token}` | Normal API bearer-token policy | Revokes the URL; unknown tokens return 400 |
-| `GET /webhook/{token}` | No bearer token; the URL token is the credential | `{"message": "Webhook fired: N step(s) run"}` |
+| --- | --- | --- |
+| `GET /api/webhooks` | Admin | Saved targets and full capability tokens for copying |
+| `POST /api/webhooks` | Admin | `{"scene": name, "label"?}` or `{"design": name, "label"?}`; returns token and URL |
+| `DELETE /api/webhooks/{token}` | Admin | Revokes the capability |
+| `GET /webhook/{token}` | Capability URL | Describes the target; never executes it |
+| `POST /webhook/{token}` | Capability URL | Runs the scene, or resolves/shows the design with optional `{"values": {...}}` |
 
-The public trigger is a dynamic route, not a static file. Unknown tokens return 404. If its scene has since
-been deleted (or not yet created), it returns 404 with a scene-specific message. Successful triggers run
-the saved steps in order under the same TV reservation check and lock as direct scene runs, stopping at the
-first failure; busy-TV errors remain 409 and TV failures remain 502. Management routes need no paired TV.
+Design payloads can set only declared binding targets or existing `{{variable}}` placeholders in
+display fields. Values must be finite scalars; they cannot alter widget types, layout, URLs, SVG or
+authentication. The final card is validated again. Unknown values fail rather than being discarded.
+Showing the card does not modify the saved design.
 
-**Trust model:** anyone with the URL can fire that one scene, with no scope beyond that scene: it cannot
-list webhooks, edit scenes, or perform arbitrary API actions. Editing the named scene changes what its URL
-runs. Keep the URL private, including browser history and any intermediary access logs; **revoke it by
-deleting the webhook**. A trigger needs no `Authorization` header even when `auth_mode` is `"token"`:
-`curl -X GET http://host:8765/webhook/<token>`. Server Host/Origin checks still apply.
+Triggers hold the same TV lock and reservation check as direct scene/design calls. Unknown targets
+fail explicitly; processing conflicts return 409. Anyone holding a capability can invoke that target,
+but cannot manage designs, users or other capabilities. Revoke leaked URLs by deleting the webhook.
+Host/Origin checks still apply.
 
-CLI: `wof webhook list` prints token/scene/label (`--json` prints the raw stored map);
-`wof webhook create movie-night --label "Movie night"` prints the token and full relative URL;
-`wof webhook delete <token>` revokes it. All three honor `--config-dir`.
+Migration: callers that fired URLs with GET must use POST. For example,
+`curl -X POST http://host:8765/webhook/TOKEN`. For values, add JSON content type and
+`-d '{"values":{"score":"2 : 1"}}'` to a design containing `{{score}}`.
+CLI: `wof webhook create movie-night`, `wof webhook create --design match-day`, `wof webhook list`,
+`wof webhook delete TOKEN`.
+
+## Design data, revisions and sharing
+
+Designs accept an optional `bindings` list (at most 20), which is removed before transport:
+
+```json
+{
+  "root": {"type": "text", "text": "Temperature"},
+  "bindings": [{
+    "target": "/root/text",
+    "source": {
+      "kind": "json",
+      "url": "https://example.com/current.json",
+      "path": "/temperature",
+      "allow_private": false
+    }
+  }]
+}
+```
+
+`bindings.py` restricts targets to existing display scalars. Source paths use dot notation or RFC6901
+JSON pointers. Home Assistant sources accept a bearer token and explicit private-network opt-in.
+Only known numeric targets convert strict finite numeric strings; status states must already match
+the documented enum. An unavailable source fails unless the user supplied a validated fallback.
+`designs.show` resolves data each time; `/api/designs/resolve` resolves without displaying.
+
+`design-history.json` retains up to 100 previous revisions per design. Restore records the current
+revision first; rename moves its history. Replacements stage private files and roll back ordinary
+write failures. This is not a crash-consistent filesystem transaction.
+
+`themes.json` holds named validated theme objects. Sharing exports a version-1
+`webos-foundry-design` bundle containing name, card and optional sanitized SVG/PNG thumbnail. Tokens,
+credential-like query parameters and URL userinfo are removed; missing binding secrets are marked
+and must be supplied before resolution. Import validates the bundle and refuses name collisions
+unless overwrite is explicit. Review URLs/text before publishing; arbitrary sensitive prose cannot
+be detected automatically.
+
+`rotations.json` holds design names, interval (15–86400 seconds) and enabled state. One rotation or
+one addon may own automatic display; conflicting enables fail with a visible error. Manual sends
+or hides pause automatic display. Explicitly enabling an addon/rotation resumes it. Scheduled scenes
+take display priority; no catch-up bursts are played after a busy period.
+
+## External data sources
+
+The connector catalog includes JSON scalar, Home Assistant, Open-Meteo weather, iCalendar, RSS/Atom
+and football. Parameter metadata drives string/select/number/boolean/secret UI controls. Each poll
+returns a validated card without needing a TV.
+
+| Connector | Actual source and limits |
+| --- | --- |
+| JSON | HTTP(S) JSON plus a scalar path; optional bearer token and private-network opt-in |
+| Home Assistant | `/api/states/{entity_id}`; text, explicitly mapped status, or numeric stat with configured scale |
+| Weather | Open-Meteo current temperature, humidity and wind; configured latitude/longitude; metric values, UTC |
+| Calendar | Bounded HTTP(S) iCalendar; UTC, IANA TZID, floating and all-day starts; recurring series are identified rather than expanded |
+| RSS | Bounded RSS2/RDF/Atom titles; XML entities/DTDs refused, no linked content fetched |
+| Football | OpenLigaDB matches or `/getbltable/{league}/{season}` tables; lineups require a configured genuine JSON provider because OpenLigaDB has no lineup endpoint |
+
+`datafetch.py` accepts only HTTP(S), caps responses at 1 MiB and total requests at eight seconds.
+DNS answers are checked and the connection is pinned to the checked address; HTTPS verifies the
+original hostname. Redirect destinations are revalidated and caller headers are dropped cross-origin.
+Private, reserved and transition addresses require explicit private-network permission. Environment
+proxy settings are ignored. Feed XML and SVG have separate restrictive grammars.
+
+## Accounts and pushed state
+
+Existing owner bearer access remains. `access.py` adds admin/guest PIN accounts (6–12 digits), salted
+scrypt hashes, five login attempts per address/account per five minutes, and bounded eight-hour
+sessions. Account edits/deletion revoke existing credentials. Guests can read TV status, use their
+explicit remote action list and revoke their own session; designs, captures, settings, account
+management and the event feed remain forbidden. Default guest actions exclude wake/power-off.
+A supplied invalid or revoked credential never upgrades to loopback or login-disabled owner access.
+
+`GET /api/events` is an authenticated fetch SSE stream. One lazy bounded producer serves all viewers,
+polls status every three seconds, deduplicates snapshots, emits 15-second heartbeats and closes on
+shutdown/revocation. Frames include status, safe job summaries and display ownership; never account
+credentials or recovery paths. The client aborts hidden-page streams and reconnects with backoff.
+PINs and bearer tokens require HTTPS on untrusted networks.
+

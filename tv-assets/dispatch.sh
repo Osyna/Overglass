@@ -1,5 +1,5 @@
 #!/bin/sh
-# webOS Foundry forced-command dispatcher (POSIX sh, never eval). sshd runs it for the dedicated key:
+# Overglass forced-command dispatcher (POSIX sh, never eval). sshd runs it for the dedicated key:
 #   command="sh /var/lib/webosbrew/webos-foundry/dispatch.sh",restrict ssh-ed25519 ...
 # The client's request arrives in $SSH_ORIGINAL_COMMAND; it is matched verb by verb against the grammar in
 # ARCHITECTURE.md section 3 and every argument is validated again here. Anything else exits 64.
@@ -26,7 +26,7 @@ TREE_CHUNK_MAX=4194304  # raw bytes, one install-tree chunk
 CARD_MAX=65536  # raw bytes, one notify-overlay widget-tree JSON upload
 
 deny() {
-  echo "webos-foundry: $1" >&2
+  echo "Overglass: $1" >&2
   exit 64
 }
 
@@ -245,7 +245,12 @@ installer() { # install|remove json
   timeout 85 luna-send -w 84000 -i "$INSTALLER$1" "$2" </dev/null || true
 }
 
-do_install_overlay() { # payload is this request's stdin
+do_install_overlay() ( # Keep stdin intact: locked() redirects it to /dev/null.
+  exec 9>"$LOCK"
+  flock -w 5 -E 75 9
+  rc=$?
+  [ "$rc" -eq 75 ] && echo "$BUSY" >&2
+  [ "$rc" -eq 0 ] || exit "$rc"
   ipk=$TMP/$OVERLAY_ID.ipk
   trap 'rm -f "$ipk"' EXIT
   (umask 077 && head -c $((FILE_MAX + 1)) >"$ipk")
@@ -258,7 +263,7 @@ do_install_overlay() { # payload is this request's stdin
     echo "Overlay install did not complete: $out" >&2
     exit 1
   fi
-}
+)
 
 remove_overlay() {
   out=$(installer remove '{"id":"'"$OVERLAY_ID"'","subscribe":true}')
@@ -297,7 +302,7 @@ do_uninstall_all() {
   done
   set -f
   rm -rf "$D"
-  echo "webOS Foundry removed from the TV (scripts, overlay app, vtcap role, boot hooks)."
+  echo "Overglass removed from the TV (scripts, overlay app, vtcap role, boot hooks)."
   echo "Delete the line containing webos-foundry/dispatch.sh from /home/root/.ssh/authorized_keys by hand."
   exit 0
 }
@@ -335,7 +340,11 @@ case $verb in
         case $3 in [1-4]) ;; *) deny "HDMI input must be 1-4" ;; esac
         locked 5 node "$D/remote.js" hdmi "$3"
         ;;
-      *) deny "usage: remote <action> | remote hdmi <1-4>" ;;
+      '3 volume')
+        case $3 in [0-9] | [1-9][0-9] | 100) ;; *) deny "Volume must be the integer 0-100" ;; esac
+        locked 5 node "$D/remote.js" volume "$3"
+        ;;
+      *) deny "usage: remote <action> | remote hdmi <1-4> | remote volume <0-100>" ;;
     esac
     ;;
   settings-list)

@@ -1,10 +1,12 @@
 """Data sources that produce overlay cards without needing a TV connection."""
-from . import football
+from . import calendar, football, homeassistant, json_api, rss, weather
 from .. import notify
 from ..errors import ValidationError
 
-CONNECTORS = {"football": football.poll}
-META = {"football": football.META}
+_MODULES = {"football": football, "json": json_api, "homeassistant": homeassistant,
+            "weather": weather, "calendar": calendar, "rss": rss}
+CONNECTORS = {name: module.poll for name, module in _MODULES.items()}
+META = {name: module.META for name, module in _MODULES.items()}
 
 
 def run(name, params, transport) -> str:

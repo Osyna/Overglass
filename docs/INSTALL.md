@@ -1,13 +1,13 @@
 # Installation
 
-webOS Foundry controls an LG webOS TV that is **already rooted**. It does not root the TV, does
+Overglass controls an LG webOS TV that is **already rooted**. It does not root the TV, does
 not need an LG account and never asks for one.
 
 ## Prerequisites
 
 | Requirement | Why |
 | --- | --- |
-| A rooted webOS TV with the Homebrew Channel / webosbrew installed and SSH enabled as `root` | See <https://www.webosbrew.org/>. Rooting is out of scope here; tools such as slopbro or dejavuln-autoroot are examples of what people use, but webOS Foundry neither bundles nor depends on any of them. |
+| A rooted webOS TV with the Homebrew Channel / webosbrew installed and SSH enabled as `root` | See <https://www.webosbrew.org/>. Rooting is out of scope here; tools such as slopbro or dejavuln-autoroot are examples of what people use, but Overglass neither bundles nor depends on any of them. |
 | The key (or password-less access) you already use to SSH in as `root` | Used **once**, by `wof pair`. It is never stored. |
 | `ssh` and `ssh-keygen` on the machine running `wof` | `wof` shells out to the system `ssh`; the stdlib cannot generate SSH keys, so `ssh-keygen` is required by `wof pair` (checked by `wof doctor`). |
 | Python 3.9 or newer | The package has no required Python dependencies. |
@@ -21,18 +21,16 @@ The TV must be on the same network as the machine running `wof`, and must keep S
 normal standby if you want `wof status` to work while it is off. `wof remote wake` sends a
 Wake-on-LAN packet and needs the TV's MAC address (`wof config set mac AA:BB:CC:DD:EE:FF`).
 
-## Install the package
+## Install from source
+
+Use a checkout or extracted copy of this repository. The CLI and web server read
+`web/` and `tv-assets/` from it, so keep the checkout available. From its root:
 
 ```sh
-pip install webos-foundry
-```
-
-For development:
-
-```sh
-git clone https://github.com/webos-foundry/webos-foundry
-cd webos-foundry
-pip install -e .
+python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install -e .
+wof --help
 ```
 
 This provides the `wof` command. Configuration lives in `~/.config/webos-foundry/config.json`
@@ -79,6 +77,18 @@ wof update               # re-push the TV-side scripts only
 To enable `wof stream`, build the native client first (it cross-compiles against the TV's own
 `libc`; see `tv-assets/vtcap/build.sh` for the inputs it needs), then `wof install --vtcap yes`.
 
+#### One-click installation of the included TV app
+
+With the web UI running and the TV connected, open **Apps → Included with Overglass**.
+The overlay renderer (`dev.webosfoundry.overlay`) has an **Install on TV** button when missing
+and a **Repair** button when installed. No external package URL or manual IPK build is needed.
+The installer waits for the TV's installed state and checks installation status before reporting success.
+
+The PC-hosted server builds the IPK from this checkout. `wof install --tv-server` also stages
+a private copy for the on-TV server, so that server can install or repair the renderer without a PC.
+If its package is unavailable, update the on-TV installation from a checkout with that command.
+Other apps still use the existing file/link installer and uninstall confirmation.
+
 ### 3. Doctor
 
 ```sh
@@ -113,8 +123,8 @@ entrypoint is `wof`, its default command is `serve --host 0.0.0.0`, and it runs 
 `WEBOS_FOUNDRY_HOME=/config`. `docker-compose.yml` publishes port `8765` and keeps `/config` in a named
 volume so pairing survives restarts.
 
-Pair **before** starting the service (the server cannot start unpaired), mounting your root key
-read-only for that one command only:
+Pair with the CLI before starting the LAN-facing container server; browser pairing requires
+a loopback-bound server. Mount the root key read-only for that one command only:
 
 ```sh
 docker compose build

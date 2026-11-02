@@ -29,13 +29,15 @@ TV_SERVER_DIR = "tv-server"  # under REMOTE_DIR on the TV
 TV_SERVER_HOOK_SOURCE = "init.d-hook.sh"
 TV_SERVER_HOOK = "webos-foundry-tv-server"
 TV_SERVER_KEEP_REMOTE = ("config.json",)  # TV-owned state: never pushed
+BUNDLED_OVERLAY_ID = "dev.webosfoundry.overlay"
+BUNDLED_OVERLAY_PATH = "bundled/" + BUNDLED_OVERLAY_ID + ".ipk"
 VTCAP_MODES = ("auto", "yes", "no")
 # Payload is the SSH command's stdin, not a command argument; dispatch.sh enforces the same caps server-side.
 FILE_MAX = 2_097_152  # raw bytes, one whole-file install/overlay/vtcap/hook upload
 CHUNK = 4_194_304  # raw bytes per install-tree chunk
 AUTHORIZED_KEYS_HINT = ("The restricted key line in /home/root/.ssh/authorized_keys (the one starting with "
                         "command=\"sh /var/lib/webosbrew/webos-foundry/dispatch.sh\") is left in place; "
-                        "delete it by hand to finish removing webOS Foundry.")
+                        "delete it by hand to finish removing Overglass.")
 
 
 def _repo_dir(name, env, label):
@@ -93,15 +95,16 @@ def package_overlay(app_dir=None) -> bytes:
     app_dir = Path(app_dir) if app_dir else assets_dir() / "overlay"
     info = json.loads((app_dir / "appinfo.json").read_text())
     app, version = info["id"], info["version"]
-    files = sorted(p for p in app_dir.iterdir() if p.is_file())
+    contents = sorted(app_dir.rglob("*"))
     root = "./usr/palm/applications/" + app + "/"
     package_info = json.dumps({"app": app, "id": app, "loc_name": info["title"], "package_format_version": 2,
                                "vendor": info["vendor"], "version": version}, indent=2).encode()
     data = _tar_gz([("./usr", None), ("./usr/palm", None), ("./usr/palm/applications", None), (root, None)]
-                   + [(root + p.name, p.read_bytes()) for p in files]
+                   + [(root + p.relative_to(app_dir).as_posix(), None if p.is_dir() else p.read_bytes())
+                      for p in contents]
                    + [("./usr/palm/packages", None), ("./usr/palm/packages/" + app, None),
                       ("./usr/palm/packages/" + app + "/packageinfo.json", package_info)])
-    size = sum(p.stat().st_size for p in files) + len(package_info)
+    size = sum(p.stat().st_size for p in contents if p.is_file()) + len(package_info)
     control = ("Package: %s\nVersion: %s\nSection: misc\nPriority: optional\nArchitecture: all\n"
                "Installed-Size: %d\nMaintainer: %s\nDescription: %s\nwebOS-Package-Format-Version: 2\n"
                "webOS-Packager-Version: 1.0.0\n" % (app, version, size, info["vendor"], info["title"])).encode()
@@ -156,8 +159,13 @@ def _tv_server_sources():
 
 def _install_tv_server(transport):
     source, hook, web = _tv_server_sources()
-    files = push_tree(transport, source, TV_SERVER_DIR, skip=TV_SERVER_KEEP_REMOTE + (TV_SERVER_HOOK_SOURCE,))
+    overlay = _checked(package_overlay())
+    files = push_tree(transport, source, TV_SERVER_DIR,
+                      skip=TV_SERVER_KEEP_REMOTE + (TV_SERVER_HOOK_SOURCE, BUNDLED_OVERLAY_PATH))
     files += push_tree(transport, web, TV_SERVER_DIR + "/web")
+    bundled = TV_SERVER_DIR + "/" + BUNDLED_OVERLAY_PATH
+    transport.run(dispatcher.build_install_tree(bundled, "put"), data=overlay, timeout=60)
+    files.append(bundled)
     transport.run(dispatcher.build_install_hook(TV_SERVER_HOOK), data=_checked(hook.read_bytes()), timeout=60)
     output = transport.run(dispatcher.build_run_hook(TV_SERVER_HOOK, "start"), timeout=60)
     return {"files": files, "hook": TV_SERVER_HOOK, "started": True, "output": output.decode(errors="replace").strip()}

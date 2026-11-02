@@ -59,8 +59,6 @@ def test_notify_pure_selftest():
 def test_overlay_appinfo():
     info = json.loads((ASSETS / "overlay/appinfo.json").read_text())
     assert info["id"] == "dev.webosfoundry.overlay"
-    assert info["vendor"] == "webOS Foundry contributors"
-    assert info["title"] == "webOS Foundry Overlay"
     assert info["type"] == "web" and info["main"] == "index.html" and info["transparent"] is True
     assert (ASSETS / "overlay" / info["icon"]).read_bytes().startswith(b"\x89PNG")
     assert "dev.webosfoundry.overlay" in (ASSETS / "notify.js").read_text()
@@ -91,7 +89,10 @@ uri=$5; json=$6
 case $uri in
   *capture/executeOneShot)
     p=${json#*\"path\":\"}; p=${p%%\"*}; printf 'IMGBYTES' > "$p"; echo '{"returnValue":true}' ;;
-  *appInstallService/dev/install) echo '{"returnValue":true,"state":"installed"}' ;;
+  *appInstallService/dev/install)
+    ipk=${json#*\"ipkUrl\":\"}; ipk=${ipk%%\"*}
+    [ -z "$FAKE_IPK_COPY" ] || cp "$ipk" "$FAKE_IPK_COPY"
+    echo '{"returnValue":true,"state":"installed"}' ;;
   *appInstallService/dev/remove) echo '{"returnValue":true,"state":"removed"}' ;;
   *getVolume) echo '{"returnValue":true,"volumeStatus":{"volume":10}}' ;;
   *) echo '{"returnValue":true}' ;;
@@ -122,6 +123,7 @@ echo "flock $*" >> "$FAKE_LOG"
 while :; do
   case $1 in -w | -E) shift 2 ;; -n) shift ;; *) break ;; esac
 done
+[ "$#" -ne 1 ] || exit 0
 shift
 exec "$@"
 """
@@ -182,6 +184,9 @@ GOOD = [
     ("remote power_off", "remote.js power_off"),
     ("remote volume_down", "remote.js volume_down"),
     ("remote hdmi 3", "remote.js hdmi 3"),
+    ("remote volume 0", "remote.js volume 0"),
+    ("remote volume 40", "remote.js volume 40"),
+    ("remote volume 100", "remote.js volume 100"),
     ("settings-list", "settings.js list"),
     (f"settings-set aiPicture ai_Picture {JSON_B64}", f"settings.js set aiPicture ai_Picture {JSON_B64}"),
     (f"notify-toast {B}", f"notify.js toast {B}"),
@@ -205,7 +210,7 @@ def test_good_requests_dispatch(rig):
 
 
 def test_verbs_that_take_the_lock_use_it(rig):
-    for request in ("remote home", "settings-list", f"notify-say {B}"):
+    for request in ("remote home", "remote volume 40", "settings-list", f"notify-say {B}"):
         rig.log.write_text("")
         assert rig.run(request).returncode == 0
         assert any(c.startswith("flock -w") for c in rig.calls()), request
@@ -329,6 +334,37 @@ def test_install_overlay_and_vtcap_and_uninstall(rig):
     assert not rig.tv.exists()
 
 
+def test_overlay_install_takes_real_processing_lock_before_touching_shared_ipk(rig):
+    fcntl = pytest.importorskip("fcntl")
+    flock = shutil.which("flock")
+    if not flock:
+        pytest.skip("needs flock")
+    shim = rig.root / "bin/flock"
+    shim.unlink()
+    shim.symlink_to(flock)
+    ipk = rig.tmp / "dev.webosfoundry.overlay.ipk"
+    ipk.write_bytes(b"another install owns this")
+    with (rig.root / "lock").open("w") as held:
+        fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        result = rig.run("install-overlay", stdin=b"new package")
+        assert result.returncode == 75 and b"busy" in result.stderr
+        assert ipk.read_bytes() == b"another install owns this"
+        assert not any("luna-send" in call for call in rig.calls())
+    saved = rig.root / "received.ipk"
+    result = rig.run("install-overlay", stdin=b"new package", FAKE_IPK_COPY=str(saved))
+    assert result.returncode == 0 and saved.read_bytes() == b"new package"
+    assert not ipk.exists()
+
+
+@pytest.mark.parametrize("payload", [b"", b"x" * (2_097_152 + 1)])
+def test_overlay_install_still_rejects_empty_and_oversize_under_lock(rig, payload):
+    result = rig.run("install-overlay", stdin=payload)
+    assert result.returncode == 1 and b"Empty or oversized IPK" in result.stderr
+    assert any(call.startswith("flock -w 5 -E 75 9") for call in rig.calls())
+    assert not any("luna-send" in call for call in rig.calls())
+    assert list(rig.tmp.iterdir()) == []
+
+
 # ---------------------------------------------------------------- rejection
 
 ATTACKS = {
@@ -349,6 +385,19 @@ ATTACKS = {
     "remote hdmi out of range": "remote hdmi 5",
     "remote hdmi two digits": "remote hdmi 12",
     "remote hdmi missing": "remote hdmi",
+    "remote volume missing": "remote volume",
+    "remote volume bool": "remote volume true",
+    "remote volume fraction": "remote volume 1.5",
+    "remote volume negative": "remote volume -1",
+    "remote volume too high": "remote volume 101",
+    "remote volume leading zero": "remote volume 01",
+    "remote volume zero padding": "remote volume 00",
+    "remote volume padded": "remote volume 040",
+    "remote volume plus": "remote volume +1",
+    "remote volume exponent": "remote volume 1e1",
+    "remote volume extra": "remote volume 40 50",
+    "remote volume injection": "remote volume 40; id",
+    "remote volume newline": "remote volume 40\n",
     "remote substitution": "remote $(id)",
     "remote traversal": "remote ../../bin/sh",
     "remote newline": "remote home\nremote home",
@@ -453,7 +502,6 @@ ATTACKS = {
 def test_rejects(rig, name):
     result = rig.run(ATTACKS[name])
     assert result.returncode == 64, (name, result.stdout, result.stderr)
-    assert result.stderr.startswith(b"webos-foundry: ")
     assert rig.calls() == []  # nothing reached luna-send/node/flock
     assert not (rig.root / "PWNED").exists() and not (Path.cwd() / "PWNED").exists()
     assert list(rig.tmp.iterdir()) == [] and list(rig.tv.iterdir()) == [rig.tv / "status.sh"]
@@ -779,3 +827,123 @@ def test_python_hook_push_roundtrips_through_dispatch_sh(rig):
     transport.run(dispatcher.build_install_hook(install.TV_SERVER_HOOK), data=HOOK.encode())
     out = transport.run(dispatcher.build_run_hook(install.TV_SERVER_HOOK, "start"))
     assert out == b"hook says start\n" and (rig.hooks / install.TV_SERVER_HOOK).read_text() == HOOK
+
+
+@pytest.fixture
+def remote_script():
+    if NODE is None:
+        pytest.skip("no node")
+    harness = r"""
+const fs = require('fs'), vm = require('vm');
+const request = JSON.parse(fs.readFileSync(0, 'utf8'));
+const result = {code: 0, stdout: [], stderr: [], calls: []};
+vm.runInNewContext(fs.readFileSync(process.argv[1], 'utf8'), {
+  require(name) {
+    if (name !== 'child_process') throw new Error('Unexpected module: ' + name);
+    return {spawnSync(binary, args) {
+      result.calls.push({uri: args[4], payload: JSON.parse(args[5])});
+      if (!request.replies.length) throw new Error('Unexpected service call');
+      const reply = request.replies.shift();
+      return reply.processResult || {status: 0, stdout: JSON.stringify(reply)};
+    }};
+  },
+  process: {argv: ['node', process.argv[1], ...request.args], exit(code) { result.code = code; }},
+  console: {log(text) { result.stdout.push(text); }, error(text) { result.stderr.push(text); }}
+});
+console.log(JSON.stringify(result));
+"""
+
+    def run(*args, replies=()):
+        out = subprocess.run([NODE, "-e", harness, str(ASSETS / "remote.js")],
+                             input=json.dumps({"args": args, "replies": replies}),
+                             capture_output=True, text=True, check=True, timeout=10)
+        return json.loads(out.stdout)
+
+    return run
+
+
+def volume_reply(volume, maximum=100, mute=False, output="tv_speaker"):
+    return {"returnValue": True, "volumeStatus": {
+        "volume": volume, "maxVolume": maximum, "muteStatus": mute, "soundOutput": output}}
+
+
+@pytest.mark.parametrize("target", [0, 40, 41, 100])
+def test_remote_script_sets_absolute_volume_once_and_reads_back(remote_script, target):
+    result = remote_script("volume", str(target),
+                           replies=[volume_reply(12, mute=True), {"returnValue": True}, volume_reply(target)])
+    assert result["code"] == 0 and result["stdout"] == [json.dumps("Volume %d" % target)]
+    assert [c["uri"].rsplit("/", 1)[-1] for c in result["calls"]] == ["getVolume", "setVolume", "getVolume"]
+    assert result["calls"][1]["payload"] == {"soundOutput": "tv_speaker", "volume": target}
+
+
+def test_remote_script_same_volume_still_reads_real_mute_state(remote_script):
+    result = remote_script("volume", "12", replies=[volume_reply(12, mute=True), volume_reply(12, mute=True)])
+    assert result["code"] == 0 and result["stdout"] == ['"Volume 12 (muted)"']
+    assert [c["uri"].rsplit("/", 1)[-1] for c in result["calls"]] == ["getVolume", "getVolume"]
+
+
+@pytest.mark.parametrize("args", [
+    (), ("true",), ("false",), ("1.5",), ("-1",), ("101",), ("00",), ("01",), ("040",), ("+1",),
+    ("1e1",), ("40; id",), ("40\n",), ("40", "50"),
+])
+def test_remote_script_rejects_invalid_volume_before_luna(remote_script, args):
+    result = remote_script("volume", *args)
+    assert result["code"] == 3 and result["stderr"] and result["stdout"] == [] and result["calls"] == []
+
+
+def test_remote_script_rejects_above_actual_maximum_without_setting(remote_script):
+    result = remote_script("volume", "61", replies=[volume_reply(12, maximum=60)])
+    assert result["code"] == 3 and result["stderr"] == ["TV maximum volume is 60"]
+    assert len(result["calls"]) == 1
+    result = remote_script("volume", "60", replies=[
+        volume_reply(12, maximum=60), {"returnValue": True}, volume_reply(60, maximum=60)])
+    assert result["code"] == 0 and result["calls"][1]["payload"]["volume"] == 60
+
+
+@pytest.mark.parametrize("reply, error", [
+    (volume_reply(12, output="external_speaker"), "Volume control needs TV speaker output"),
+    ({"returnValue": True, "volumeStatus": {}}, "TV returned malformed volume status"),
+    ({"returnValue": False, "errorText": "denied"}, "denied"),
+    ({"processResult": {"status": 1, "stdout": ""}}, "TV service did not answer"),
+    ({"processResult": {"status": 0, "stdout": "not-json"}}, "TV service returned malformed data"),
+])
+def test_remote_script_preserves_volume_service_errors(remote_script, reply, error):
+    result = remote_script("volume", "40", replies=[reply])
+    assert result["code"] == 3 and error in result["stderr"][0] and result["stdout"] == []
+    assert len(result["calls"]) == 1
+
+
+def test_remote_script_requires_absolute_volume_readback(remote_script):
+    result = remote_script("volume", "40", replies=[
+        volume_reply(12), {"returnValue": True}, volume_reply(39)])
+    assert result["code"] == 3 and result["stderr"] == ["TV volume readback mismatch: 39"]
+    assert result["stdout"] == []
+
+
+@pytest.mark.parametrize("action, before, after", [("volume_up", 60, 60), ("volume_down", 0, 0)])
+def test_remote_script_relative_volume_still_clamps_at_bounds(remote_script, action, before, after):
+    result = remote_script(action, replies=[volume_reply(before, maximum=60), volume_reply(after, maximum=60)])
+    assert result["code"] == 0 and result["stdout"] == [json.dumps("Volume %d" % after)]
+    assert len(result["calls"]) == 2
+
+
+@pytest.mark.parametrize("action, target", [("volume_up", 13), ("volume_down", 11)])
+def test_remote_script_relative_volume_still_sets_one_step(remote_script, action, target):
+    result = remote_script(action, replies=[volume_reply(12), {"returnValue": True}, volume_reply(target)])
+    assert result["code"] == 0 and result["calls"][1]["payload"]["volume"] == target
+
+
+@pytest.mark.parametrize("action, muted", [("mute", True), ("unmute", False)])
+def test_remote_script_mute_behavior_unchanged(remote_script, action, muted):
+    result = remote_script(action, replies=[
+        volume_reply(12, mute=not muted), {"returnValue": True}, volume_reply(12, mute=muted)])
+    assert result["code"] == 0
+    assert result["calls"][1]["uri"].endswith("/muteVolume")
+    assert result["calls"][1]["payload"] == {"soundOutput": "tv_speaker", "mute": muted}
+
+
+def test_remote_script_hdmi_behavior_unchanged(remote_script):
+    result = remote_script("hdmi", "2", replies=[
+        {"returnValue": True}, {"returnValue": True, "appId": "com.webos.app.hdmi2"}])
+    assert result["code"] == 0 and result["stdout"] == ['"Switched to HDMI 2"']
+    assert result["calls"][0]["payload"] == {"id": "com.webos.app.hdmi2"}

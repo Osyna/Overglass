@@ -9,7 +9,7 @@ from webos_foundry.errors import ValidationError
 
 def test_catalog_lists_every_registered_connector_without_touching_disk(tmp_path):
     entries = addons.catalog()
-    assert entries == [dict(connectors.META["football"], id="football")]
+    assert entries == [dict(meta, id=name) for name, meta in connectors.META.items()]
     assert not list(tmp_path.iterdir())  # catalog never creates config
 
 

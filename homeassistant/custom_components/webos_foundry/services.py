@@ -47,10 +47,10 @@ def _target(hass: HomeAssistant, call: ServiceCall) -> dict:
     entry_id = call.data.get("config_entry_id")
     if entry_id is None:
         if len(entries) != 1:
-            raise ServiceValidationError("More than one webOS Foundry TV is configured: pass config_entry_id")
+            raise ServiceValidationError("More than one Overglass TV is configured: pass config_entry_id")
         return next(iter(entries.values()))
     if entry_id not in entries:
-        raise ServiceValidationError(f"Unknown webOS Foundry config_entry_id {entry_id}")
+        raise ServiceValidationError(f"Unknown Overglass config_entry_id {entry_id}")
     return entries[entry_id]
 
 

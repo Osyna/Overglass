@@ -19,7 +19,8 @@ WEIGHTS = ("normal", "strong")
 COLORS = ("fg", "fg-2") + TONES
 LIST_STYLES = ("bullet", "number", "plain")
 WIDGET_TYPES = ("stack", "row", "text", "image", "badge", "dot", "progress", "countdown", "list", "divider",
-                "compare", "sparkline", "section", "event", "stat", "status", "meta", "clock")
+                "compare", "sparkline", "section", "event", "stat", "status", "meta", "clock",
+                "grid", "ticker", "qr", "svg")
 IMAGE_SHAPES = ("square", "circle")
 IMAGE_SIZES = ("s", "m", "l")
 ICONS = ("ball", "bolt", "chart", "trophy", "pulse", "layers", "clock", "pin", "sun", "card", "swap", "target",
@@ -29,12 +30,35 @@ CLOCK_FORMATS = ("time", "seconds", "date")
 FONTS = ("sans", "condensed", "mono")
 THEME_COLORS = ("accent", "surface", "text", "muted", "line")
 MAX_TREE_DEPTH = 5
-MAX_TREE_NODES = 80  # across every region of one card
+MAX_TREE_NODES = 80  # across every region and timeline frame
 MAX_REGIONS = 4
 SHORTHAND_FIELDS = ("title", "body", "lines", "image", "kind")
 _CONTROL = re.compile("[\x00-\x1f\x7f]")
 _URL = re.compile(r"https?://[^\s\"'<>]+")
 _HEX = re.compile(r"#[0-9a-fA-F]{6}")
+ANIMATIONS = ("none", "fade", "slide", "wipe")
+FOREGROUND = ("keep", "hide", "shrink")
+_SVG_TAG = re.compile(r"<(/?)([A-Za-z][A-Za-z0-9-]*)([^<>]*?)(/?)>")
+_SVG_ATTR = re.compile(r""" +([A-Za-z][A-Za-z0-9-]*) *= *(["'])(.*?)\2""")
+_SVG_TAGS = ("svg", "g", "path", "rect", "circle", "ellipse", "line", "polyline", "polygon")
+_SVG_NUMBER = re.compile(r"-?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:%|px)?")
+_SVG_DECIMAL = re.compile(r"-?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)")
+_SVG_VALUES = {
+    "xmlns": re.compile(r"http://www\.w3\.org/2000/svg"),
+    "fill": re.compile(r"(?:none|currentColor|transparent|black|white|red|green|blue|yellow|gray|grey|#[0-9a-fA-F]{3}(?:[0-9a-fA-F]{3})?)"),
+    "viewBox": re.compile(r"[-+0-9.eE, ]+"),
+    "points": re.compile(r"[-+0-9.eE, ]+"),
+    "d": re.compile(r"[MmZzLlHhVvCcSsQqTtAa0-9eE+., -]+"),
+    "transform": re.compile(r"(?: *(?:matrix|translate|scale|rotate|skewX|skewY)\( *[-+0-9.eE, ]+\) *)+"),
+    "fill-rule": re.compile(r"(?:nonzero|evenodd)"),
+    "stroke-linecap": re.compile(r"(?:butt|round|square)"),
+    "stroke-linejoin": re.compile(r"(?:miter|round|bevel)"),
+}
+_SVG_VALUES["stroke"] = _SVG_VALUES["fill"]
+for _attr in ("width", "height", "stroke-width", "x", "y", "x1", "y1", "x2", "y2", "cx", "cy", "r", "rx", "ry"):
+    _SVG_VALUES[_attr] = _SVG_NUMBER
+for _attr in ("opacity", "fill-opacity", "stroke-opacity"):
+    _SVG_VALUES[_attr] = _SVG_DECIMAL
 
 
 def _b64(text):
@@ -81,6 +105,55 @@ def _check_int(value, lo, hi, what):
     return value
 
 
+def _check_svg(source):
+    """Accept only inert ASCII geometry, with the same lexical grammar as the TV validators."""
+    if not isinstance(source, str) or not 1 <= len(source) <= 8192:
+        raise ValidationError("SVG source must be 1-8192 characters")
+    if re.search(r"[^\x20-\x7e]|[&]|<!|<\?", source):
+        raise ValidationError("SVG must not contain controls, entities or declarations")
+    source = source.strip(" ")
+    stack, rooted, pos = [], False, 0
+    while pos < len(source):
+        if source[pos] == " ":
+            pos += 1
+            continue
+        tag = _SVG_TAG.match(source, pos)
+        if not tag:
+            raise ValidationError("SVG must contain only geometry elements")
+        closing, name, attrs, self_closing = tag.groups()
+        if name not in _SVG_TAGS:
+            raise ValidationError("Unsupported SVG element: " + name)
+        if closing:
+            if self_closing or attrs.strip(" ") or not stack or stack.pop() != name:
+                raise ValidationError("SVG elements must be properly nested")
+        else:
+            if name == "svg":
+                if rooted:
+                    raise ValidationError("SVG needs exactly one root svg element")
+                rooted = True
+            elif not stack:
+                raise ValidationError("SVG needs a root svg element")
+            seen, offset = set(), 0
+            while offset < len(attrs) and attrs[offset:].strip(" "):
+                attr = _SVG_ATTR.match(attrs, offset)
+                if not attr:
+                    raise ValidationError("SVG attributes must be quoted")
+                key, _, value = attr.groups()
+                rule = _SVG_VALUES.get(key)
+                if key in seen or rule is None or not rule.fullmatch(value) or (key == "xmlns" and name != "svg"):
+                    raise ValidationError("Unsupported SVG attribute: " + key)
+                if key in ("opacity", "fill-opacity", "stroke-opacity") and not 0 <= float(value) <= 1:
+                    raise ValidationError("SVG opacity must be 0-1")
+                seen.add(key)
+                offset = attr.end()
+            if not self_closing:
+                stack.append(name)
+        pos = tag.end()
+    if not rooted or stack:
+        raise ValidationError("SVG needs one complete root svg element")
+    return source
+
+
 def _check_node(node, depth, counter) -> dict:
     """Validate and normalise one widget tree node (ARCHITECTURE.md §3a), recursively. counter[0]
     tracks the total node count across the whole call so the cap applies to the tree, not one level."""
@@ -95,16 +168,39 @@ def _check_node(node, depth, counter) -> dict:
     if kind not in WIDGET_TYPES:
         raise ValidationError("Unknown widget type: %r" % (kind,))
     out = {"type": kind}
-    if kind in ("stack", "row"):
+    if kind in ("stack", "row", "grid"):
         children = node.get("children")
-        limit = 20 if kind == "stack" else 10
+        limit = 10 if kind == "row" else 20
         if not isinstance(children, list) or not 1 <= len(children) <= limit:
             raise ValidationError("%s needs 1-%d children" % (kind, limit))
         if "gap" in node:
             out["gap"] = _check_int(node["gap"], 0, 48, "gap")
-        if "align" in node:
+        if kind == "grid":
+            out["columns"] = _check_int(node.get("columns"), 1, 3, "grid columns")
+        elif "align" in node:
             out["align"] = _check_enum(node["align"], ("start", "center", "end"), "align")
         out["children"] = [_check_node(child, depth + 1, counter) for child in children]
+    elif kind in ("ticker", "qr"):
+        out["text"] = _clean(node.get("text"), 1000, kind + " text")
+        if not out["text"]:
+            raise ValidationError(kind + " text must not be empty")
+        if kind == "ticker":
+            if "speed" in node:
+                out["speed"] = _check_int(node["speed"], 10, 200, "ticker speed")
+            _optional_tone(node, out)
+        else:
+            try:
+                length = len(out["text"].encode("utf-8"))
+            except UnicodeEncodeError:
+                raise ValidationError("QR text must be valid Unicode") from None
+            if length > 2953:
+                raise ValidationError("QR text exceeds 2953 UTF-8 bytes")
+            if "size" in node:
+                out["size"] = _check_enum(node["size"], IMAGE_SIZES, "size")
+    elif kind == "svg":
+        out["source"] = _check_svg(node.get("source"))
+        if "size" in node:
+            out["size"] = _check_enum(node["size"], IMAGE_SIZES, "size")
     elif kind == "text":
         out["text"] = _clean(node.get("text"), 400, "text")
         if "size" in node:
@@ -227,6 +323,8 @@ def _check_segment(segment):
            "value": _clean(segment.get("value"), 16, "segment value"),
            "fraction": _check_fraction(segment.get("fraction"), "segment fraction")}
     _optional_tone(segment, out)
+    if set(segment) - set(out):
+        raise ValidationError("Unknown compare segment field")
     return out
 
 
@@ -236,6 +334,8 @@ def _check_meta_item(item):
     out = {"label": _clean(item.get("label"), 24, "meta label"), "value": _clean(item.get("value"), 40, "meta value")}
     if "icon" in item:
         out["icon"] = _check_enum(item["icon"], ICONS, "icon")
+    if set(item) - set(out):
+        raise ValidationError("Unknown meta item field")
     return out
 
 
@@ -310,63 +410,134 @@ def _compile_card(card) -> dict:
     return {"type": "stack", "gap": 12, "children": head + body}
 
 
-def check_overlay_request(body) -> dict:
-    """Validate a POST /api/overlay body. Either {"hide": true} alone, or a card: {"position"?,
-    "size"?, "seconds"?, "theme"?, "root": <widget tree>} for the general case, {"seconds"?, "theme"?,
-    "regions": [{"position", "size"?, "root"}, ...]} for a multi-region layout (a top bar plus a side
-    panel, say -- several cards in the one overlay window, since only one such window can ever be
-    visible), or the shorthand {"title"?, "body"?, "lines"?, "image"?, "kind"?, "position"?, "size"?,
-    "seconds"?} which is compiled into an equivalent tree right here (see _compile_card) -- the
-    dispatcher and the TV only ever see trees."""
+def _check_card_options(body, out, layout=True):
+    if layout and "animation" in body:
+        value = body["animation"]
+        if not isinstance(value, dict) or set(value) - {"enter", "exit", "duration_ms"}:
+            raise ValidationError("animation accepts enter, exit and duration_ms")
+        animation = {}
+        for key in ("enter", "exit"):
+            if key in value:
+                animation[key] = _check_enum(value[key], ANIMATIONS, "animation " + key)
+        if "duration_ms" in value:
+            animation["duration_ms"] = _check_int(value["duration_ms"], 0, 2000, "animation duration_ms")
+        out["animation"] = animation
+    if layout and "offset" in body:
+        value = body["offset"]
+        if not isinstance(value, dict) or set(value) - {"x", "y"}:
+            raise ValidationError("offset accepts x and y")
+        out["offset"] = {key: _check_int(value[key], -limit, limit, "offset " + key)
+                         for key, limit in (("x", 1920), ("y", 1080)) if key in value}
+    if "behavior" in body:
+        value = body["behavior"]
+        if not isinstance(value, dict) or set(value) - {"on_foreground", "ambient_dim"}:
+            raise ValidationError("behavior accepts on_foreground and ambient_dim")
+        behavior = {}
+        if "on_foreground" in value:
+            behavior["on_foreground"] = _check_enum(value["on_foreground"], FOREGROUND, "on_foreground")
+        if "ambient_dim" in value:
+            if type(value["ambient_dim"]) is not bool:
+                raise ValidationError("ambient_dim must be a boolean")
+            behavior["ambient_dim"] = value["ambient_dim"]
+        out["behavior"] = behavior
+    if "dim" in body:
+        value = body["dim"]
+        if type(value) not in (int, float) or not 0.2 <= value <= 1:
+            raise ValidationError("dim must be a number 0.2-1")
+        out["dim"] = float(value)
+    if "compact" in body:
+        if type(body["compact"]) is not bool:
+            raise ValidationError("compact must be a boolean")
+        out["compact"] = body["compact"]
+
+
+def _check_card(body, counter, allow_timeline=True):
     if not isinstance(body, dict):
         raise ValidationError("The card must be a JSON object")
-    if body.get("hide") is True:
-        if len(body) != 1:
-            raise ValidationError('Use {"hide": true} alone to hide the overlay')
-        return {"hide": True}
     out = {}
     if "seconds" in body:
         out["seconds"] = _check_int(body["seconds"], 0, 300, "seconds")
     if "theme" in body:
         out["theme"] = _check_theme(body["theme"])
-    counter = [0]
-    if "regions" in body:
-        unknown = [key for key in body if key not in ("seconds", "theme", "regions")]
-        if unknown:
-            raise ValidationError("Unknown overlay field: " + ", ".join(map(str, unknown)))
+    _check_card_options(body, out, layout="regions" not in body and "timeline" not in body)
+    if "timeline" in body:
+        if not allow_timeline:
+            raise ValidationError("Timeline cards must not contain nested timelines")
+        timeline = body["timeline"]
+        if not isinstance(timeline, list) or not 1 <= len(timeline) <= 4:
+            raise ValidationError("timeline needs 1-4 entries")
+        out["timeline"] = []
+        for frame in timeline:
+            if not isinstance(frame, dict) or set(frame) != {"seconds", "card"}:
+                raise ValidationError("Each timeline entry is {seconds, card}")
+            seconds = _check_int(frame["seconds"], 1, 300, "timeline seconds")
+            out["timeline"].append({"seconds": seconds, "card": _check_card(frame["card"], counter, False)})
+    elif "regions" in body:
         regions = body["regions"]
         if not isinstance(regions, list) or not 1 <= len(regions) <= MAX_REGIONS:
             raise ValidationError("regions needs 1-%d entries" % MAX_REGIONS)
         out["regions"], seen = [], set()
         for region in regions:
-            if not isinstance(region, dict) or set(region) - {"position", "size", "root"} or "root" not in region:
-                raise ValidationError("Each region is {\"position\", \"size\"?, \"root\"}")
+            if not isinstance(region, dict) or "root" not in region:
+                raise ValidationError("Each region needs position and root")
             checked = {"position": _check_enum(region.get("position"), POSITIONS, "region position")}
             if checked["position"] in seen:
                 raise ValidationError("Each region needs a different position")
             seen.add(checked["position"])
             if "size" in region:
                 checked["size"] = _check_enum(region["size"], SIZES, "size")
+            _check_card_options(region, checked)
             checked["root"] = _check_node(region["root"], 0, counter)
+            unknown = set(region) - set(checked)
+            if unknown:
+                raise ValidationError("Unknown region field: " + ", ".join(map(str, unknown)))
             out["regions"].append(checked)
     else:
         if "position" in body:
             out["position"] = _check_enum(body["position"], POSITIONS, "position")
         if "size" in body:
             out["size"] = _check_enum(body["size"], SIZES, "size")
-        extras = ("position", "size", "seconds", "theme")
         if "root" in body:
-            unknown = [key for key in body if key not in extras + ("root",)]
-            if unknown:
-                raise ValidationError("Unknown overlay field: " + ", ".join(map(str, unknown)))
             out["root"] = _check_node(body["root"], 0, counter)
         else:
-            unknown = [key for key in body if key not in extras + SHORTHAND_FIELDS]
-            if unknown:
-                raise ValidationError("Unknown overlay field: " + ", ".join(map(str, unknown)))
-            card = {key: body[key] for key in SHORTHAND_FIELDS if key in body}
-            out["root"] = _check_node(_compile_card(_clean_shorthand(card)), 0, counter)
-    encoded = json.dumps(out, ensure_ascii=False, separators=(",", ":")).encode()
+            shorthand = {key: body[key] for key in SHORTHAND_FIELDS if key in body}
+            out["root"] = _check_node(_compile_card(_clean_shorthand(shorthand)), 0, counter)
+    allowed = set(out)
+    if "root" not in body and "root" in out:
+        allowed.update(SHORTHAND_FIELDS)
+    unknown = set(body) - allowed
+    if unknown:
+        raise ValidationError("Unknown overlay field: " + ", ".join(map(str, unknown)))
+    return out
+
+
+def check_overlay_request(body) -> dict:
+    """Validate and normalise cards, shorthand, timeline or the internal runtime-only envelope."""
+    if not isinstance(body, dict):
+        raise ValidationError("The card must be a JSON object")
+    if body.get("hide") is True:
+        if len(body) != 1:
+            raise ValidationError('Use {"hide": true} alone to hide the overlay')
+        return {"hide": True}
+    if body.get("action") == "state":
+        if set(body) != {"action"}:
+            raise ValidationError("Overlay state query accepts only action")
+        return {"action": "state"}
+    if body.get("action") == "runtime":
+        if set(body) - {"action", "dim", "compact", "hidden"}:
+            raise ValidationError("Runtime updates accept only dim, compact and hidden")
+        out = {"action": "runtime"}
+        _check_card_options(body, out, layout=False)
+        if "hidden" in body:
+            if type(body["hidden"]) is not bool:
+                raise ValidationError("hidden must be a boolean")
+            out["hidden"] = body["hidden"]
+    else:
+        out = _check_card(body, [0])
+    try:
+        encoded = json.dumps(out, ensure_ascii=False, separators=(",", ":")).encode()
+    except UnicodeEncodeError:
+        raise ValidationError("Card text must be valid Unicode") from None
     if len(encoded) > MAX_TREE_BYTES:
         raise ValidationError("Card is too large (at most %d bytes of JSON)" % MAX_TREE_BYTES)
     return out
@@ -377,12 +548,13 @@ def inspect_overlay(body) -> dict:
     card, its widget count and its serialised size -- for the web UI's paste-JSON check and for people
     who had an assistant write the JSON for them."""
     card = check_overlay_request(body)
-    if card.get("hide"):
-        raise ValidationError("Nothing to check in a hide request")
+    if card.get("hide") or card.get("action"):
+        raise ValidationError("Nothing to check in a lifecycle request")
 
     def count(node):
         return 1 + sum(count(child) for child in node.get("children", ()))
-    roots = [region["root"] for region in card["regions"]] if "regions" in card else [card["root"]]
+    frames = [frame["card"] for frame in card["timeline"]] if "timeline" in card else [card]
+    roots = [region["root"] for frame in frames for region in frame.get("regions", [frame])]
     size = len(json.dumps(card, ensure_ascii=False, separators=(",", ":")).encode())
     return {"ok": True, "card": card, "widgets": sum(count(root) for root in roots), "bytes": size}
 
@@ -419,6 +591,22 @@ def overlay_schema() -> dict:
                         "children": {"type": "array", "minItems": 1, "maxItems": 20, "items": node_ref}}, ["children"]),
         "row": widget("row", "Horizontal box of 1-10 widgets", {**container,
                       "children": {"type": "array", "minItems": 1, "maxItems": 10, "items": node_ref}}, ["children"]),
+        "grid": widget("grid", "1-20 widgets in 1-3 equal columns",
+                       {"columns": {"type": "integer", "minimum": 1, "maximum": 3},
+                        "gap": container["gap"],
+                        "children": {"type": "array", "minItems": 1, "maxItems": 20, "items": node_ref}},
+                       ["columns", "children"]),
+        "ticker": widget("ticker", "Continuously scrolling text",
+                         {"text": text(1000), "speed": {"type": "integer", "minimum": 10, "maximum": 200},
+                          "tone": tone}, ["text"]),
+        "qr": widget("qr", "Locally generated QR code",
+                     {"text": text(1000, "At most 2953 UTF-8 bytes (QR version 40-L capacity)"),
+                      "size": enum(IMAGE_SIZES)}, ["text"]),
+        "svg": widget("svg", "Inert inline SVG geometry; source is additionally checked by the server",
+                      {"source": text(8192, "ASCII geometry only: svg/g/path/rect/circle/ellipse/line/polyline/polygon. "
+                                      "Quoted whitelisted numeric/paint attributes only; no text, entities, declarations, "
+                                      "scripts, styles, events, foreignObject, namespaces or external references."),
+                       "size": enum(IMAGE_SIZES)}, ["source"]),
         "text": widget("text", "A line of text", {"text": text(400), "size": enum(TEXT_SIZES), "weight": enum(WEIGHTS),
                        "color": enum(COLORS, "fg = main text, fg-2 = quieter text, or a tone")}, ["text"]),
         "image": widget("image", "Picture or crest fetched by the TV", {"src": url, "shape": enum(IMAGE_SHAPES),
@@ -466,25 +654,44 @@ def overlay_schema() -> dict:
     position = enum(POSITIONS, "corners/center float; top/bottom are full-width bars; left/right full-height panels")
     size = enum(SIZES, "floating card width band, or a left/right panel's width")
     seconds = {"type": "integer", "minimum": 0, "maximum": 300, "description": "0 = stays until hidden (default 8)"}
+    animation = {"type": "object", "additionalProperties": False, "properties": {
+        "enter": enum(ANIMATIONS), "exit": enum(ANIMATIONS),
+        "duration_ms": {"type": "integer", "minimum": 0, "maximum": 2000}}}
+    offset = {"type": "object", "additionalProperties": False, "properties": {
+        "x": {"type": "integer", "minimum": -1920, "maximum": 1920},
+        "y": {"type": "integer", "minimum": -1080, "maximum": 1080}}}
+    behavior = {"type": "object", "additionalProperties": False, "properties": {
+        "on_foreground": enum(FOREGROUND), "ambient_dim": {"type": "boolean"}}}
+    layout = {"position": position, "size": size, "animation": animation, "offset": offset, "behavior": behavior}
+    common = {"seconds": seconds, "theme": theme, "behavior": behavior}
+    normal_cards = [
+        {"type": "object", "additionalProperties": False, "required": ["root"],
+         "properties": {**common, **layout, "root": node_ref}},
+        {"type": "object", "additionalProperties": False, "required": ["regions"],
+         "properties": {**common, "regions": {"type": "array", "minItems": 1, "maxItems": MAX_REGIONS,
+             "description": "distinct positions", "items": {
+                 "type": "object", "additionalProperties": False, "required": ["position", "root"],
+                 "properties": {**layout, "root": node_ref}}}}},
+    ]
+    timeline_card = {"type": "object", "additionalProperties": False, "required": ["timeline"],
+                     "properties": {**common, "timeline": {
+                         "type": "array", "minItems": 1, "maxItems": 4,
+                         "description": "Sequential cards; the 80-widget and JSON byte caps cover all frames together",
+                         "items": {"type": "object", "additionalProperties": False, "required": ["seconds", "card"],
+                                   "properties": {"seconds": {"type": "integer", "minimum": 1, "maximum": 300},
+                                                  "card": {"$ref": "#/$defs/card"}}}}}}
     return {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "$id": "https://webosfoundry.dev/overlay-card.schema.json",
-        "title": "webOS Foundry overlay card",
-        "description": "One card drawn over the TV picture: a single widget tree at a position, or 1-%d regions "
-                       "(a top bar plus a side panel, say) in the one overlay window. Caps: depth %d, %d widgets in "
-                       "total, %d bytes of JSON. Use placeholder words where a value is unknown; never invent data."
+        "title": "Overglass overlay card",
+        "description": "One card drawn over the TV picture: a single widget tree, 1-%d regions, or a timeline of "
+                       "1-4 cards. Caps across every timeline frame: depth %d, %d widgets in total, %d bytes of JSON. "
+                       "Runtime dim/compact/hidden updates are internal, not design fields. "
+                       "Use placeholder words where a value is unknown; never invent data."
                        % (MAX_REGIONS, MAX_TREE_DEPTH, MAX_TREE_NODES, MAX_TREE_BYTES),
-        "oneOf": [
-            {"type": "object", "additionalProperties": False, "required": ["root"],
-             "properties": {"position": position, "size": size, "seconds": seconds, "theme": theme, "root": node_ref}},
-            {"type": "object", "additionalProperties": False, "required": ["regions"],
-             "properties": {"seconds": seconds, "theme": theme,
-                            "regions": {"type": "array", "minItems": 1, "maxItems": MAX_REGIONS,
-                                        "description": "distinct positions", "items": {
-                                            "type": "object", "additionalProperties": False, "required": ["position", "root"],
-                                            "properties": {"position": position, "size": size, "root": node_ref}}}}},
-        ],
-        "$defs": {"node": {"description": "One widget; nesting at most %d deep" % MAX_TREE_DEPTH,
+        "oneOf": normal_cards + [timeline_card],
+        "$defs": {"card": {"oneOf": normal_cards},
+                  "node": {"description": "One widget; nesting at most %d deep" % MAX_TREE_DEPTH,
                            "oneOf": [{"$ref": "#/$defs/" + kind} for kind in widgets]}, **widgets},
     }
 
@@ -522,11 +729,46 @@ def _send_card(transport, card):
     return "Overlay card " + str(reply.get("overlay"))
 
 
+OVERLAY_OBSERVERS = []
+
+
+def _observe_overlay(transport, card):
+    import logging
+    for observer in tuple(OVERLAY_OBSERVERS):
+        try:
+            observer(transport, card)
+        except Exception:
+            logging.getLogger(__name__).exception("Overlay observer failed after TV accepted card")
+
+
 def overlay_show(transport, body) -> str:
     """Show a card on the TV; see check_overlay_request for the accepted shapes. The TV script
     validates the tree again and refuses a TV that is not on."""
-    return _send_card(transport, check_overlay_request(body))
+    card = check_overlay_request(body)
+    result = _send_card(transport, card)
+    if not card.get("action"):
+        _observe_overlay(transport, card)
+    return result
 
 
 def overlay_hide(transport) -> str:
-    return _send_card(transport, {"hide": True})
+    card = {"hide": True}
+    result = _send_card(transport, card)
+    _observe_overlay(transport, card)
+    return result
+
+
+def overlay_runtime(transport, values) -> str:
+    """Apply monitored display state without restarting the active card or timeline."""
+    if not isinstance(values, dict) or any(key not in ("dim", "compact", "hidden") for key in values):
+        raise ValidationError("Runtime state only accepts dim, compact and hidden")
+    return _send_card(transport, check_overlay_request(dict(values, action="runtime")))
+
+
+def overlay_state(transport) -> dict:
+    """Read actual overlay app liveness without launching or foregrounding it."""
+    payload = json.dumps({"action": "state"}).encode()
+    reply = _reply(transport.run(dispatcher.build_notify_overlay(), data=payload, timeout=30))
+    if type(reply.get("running")) is not bool:
+        raise RuntimeError("TV returned malformed overlay liveness")
+    return {"running": reply["running"]}

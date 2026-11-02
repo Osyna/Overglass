@@ -1,5 +1,6 @@
 """`wof`: one subcommand per capability."""
 import argparse
+import getpass
 import json
 import os
 import shutil
@@ -8,7 +9,7 @@ import time
 from dataclasses import asdict, fields
 from pathlib import Path
 
-from . import addons, capture, connectors, designs, dispatcher, install as install_module, notify, pairing, process, scenes, schedule, tv, webhooks
+from . import access, addons, bindings, capture, connectors, designs, dispatcher, install as install_module, notify, pairing, process, rotations, runtime, scenes, schedule, themes, tv, webhooks
 from .config import ENV, Config, config_dir
 from .errors import ConfigError, ValidationError, WebosFoundryError
 from .transport import SSHTransport
@@ -74,7 +75,7 @@ def cmd_update(args):
 
 def cmd_uninstall(args):
     if not args.yes:
-        if input("Remove every webOS Foundry file from the TV? [y/N] ").strip().lower() not in ("y", "yes"):
+        if input("Remove every Overglass file from the TV? [y/N] ").strip().lower() not in ("y", "yes"):
             print("Aborted")
             return 1
     print(install_module.uninstall(_transport(args))["note"])
@@ -127,12 +128,13 @@ def cmd_details(args):
 
 
 def _remote_value(action, value):
-    if value is None or action != "hdmi":
+    if value is None or action not in ("hdmi", "volume"):
         return value
     try:
         return int(value)
     except ValueError:
-        raise ValidationError("HDMI input must be the integer 1-4") from None
+        message = "HDMI input must be the integer 1-4" if action == "hdmi" else "Volume must be an integer from 0 to 100"
+        raise ValidationError(message) from None
 
 
 def cmd_remote(args):
@@ -166,7 +168,8 @@ def _card_file(path):
 
 def cmd_overlay_show(args):
     if args.json:
-        print(notify.overlay_show(_transport(args), _card_file(args.json)))
+        card = _card_file(args.json)
+        print(notify.overlay_show(_transport(args), bindings.resolve(card) if "bindings" in card else card))
         return
     card = {"title": args.title, "body": args.body, "lines": args.line or None, "image": args.image,
             "kind": args.kind, "position": args.position, "size": args.size, "seconds": args.seconds}
@@ -174,7 +177,11 @@ def cmd_overlay_show(args):
 
 
 def cmd_overlay_check(args):
-    verdict = notify.inspect_overlay(_card_file(args.file))
+    card = _card_file(args.file)
+    if "bindings" in card:
+        card = designs.check_design(card)
+        card = {key: value for key, value in card.items() if key != "bindings"}
+    verdict = notify.inspect_overlay(card)
     print("Valid card: %d widgets, %d bytes" % (verdict["widgets"], verdict["bytes"]))
 
 
@@ -235,6 +242,81 @@ def cmd_design_show(args):
     print(designs.show(_transport(args), args.name, args.config_dir))
 
 
+def cmd_design_history(args):
+    print(json.dumps(designs.history(args.name, args.config_dir), indent=2))
+
+
+def cmd_design_restore(args):
+    designs.restore(args.name, args.id, args.config_dir)
+    print("Design revision restored")
+
+
+def cmd_design_rename(args):
+    designs.rename(args.name, args.new_name, args.config_dir)
+    print("Design renamed")
+
+
+def cmd_design_export(args):
+    print(json.dumps(designs.export_bundle(args.name, args.config_dir), indent=2))
+
+
+def cmd_design_import(args):
+    designs.import_bundle(_card_file(args.file), args.config_dir, name=args.name, overwrite=args.overwrite)
+    print("Design imported")
+
+
+def cmd_design_resolve(args):
+    print(json.dumps(bindings.resolve(_card_file(args.file)), indent=2))
+
+
+def cmd_theme_list(args):
+    print(json.dumps(themes.load(args.config_dir), indent=2))
+
+
+def cmd_theme_set(args):
+    themes.save(args.name, _card_file(args.file), args.config_dir)
+    print("Theme saved")
+
+
+def cmd_theme_delete(args):
+    themes.delete(args.name, args.config_dir)
+    print("Theme deleted")
+
+
+def cmd_rotation_list(args):
+    print(json.dumps(rotations.load(args.config_dir), indent=2))
+
+
+def cmd_rotation_set(args):
+    entry_id = rotations.save(args.id, {"designs": args.designs, "interval_seconds": args.interval,
+                                        "enabled": not args.disabled}, args.config_dir)
+    if not args.disabled:
+        runtime.request_resume(args.config_dir)
+    print("Rotation %s saved" % entry_id)
+
+
+def cmd_rotation_delete(args):
+    rotations.delete(args.id, args.config_dir)
+    print("Rotation deleted")
+
+
+def cmd_access_list(args):
+    print(json.dumps(access.public_users(args.config_dir), indent=2))
+
+
+def cmd_access_set(args):
+    body = {"role": args.role, "pin": getpass.getpass("New PIN (6-12 digits): ")}
+    if args.action is not None:
+        body["actions"] = args.action
+    access.save(args.name, body, args.config_dir)
+    print("Account saved; existing sessions are revoked")
+
+
+def cmd_access_delete(args):
+    access.delete(args.name, args.config_dir)
+    print("Account deleted; existing sessions are revoked")
+
+
 def cmd_scene_run(args):
     saved = scenes.load(args.config_dir)
     if args.name not in saved:
@@ -244,7 +326,14 @@ def cmd_scene_run(args):
 
 
 def cmd_connector(args):
-    params = {"league": args.league}
+    params = _parse_params(args.param)
+    if args.connector == "football":
+        params.setdefault("league", args.league)
+        params.setdefault("view", args.view)
+        if args.season:
+            params["season"] = args.season
+        if args.lineup_url:
+            params["lineup_url"] = args.lineup_url
     if args.show:
         print(connectors.run(args.connector, params, _transport(args)))
     else:
@@ -257,7 +346,7 @@ def _parse_params(pairs):
         key, sep, value = pair.partition("=")
         if not sep:
             raise ValidationError("--param must be KEY=VALUE, got: %s" % pair)
-        params[key] = value
+        params[key] = {"true": True, "false": False}.get(value, value) if key == "allow_private" else value
     return params
 
 
@@ -281,7 +370,12 @@ def cmd_addon_install(args):
         body["position"] = args.position
     if args.size:
         body["size"] = args.size
-    addons.install(args.addon, body, args.config_dir)
+    with rotations.LOCK, addons.LOCK:
+        if body["enabled"] and any(entry["enabled"] for entry in rotations.load(args.config_dir).values()):
+            raise ValidationError("Disable the active rotation before enabling an addon")
+        addons.install(args.addon, body, args.config_dir)
+    if body["enabled"]:
+        runtime.request_resume(args.config_dir)
     print("Addon %s installed" % args.addon)
 
 
@@ -333,12 +427,12 @@ def cmd_webhook_list(args):
         print("No webhooks saved yet; see `wof webhook create --help`")
     else:
         for token, entry in sorted(saved.items()):
-            print("%s  %s  %s" % (token, entry["scene"], entry["label"]))
+            print("%s  %s  %s" % (token, entry.get("scene", entry.get("design")), entry["label"]))
 
 
 def cmd_webhook_create(args):
-    token = webhooks.create(args.scene, args.label, args.config_dir)
-    print("Webhook created: %s\n/webhook/%s" % (token, token))
+    token = webhooks.create(args.scene, args.label, args.config_dir, design=args.design)
+    print("Webhook created: %s\nPOST /webhook/%s" % (token, token))
 
 
 def cmd_webhook_delete(args):
@@ -470,7 +564,7 @@ def build_parser():
     command.add_argument("--tv-server", action="store_true",
                          help="also install and start the web server that runs on the TV itself (port 8766)")
     add("update", cmd_update, "re-push the TV-side scripts")
-    command = add("uninstall", cmd_uninstall, "remove everything webOS Foundry put on the TV")
+    command = add("uninstall", cmd_uninstall, "remove everything Overglass put on the TV")
     command.add_argument("--yes", action="store_true")
     add("doctor", cmd_doctor, "check tools, config and the TV")
     with_json(add("status", cmd_status, "power, source, temperature, volume"))
@@ -478,7 +572,7 @@ def build_parser():
 
     command = add("remote", cmd_remote, "send a remote action")
     command.add_argument("action", choices=dispatcher.REMOTE_ACTIONS)
-    command.add_argument("value", nargs="?", help="HDMI input 1-4 for `hdmi`")
+    command.add_argument("value", nargs="?", help="HDMI input 1-4 for `hdmi`, or speaker volume 0-100 for `volume`")
 
     settings = add("settings", None, "AI picture/sound settings").add_subparsers(dest="sub", required=True, metavar="SUB")
     with_json(add("list", cmd_settings_list, "list settings", settings))
@@ -532,6 +626,50 @@ def build_parser():
     command.add_argument("name")
     command = add("show", cmd_design_show, "show a saved design on the TV now", group)
     command.add_argument("name")
+    for name, handler, help_text in (
+            ("history", cmd_design_history, "print saved design revisions"),
+            ("export", cmd_design_export, "print a sanitized sharing bundle")):
+        command = add(name, handler, help_text, group)
+        command.add_argument("name")
+    command = add("restore", cmd_design_restore, "restore a saved revision", group)
+    command.add_argument("name")
+    command.add_argument("id")
+    command = add("rename", cmd_design_rename, "rename a design and its history", group)
+    command.add_argument("name")
+    command.add_argument("new_name")
+    command = add("import", cmd_design_import, "import a sanitized sharing bundle", group)
+    command.add_argument("file", help="JSON bundle or - for stdin")
+    command.add_argument("--name")
+    command.add_argument("--overwrite", action="store_true")
+    command = add("resolve", cmd_design_resolve, "resolve scalar data bindings and print the card", group)
+    command.add_argument("file", help="JSON design or - for stdin")
+
+    group = add("theme", None, "reusable overlay themes").add_subparsers(dest="sub", required=True, metavar="SUB")
+    add("list", cmd_theme_list, "print saved themes", group)
+    command = add("set", cmd_theme_set, "save a validated theme from JSON", group)
+    command.add_argument("name")
+    command.add_argument("file", help="- for stdin")
+    command = add("delete", cmd_theme_delete, "delete a theme", group)
+    command.add_argument("name")
+
+    group = add("rotation", None, "timed saved-design rotations (requires wof serve)").add_subparsers(dest="sub", required=True, metavar="SUB")
+    add("list", cmd_rotation_list, "print saved rotations", group)
+    command = add("set", cmd_rotation_set, "create or replace a rotation", group)
+    command.add_argument("designs", nargs="+")
+    command.add_argument("--id")
+    command.add_argument("--interval", type=int, default=60)
+    command.add_argument("--disabled", action="store_true")
+    command = add("delete", cmd_rotation_delete, "delete a rotation", group)
+    command.add_argument("id")
+
+    group = add("access", None, "private PIN accounts; guest access is remote-only").add_subparsers(dest="sub", required=True, metavar="SUB")
+    add("list", cmd_access_list, "list accounts without credentials", group)
+    command = add("set", cmd_access_set, "set an account PIN using a private prompt", group)
+    command.add_argument("name")
+    command.add_argument("--role", choices=("admin", "guest"), default="guest")
+    command.add_argument("--action", action="append", choices=access.ALL_ACTIONS, help="explicit guest remote allowlist; repeatable")
+    command = add("delete", cmd_access_delete, "delete an account and revoke sessions", group)
+    command.add_argument("name")
 
     group = add("schedule", None, "local-time scene schedules (requires wof serve)").add_subparsers(
         dest="sub", required=True, metavar="SUB")
@@ -545,11 +683,12 @@ def build_parser():
     command = add("delete", cmd_schedule_delete, "remove a schedule entry", group)
     command.add_argument("id")
 
-    group = add("webhook", None, "revocable URLs that run one saved scene").add_subparsers(
+    group = add("webhook", None, "revocable POST URLs for saved scenes or designs").add_subparsers(
         dest="sub", required=True, metavar="SUB")
     with_json(add("list", cmd_webhook_list, "list webhook tokens, scenes and labels", group))
-    command = add("create", cmd_webhook_create, "create a public trigger URL for a scene", group)
-    command.add_argument("scene")
+    command = add("create", cmd_webhook_create, "create a public POST trigger URL for a scene or design", group)
+    command.add_argument("scene", nargs="?")
+    command.add_argument("--design", help="saved design instead of a scene")
     command.add_argument("--label", help="display label (at most 60 characters)")
     command = add("delete", cmd_webhook_delete, "revoke a webhook URL", group)
     command.add_argument("token")
@@ -558,7 +697,17 @@ def build_parser():
         dest="connector", required=True, metavar="CONNECTOR")
     command = add("football", cmd_connector, "current-matchday football scores from OpenLigaDB", group)
     command.add_argument("--league", default="bl1", help="OpenLigaDB league shortcut (default bl1)")
+    command.add_argument("--view", choices=("matches", "table", "lineups"), default="matches")
+    command.add_argument("--season")
+    command.add_argument("--lineup-url", help="real per-match lineup JSON source")
+    command.add_argument("--param", action="append", metavar="KEY=VALUE")
     command.add_argument("--show", action="store_true", help="show the card on the TV instead of printing JSON")
+    for connector_id, metadata in connectors.META.items():
+        if connector_id == "football":
+            continue
+        command = add(connector_id, cmd_connector, metadata.get("description", metadata.get("name", connector_id)), group)
+        command.add_argument("--param", action="append", metavar="KEY=VALUE", help="repeatable connector parameter")
+        command.add_argument("--show", action="store_true")
 
     group = add("addon", None, "install a connector to auto-refresh on the TV (requires wof serve); "
                 "any catalog entry works, including third-party connectors dropped into connectors/").add_subparsers(

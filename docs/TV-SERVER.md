@@ -44,7 +44,8 @@ curl -s http://<tv-ip>:8766/api
 | File processing (`/api/jobs*`) | yes | **no** (see below) |
 | Wake from standby | Wake-on-LAN from the PC | **no** (the TV cannot send itself a packet; `POST /api/remote/wake` answers 501) |
 | Install an app by uploading an IPK | yes (`POST /api/apps`, non-JSON body) | **no** (415): send `{"url", "sha256"?}` and the TV downloads it itself |
-| Dependencies | Python | Node only, hand-written, no `node_modules`; syntax kept to what the TV's other Node scripts already use (Node 8+) |
+| Dependencies | Python | Node only, no `node_modules`; the reference TV reports Node 16.20.2 |
+| Saved themes/history/bindings, external connectors, PIN accounts and pushed state | yes | PC-server features; use `wof serve` for these routes |
 
 ### Scope cut: no `/api/jobs`
 

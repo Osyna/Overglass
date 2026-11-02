@@ -31,6 +31,15 @@ def test_save_rejects_invalid_cards_and_names(tmp_path):
     assert designs.load(tmp_path) == {}
 
 
+@pytest.mark.parametrize("command", [{"action": "state"}, {"action": "runtime", "dim": 0.5}])
+def test_runtime_commands_cannot_replace_saved_cards(tmp_path, command):
+    saved = designs.save("Existing", CARD, tmp_path)
+    with pytest.raises(ValidationError):
+        designs.save("Existing", command, tmp_path)
+    assert designs.load(tmp_path) == {"Existing": saved}
+    assert designs.history("Existing", tmp_path) == []
+
+
 def test_delete_and_missing(tmp_path):
     designs.save("a", CARD, tmp_path)
     designs.delete("a", tmp_path)

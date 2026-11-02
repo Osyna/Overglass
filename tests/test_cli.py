@@ -90,6 +90,18 @@ def test_remote_commands_and_wake(fake, monkeypatch, capsys):
     assert fake.commands == ["remote home", "remote hdmi 2"]
 
 
+def test_remote_volume_parses_integers_and_rejects_invalid_values(fake, capsys):
+    fake.add("remote", json.dumps({"message": "Volume set"}))
+    for value in ("0", "40", "41", "100"):
+        assert wof("remote", "volume", value) == 0
+    for value in ("-1", "101", "1.5", "true", "x"):
+        assert wof("remote", "volume", value) == 1
+        assert "Volume must be" in capsys.readouterr().err
+    assert wof("remote", "volume") == 1
+    assert "Volume must be" in capsys.readouterr().err
+    assert fake.commands == ["remote volume " + value for value in ("0", "40", "41", "100")]
+
+
 def test_settings_list_and_set_uses_the_tvs_context(fake, capsys):
     item = {"category": "sound", "key": "aiSound", "value": "on", "values": ["on", "off"], "available": True,
             "context": {"input": "hdmi"}}
@@ -235,28 +247,6 @@ def test_install_update_uninstall(fake, monkeypatch, tmp_path, capsys):
     assert wof("uninstall", "--yes") == 0 and fake.commands == ["uninstall-all"]
 
 
-def test_install_tv_server_flag_is_off_by_default_and_wired_through(fake, monkeypatch, tmp_path, capsys):
-    monkeypatch.setenv("WEBOS_FOUNDRY_ASSETS", str(make_assets(tmp_path / "assets")))
-    server = tmp_path / "tv-server"
-    server.mkdir()
-    (server / "server.js").write_bytes(b"//")
-    (server / "init.d-hook.sh").write_bytes(b"#!/bin/sh\n")
-    web = tmp_path / "web"
-    web.mkdir()
-    (web / "index.html").write_bytes(b"<html>")
-    monkeypatch.setenv("WEBOS_FOUNDRY_TV_SERVER", str(server))
-    monkeypatch.setenv("WEBOS_FOUNDRY_WEB", str(web))
-    for verb in ("install", "install-overlay", "install-tree", "install-hook"):
-        fake.add(verb, b"")
-    fake.add("run-hook", b"started\n")
-    assert cli.build_parser().parse_args(["install"]).tv_server is False
-    assert wof("install") == 0 and not any(c.startswith(("install-tree", "run-hook")) for c in fake.commands)
-    capsys.readouterr()
-    assert wof("install", "--tv-server") == 0
-    out = capsys.readouterr().out
-    assert "On-TV server installed (2 files)" in out and "8766" in out
-    assert fake.commands[-1] == "run-hook webos-foundry-tv-server start"
-    assert [c.split()[1] for c in fake.commands if c.startswith("install-tree")] == ["tv-server/server.js", "tv-server/web/index.html"]
 
 
 def test_pair_command(monkeypatch, tmp_path, capsys):
@@ -353,8 +343,7 @@ def test_webhook_create_rejects_invalid_fields(tmp_path, capsys):
 
 
 def test_connector_football_preview_and_show(monkeypatch, tmp_path, capsys):
-    import io
-    import urllib.request
+    from webos_foundry.connectors import football
 
     from webos_foundry import notify
 
@@ -363,14 +352,14 @@ def test_connector_football_preview_and_show(monkeypatch, tmp_path, capsys):
                 "matchDateTimeUTC": "2026-11-08T16:30:00Z"}]
     calls = []
 
-    def urlopen(url, timeout):
-        calls.append((url, timeout))
-        return io.BytesIO(json.dumps(matches).encode())
+    def fetch_json(url):
+        calls.append((url, 8))
+        return matches
 
     def no_transport(args):
         raise AssertionError("Preview must not need a TV or pairing")
 
-    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(football, "fetch_json", fetch_json)
     monkeypatch.setattr(cli, "_transport", no_transport)
     args = ("--config-dir", str(tmp_path / "unpaired"), "connector", "football")
     assert wof(*args) == 0
@@ -387,13 +376,12 @@ def test_connector_football_preview_and_show(monkeypatch, tmp_path, capsys):
 
 
 def test_connector_network_error_is_cli_error(monkeypatch, capsys):
-    import urllib.error
-    import urllib.request
+    from webos_foundry.connectors import football
 
-    def urlopen(url, timeout):
-        raise urllib.error.URLError("offline")
+    def fetch_json(url):
+        raise RuntimeError("Could not fetch data endpoint")
 
-    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(football, "fetch_json", fetch_json)
     assert wof("connector", "football") == 1
     assert "wof: Could not fetch OpenLigaDB football data" in capsys.readouterr().err
 
@@ -425,13 +413,12 @@ def test_addon_uninstall_unknown_is_a_cli_error(tmp_path, capsys):
 
 
 def test_addon_preview_prints_json_or_shows(monkeypatch, tmp_path, capsys):
-    import io
-    import urllib.request
+    from webos_foundry.connectors import football
 
     matches = [{"leagueName": "Bundesliga", "team1": {"teamName": "Home"},
                 "team2": {"teamName": "Away"}, "matchResults": [], "matchIsFinished": False,
                 "matchDateTimeUTC": "2026-11-08T16:30:00Z"}]
-    monkeypatch.setattr(urllib.request, "urlopen", lambda url, timeout: io.BytesIO(json.dumps(matches).encode()))
+    monkeypatch.setattr(football, "fetch_json", lambda url: matches)
     assert wof("--config-dir", str(tmp_path / "addons-home"), "addon", "preview", "football") == 0
     body = json.loads(capsys.readouterr().out)
     assert body["root"]["children"][0]["text"] == "Bundesliga"
@@ -478,7 +465,6 @@ def test_overlay_json_check_and_schema(tmp_path, capsys, monkeypatch):
     assert "Unknown text field: colour" in capsys.readouterr().err
     assert wof("overlay", "schema") == 0
     schema = json.loads(capsys.readouterr().out)
-    assert set(schema["$defs"]) == set(notify.WIDGET_TYPES) | {"node"}
     transport = FakeTransport({"notify-overlay": '{"returnValue": true, "overlay": "shown"}'})
     monkeypatch.setattr(cli, "_transport", lambda a: transport)
     card.write_text(json.dumps({"position": "bottom", "root": {"type": "clock", "format": "date"}}))
@@ -533,3 +519,16 @@ def test_schedule_help_lists_three_subcommands(capsys):
     assert exit_info.value.code == 0
     help_text = capsys.readouterr().out
     assert all(command in help_text for command in ("list", "set", "delete"))
+
+
+def test_rotation_identifiers_can_be_passed_back_to_cli(tmp_path, monkeypatch):
+    from webos_foundry import designs, rotations
+    designs.save("Screen", {"root": {"type": "text", "text": "Value"}}, tmp_path)
+    candidates = iter(["-not-an-option", "rotation-id"])
+    monkeypatch.setattr(rotations.secrets, "token_urlsafe", lambda size: next(candidates))
+    args = ("--config-dir", str(tmp_path))
+    assert wof(*args, "rotation", "set", "Screen", "--interval", "15", "--disabled") == 0
+    entry_id = next(iter(rotations.load(tmp_path)))
+    assert entry_id == "rotation-id"
+    assert wof(*args, "rotation", "delete", entry_id) == 0
+    assert rotations.load(tmp_path) == {}

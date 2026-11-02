@@ -1,154 +1,129 @@
-# webOS Foundry
+# Overglass
 
-A CLI (`wof`), HTTP API with web UI, and Home Assistant integration for controlling an LG webOS TV
-that you have already rooted: status and sensors, remote control, toasts, spoken announcements,
-on-screen cards, screenshots and live view, with a locked-down SSH key instead of a root shell.
+Control an already-rooted LG webOS TV from a browser, the `wof` CLI, an HTTP API, or Home Assistant.
 
-> **The TV must already be rooted. This project does not root it.** Rooting is done with separate tools
-> (see <https://www.webosbrew.org/> and the Homebrew Channel; slopbro and dejavuln-autoroot are
-> examples). webOS Foundry needs the SSH access you get from that, once, to set itself up. It never asks
-> for an LG account.
+[MIT license](LICENSE) · [Setup](docs/INSTALL.md) · [API](docs/API.md) · [Home Assistant](docs/HOME-ASSISTANT.md)
 
-<!-- screenshot: docs/img/web-ui.png -->
-
-## Three steps
-
-1. **Root your TV** with the tool of your choice and keep the root SSH key it gives you.
-2. **Run the server:** `wof serve`, then open `http://127.0.0.1:8765/`.
-3. **Connect:** the page asks for the TV's address and that root key — upload the key file or paste it,
-   click Connect, done. (Prefer the terminal? `wof pair --host 192.168.1.50 --root-key ~/.ssh/tv_root_key`
-   does the same thing in one line.) Want Home Assistant too, or another device on the LAN? Restart with
-   `wof serve --host 0.0.0.0 --token "$TOKEN"` and add the **webOS Foundry** integration (host, port
-   `8765`, token). No PC to leave running? `wof install --tv-server` puts the same UI and API on the TV
-   itself instead — see [docs/TV-SERVER.md](docs/TV-SERVER.md).
+![Included TV app installer in the running web UI](assets/bundled-installer.webp)
 
 ## Features
 
-* **Status and sensors:** power, foreground source/app, whether the Luma home replacement is in front,
-  SoC temperature, volume/mute, ambient light, OLED panel hours and temperature, Pixel Refresher
-  counters, power-on reason and history, input signal (resolution, refresh, HDR, VRR, ALLM), sleep
-  timer and per-app usage today.
-* **Remote:** wake (Wake-on-LAN), power off, home/back/D-pad/OK, HDMI 1-4, volume up/down, mute.
-* **AI picture and sound settings:** read and set eight allow-listed settings (AI Picture Pro,
-  AI Brightness, AI Genre, Super Resolution, Sound Mode, AI Sound, Clear Voice, AI Game Sound), with the
-  TV's own scope and availability checks and read-back.
-* **Notifications:** on-screen toast, spoken announcement through the TV speaker (Audio Guidance TTS,
-  restored afterwards), and an overlay card drawn over HDMI without changing the foreground app, built
-  from a JSON widget tree of 18 types (stack, row, text, image/crest, badge, dot, progress bar, live
-  countdown and clock, list, divider, N-way comparison bar, two-sided stat, sparkline with axis, section
-  header, timed event, source status, key facts), a theme (accent/surface/text colours, opacity, corner
-  radius, scale, font) and up to four regions in one card — a full-width top bar plus a side panel, like a
-  broadcast scoreboard — with a simple shorthand for a plain title/body/image card, or visually in the
-  web UI's card studio (TV-shaped live preview, templates, no code needed) — or describe the card to
-  ChatGPT with the studio's "Copy AI instructions", paste its answer back and get a plain verdict
-  (`GET /api/overlay/schema`, `POST /api/overlay/validate`, `wof overlay check`).
-* **Saved designs:** keep a finished card under a name (`wof design set match-day card.json`) and show it
-  again from the UI, CLI, API, a scene step or Home Assistant.
-* **Scenes:** save a named sequence of remote, setting, overlay and wait steps, then run it in one call
-  from the CLI, API, web UI or a Home Assistant automation.
-* **Scheduler:** run a saved scene automatically at a time of day, on chosen days of the week, as long
-  as `wof serve` (or the on-TV server) is running.
-* **Webhook links:** a private URL that runs one saved scene, with no sign-in, for triggering from
-  another app, a phone shortcut or a smart-home routine; revoke it any time by deleting it.
-* **Data connectors:** pluggable pollers that turn a live data source into an overlay card; ships with a
-  free, no-API-key football scoreboard (crests, score/status, goal-by-goal events, OpenLigaDB) as the
-  first one (`wof connector football --show`).
-* **Addons:** install a connector with one command and it stays live — a background thread refreshes it
-  on its own interval and keeps showing it on the TV until you uninstall it, no further action needed
-  (`wof addon install football --interval 90`). Any connector dropped into `connectors/` is installable
-  the same way with no other code changes: the extension point for a user's own overlay add-ons.
-* **Installable web app:** the web UI is a PWA — add it to a phone or desktop home screen and open it
-  like any other app, offline-capable shell included.
-* **Screenshot and live view:** HDMI screenshot (jpg/png) and an optional native fast-capture client for a
-  low-resolution live stream. On the reference TV it measured 30.4 fps at 160x90 requesting 30 fps and
-  60.1 fps requesting 60; those are one TV's numbers.
-* **Image/audio processing:** push a PNG/JPEG or WAV through the TV's own AI picture or sound pipeline
-  and get the result back.
-* **Install Homebrew apps:** push an IPK by URL (the TV downloads and optionally sha256-verifies it) or
-  upload one straight from the web UI; list and uninstall sideloaded apps too.
-* **No terminal needed to pair:** drop in the root key your rooting tool gave you and the TV's address,
-  right in the browser, and the server does the one-time setup itself.
-* **Two ways to run it:** host the server on a PC and reach the TV over SSH (`wof serve`), or push a small
-  Node server to the TV itself so any phone on the LAN can open it with no PC at all (`wof install
-  --tv-server`; see [docs/TV-SERVER.md](docs/TV-SERVER.md)).
-* **Login you can turn off:** token auth is on by default; disable it from the web UI or
-  `PATCH /api/config/auth` for a trusted LAN with no sign-in step, with a persistent on-screen warning
-  while it's off.
-* **Least privilege:** after pairing, the TV accepts only a fixed command grammar through a forced
-  command; there is no verb for erase, firmware, Pixel Refresher triggering, accounts or commissioning
-  ([docs/SAFETY.md](docs/SAFETY.md)).
-* **Zero Python dependencies** for the core (stdlib only); the Home Assistant integration uses only
-  Home Assistant's own `aiohttp`.
+- Build TV overlay cards in the visual editor or paste JSON from your editor or an LLM.
+- Install or repair the included overlay renderer from Apps, without finding an `.ipk` file or download URL.
+- Control navigation, HDMI input, volume, and mute from Remote.
+- Use the CLI, HTTP API, and Home Assistant integration for automation.
+- Run the web UI on a computer or install its server on the TV.
+
+## Requirements
+
+The TV must already be rooted and reachable over SSH. This project does not root it.
+You need the TV's existing root SSH key for initial pairing.
+
+On the computer used for setup: Python 3.9 or newer, `ssh`, and `ssh-keygen`.
+The core package has no required Python dependencies.
 
 ## Install
 
-Requires Python 3.9+, `ssh` and `ssh-keygen`. There is no PyPI package yet: the server and CLI read
-`web/` and `tv-assets/` from the source tree, so install from a checkout.
+Clone the repository and install from source:
 
 ```sh
-git clone https://github.com/webos-foundry/webos-foundry
-cd webos-foundry
-pip install -e .
-wof pair --host 192.168.1.50 --root-key ~/.ssh/tv_root_key
-wof doctor
-wof serve                      # http://127.0.0.1:8765/
+git clone https://github.com/Osyna/Overglass.git
+cd Overglass
+python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install -e .
+wof --help
+wof serve
 ```
 
-Docker and systemd instructions are in [docs/INSTALL.md](docs/INSTALL.md).
+Keep the checkout available: the CLI and server read `web/` and `tv-assets/` from it.
 
-## Usage
+## Use the web UI
+
+### Connect the TV
+
+Open `http://127.0.0.1:8765/` on the computer running the server.
+Choose Connect, enter the TV's address, and select its existing root SSH key.
+Pairing creates a restricted project key for subsequent TV commands.
+
+### Install the included TV app
+
+Open **Apps → Included with Overglass**.
+Choose **Install on TV**, or **Repair** if the renderer is already installed.
+The page shows success only after the TV confirms installation, and displays installation errors.
+
+The included app is `dev.webosfoundry.overlay`. It displays the JSON cards on the TV.
+Sending another design does not require reinstalling it.
+
+### Make an overlay
+
+Open Show, choose a starting design, and edit its widgets or import JSON.
+Preview the card, then choose Send to TV.
+The overlay app must be installed before the TV can display the card.
+
+### Run without a computer left on
+
+After pairing, install the on-TV web server:
+
+```sh
+wof install --tv-server
+```
+
+Open the TV's network address on port `8766`.
+This also stages the bundled overlay package, so its Install/Repair action works without a running PC server.
+See [on-TV setup and authentication](docs/TV-SERVER.md).
+
+## CLI and API usage
 
 ```sh
 wof status --json
-wof notify toast "Dinner is ready"
-wof overlay show --title Dinner --body "It is ready." --kind success --seconds 10
-wof remote hdmi 2
-wof screenshot /tmp/tv.jpg --width 960
-wof scene set movie-night scene.json && wof scene run movie-night
-wof connector football --league bl1 --show
+wof remote volume 20
+wof overlay show --title Dinner --body "It is ready."
+curl --fail http://127.0.0.1:8765/api/apps/bundled
 ```
+
+`GET /api` lists the running server's routes and capabilities.
+See the [CLI reference](docs/CLI.md) and [API reference](docs/API.md) for arguments and authentication.
+
+## Configuration and security
+
+Configuration is stored in `~/.config/webos-foundry/`; `WEBOS_FOUNDRY_HOME` selects another directory.
+Keep its keys and credentials out of Git.
+Use the server's authentication controls for network access, and keep it on a trusted network rather than exposing it to the Internet.
+
+Overglass keeps the existing `wof` CLI and `webos-foundry` Python distribution
+(`webos_foundry` module/Home Assistant domain), `WEBOS_FOUNDRY_*` environment variables,
+configuration paths, and TV app IDs. Renaming the project does not require re-pairing
+the TV or migrating saved designs.
+
+Read the [safety notes](docs/SAFETY.md) before uninstalling TV components, and [SECURITY.md](SECURITY.md) for vulnerability reporting.
+
+## Development
+
+Install the test dependencies, then run the backend and web checks:
 
 ```sh
-curl -H "Authorization: Bearer TOKEN" http://host:8765/api/status
-curl -X POST -H "Authorization: Bearer TOKEN" -H "Content-Type: application/json" \
-     -d '{"message": "Dinner is ready"}' http://host:8765/api/notify/toast
+python -m pip install pytest aiohttp voluptuous PyYAML jsonschema
+python -m pytest tests/ -q
+node web/check-ui.mjs
+node web/check-overlay.mjs
+node web/check-automate.mjs
+node web/check-studio.mjs
 ```
 
-`GET /api` on a running server returns the full self-describing route catalogue.
+The web checks require Node.js. Contributor setup and optional tools are documented in [CONTRIBUTING.md](CONTRIBUTING.md).
 
-## Home Assistant
+The screenshot above is from the running application. To record the CLI help walkthrough, run `vhs demo.tape` after installing the project.
+It writes `assets/demo.gif`; that GIF is not included until it has actually been rendered.
 
-A custom integration (`homeassistant/custom_components/webos_foundry`) polls the API (status every
-15 s, details every 60 s) and provides sensors, binary sensors, a Wake button and services `toast`,
-`say`, `overlay_show`, `overlay_hide`, `remote` and `set_setting`. Copy that folder into your own
-`config/custom_components/`; see [docs/HOME-ASSISTANT.md](docs/HOME-ASSISTANT.md) for HACS and manual
-install, the entity list and automation examples.
+## Documentation and contributing
 
-## Documentation
-
-* [docs/INSTALL.md](docs/INSTALL.md): prerequisites, pairing, Docker, systemd, troubleshooting
-* [docs/TV-SERVER.md](docs/TV-SERVER.md): run the server on the TV itself instead of a PC
-* [docs/CLI.md](docs/CLI.md): every `wof` command
-* [docs/API.md](docs/API.md): HTTP API and authentication
-* [docs/HOME-ASSISTANT.md](docs/HOME-ASSISTANT.md): integration, entities, services, automations
-* [docs/FINDINGS.md](docs/FINDINGS.md): what a rooted webOS 10.x TV exposes, with evidence
-* [docs/SAFETY.md](docs/SAFETY.md): least privilege, uninstall, privacy
-* [ARCHITECTURE.md](ARCHITECTURE.md): the contract between the modules
-* [CONTRIBUTING.md](CONTRIBUTING.md), [SECURITY.md](SECURITY.md)
-
-## Safety and privacy in one paragraph
-
-Screenshots and the live view show whatever the HDMI input displays. The HTTP API controls your TV: keep it
-on loopback or a trusted LAN, use the token, and do not expose it to the Internet. `wof uninstall` removes
-the TV-side files, the overlay app and the vtcap role but you must delete the restricted `authorized_keys`
-line by hand (explained in [docs/SAFETY.md](docs/SAFETY.md)).
-
-Tested on one LG OLED C-series TV on webOS 10.x; other models and firmware are untested.
-
-## Contributing
-
-Most of this project can be developed and tested without a TV: `python3 -m pytest tests/`,
-`node --check` on the JS, `sh -n` on the shell. See [CONTRIBUTING.md](CONTRIBUTING.md).
+- [Installation, Docker, and systemd](docs/INSTALL.md)
+- [On-TV server](docs/TV-SERVER.md)
+- [CLI](docs/CLI.md) and [HTTP API](docs/API.md)
+- [Home Assistant integration](docs/HOME-ASSISTANT.md)
+- [Architecture](ARCHITECTURE.md)
+- [Contributing](CONTRIBUTING.md)
 
 ## License
 

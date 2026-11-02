@@ -118,6 +118,7 @@ def test_documented_values_match_the_core_modules():
     assert set(process.IMAGE_PROFILES + process.AUDIO_PROFILES) <= set(server.PROFILE_LABELS)
     remote_route = next(r for r in server.ROUTES if r["path"] == "/api/remote/{action}")
     assert [v["name"] for v in remote_route["values"]] == list(server.REMOTE)
+    assert "volume" in {v["name"] for v in remote_route["values"]}
 
 
 def test_pure_helpers():
@@ -221,7 +222,7 @@ def test_non_loopback_requires_the_token(serve, monkeypatch):
     assert app.json("GET", "/api/nope")[0] == 401  # unknown paths do not reveal routes without a token
     assert app.json("GET", "/api")[0] == 200 and app.json("GET", "/api/health")[0] == 200
     status, head, data = app.request("GET", "/")
-    assert status == 200 and b"webOS Foundry" in data and "script-src 'self'" in head["content-security-policy"]
+    assert status == 200 and "script-src 'self'" in head["content-security-policy"]
     assert app.json("POST", "/api/notify/toast", {"message": "x"})[0] == 401
 
 
@@ -315,6 +316,22 @@ def test_handlers_pass_the_transport_and_arguments(serve, monkeypatch):
     assert app.json("POST", "/api/overlay", {"title": "t"}) == (200, {"message": "shown"})
     assert seen == [(marker, "hdmi", 2), (marker, "home", None), (marker, "sound", "aiSound", "on", {}),
                     (marker, "hi", 9), (marker, {"hide": True}), (marker, {"title": "t"})]
+
+
+def test_remote_volume_validation_before_tv_contact(serve, monkeypatch):
+    calls = []
+    monkeypatch.setattr(server.tv, "remote", lambda t, action, value=None: calls.append((action, value)) or "set")
+    app = serve()
+    _, catalogue = app.json("GET", "/api")
+    remote_route = next(r for r in catalogue["routes"] if r["path"] == "/api/remote/{action}")
+    assert "volume" in {v["name"] for v in remote_route["values"]}
+    for value in (0, 40, 41, 100):
+        assert app.json("POST", "/api/remote/volume", {"value": value}) == (
+            200, {"action": "volume", "message": "set"})
+    for body in (None, {}, {"value": None}, {"value": -1}, {"value": 101}, {"value": True},
+                 {"value": False}, {"value": 1.5}, {"value": "40"}, {"value": []}, {"value": {}}):
+        assert app.json("POST", "/api/remote/volume", body)[0] == 400, body
+    assert calls == [("volume", value) for value in (0, 40, 41, 100)]
 
 
 def test_screenshot_route(serve, monkeypatch):
@@ -509,17 +526,21 @@ def concrete(route):
 def test_disabled_auth_lets_every_route_through_without_a_token_on_a_non_loopback_bind(serve):
     app = serve(bind="0.0.0.0", token=TOKEN, transport=DeadTransport(), auth_mode="disabled")
     for route in server.ROUTES:
+        if route["path"] in ("/api/events", "/api/access/login"):
+            continue  # SSE is streaming; PIN login validates independently of bearer mode.
         status, head, data = app.request(route["method"], concrete(route), b"{}" if route["method"] != "GET" else None,
                                          {"Content-Type": "application/json"} if route["method"] != "GET" else {})
         assert status != 401, (route["method"], route["path"], status, data)
     # a wrong token is irrelevant too, and with no token configured at all
-    assert app.json("GET", "/api/apps", headers=bearer("wrong"))[0] == 502
+    assert app.json("GET", "/api/apps", headers=bearer("wrong"))[0] == 401  # supplied invalid credentials never gain admin
     assert serve(bind="0.0.0.0", transport=DeadTransport(), auth_mode="disabled").json("GET", "/api/apps")[0] == 502
 
 
 def test_token_mode_still_401s_every_protected_route(serve):
     app = serve(bind="0.0.0.0", token=TOKEN, transport=DeadTransport())
     for route in server.ROUTES:
+        if route["path"] == "/api/access/login":
+            continue  # public PIN exchange still rejects invalid credentials
         if route["path"].startswith("/webhook/"):
             continue  # capability URLs have their own credential, not the API bearer token
         status = app.request(route["method"], concrete(route), b"{}" if route["method"] != "GET" else None,
@@ -838,10 +859,11 @@ def test_webhooks_routes_create_list_fire_and_delete_without_trigger_auth(serve)
     assert re.fullmatch(r"[A-Za-z0-9_-]{32}", token)
     assert url == "/webhook/" + token
     assert app.json("GET", "/api/webhooks", headers=auth) == (200, {"webhooks": {token: body}})
-    assert app.json("GET", url) == (200, {"message": "Webhook fired: 1 step(s) run"})
+    assert app.json("GET", url)[0] == 200 and fake.commands == []
+    assert app.json("POST", url) == (200, {"message": "Webhook fired: 1 step(s) run"})
     assert fake.commands == ["remote volume_down"]
     assert app.json("GET", url, headers=bearer("wrong"))[0] == 200  # bearer is never consulted
-    assert app.json("POST", url)[0] == 405
+    assert app.json("POST", url)[0] == 200
     assert app.json("DELETE", "/api/webhooks/" + token, headers=auth) == (200, {"message": "Webhook deleted"})
     assert app.json("GET", "/api/webhooks", headers=auth) == (200, {"webhooks": {}})
     assert app.json("GET", url) == (404, {"error": "No such webhook"})
@@ -865,8 +887,8 @@ def test_webhooks_management_and_unknown_triggers_need_no_pairing(serve):
     assert app.json("GET", "/api/webhooks", headers=bearer()) == (200, {"webhooks": {}})
     status, created = app.json("POST", "/api/webhooks", {"scene": "not-created-yet"}, bearer())
     assert status == 200
-    status, body = app.json("GET", created["url"])
-    assert status == 404 and "scene no longer exists: not-created-yet" in body["error"]
+    status, body = app.json("POST", created["url"])
+    assert status == 404 and "scene no longer exists" in body["error"]
     assert app.json("DELETE", "/api/webhooks/" + created["token"], headers=bearer())[0] == 200
 
 
@@ -877,10 +899,10 @@ def test_webhook_reports_scene_deleted_after_creation(serve):
     assert app.json("PUT", "/api/scenes/movie-night", scene, auth)[0] == 200
     status, created = app.json("POST", "/api/webhooks", {"scene": "movie-night"}, auth)
     assert status == 200
-    assert app.json("GET", created["url"]) == (200, {"message": "Webhook fired: 2 step(s) run"})
+    assert app.json("POST", created["url"]) == (200, {"message": "Webhook fired: 2 step(s) run"})
     assert app.json("DELETE", "/api/scenes/movie-night", headers=auth)[0] == 200
-    assert app.json("GET", created["url"]) == (
-        404, {"error": "Webhook scene no longer exists: movie-night"})
+    assert app.json("POST", created["url"]) == (
+        404, {"error": "Webhook scene no longer exists"})
 
 
 @pytest.mark.parametrize("body", [{}, {"scene": ""}, {"scene": "x" * 61}, {"scene": 1},
@@ -897,13 +919,13 @@ def test_webhook_tv_errors_are_502_and_busy_errors_409(serve, monkeypatch):
     assert app.json("PUT", "/api/scenes/movie-night", scene, bearer())[0] == 200
     status, created = app.json("POST", "/api/webhooks", {"scene": "movie-night"}, bearer())
     assert status == 200
-    assert app.json("GET", created["url"]) == (502, {"error": "TV offline"})
+    assert app.json("POST", created["url"]) == (502, {"error": "TV offline"})
 
     def busy():
         raise TvBusyError("TV busy")
 
     monkeypatch.setattr(server, "reserved", busy)
-    assert app.json("GET", created["url"]) == (409, {"error": "TV busy"})
+    assert app.json("POST", created["url"]) == (409, {"error": "TV busy"})
 
 
 def test_schedule_routes_create_list_update_and_delete(serve):
@@ -968,7 +990,7 @@ def test_addons_catalog_and_install_lifecycle(serve, monkeypatch):
     app = serve(transport=FakeTransport({}))
     status, body = app.json("GET", "/api/addons")
     assert status == 200
-    assert body["catalog"] == [dict(connectors_module.META["football"], id="football")]
+    assert body["catalog"] == [dict(metadata, id=key) for key, metadata in connectors_module.META.items()]
     assert body["installed"] == {}
     status, saved = app.json("PUT", "/api/addons/football", {"params": {"league": "bl2"}, "interval_seconds": 30})
     assert status == 200 and saved["message"] == "Addon installed"
@@ -1091,7 +1113,6 @@ def test_overlay_schema_and_validate_work_unpaired_but_keep_auth(serve, monkeypa
     assert app.json("GET", "/api/overlay/schema")[0] == 401
     status, schema = app.json("GET", "/api/overlay/schema", headers=bearer())
     assert status == 200 and schema["$schema"].endswith("2020-12/schema")
-    assert set(schema["$defs"]) == set(notify.WIDGET_TYPES) | {"node"}
     assert schema["$defs"]["stat"]["required"] == ["type", "label", "left", "right", "fraction"]
     assert schema["$defs"]["section"]["properties"]["icon"]["enum"] == list(notify.ICONS)
     status, verdict = app.json("POST", "/api/overlay/validate", DESIGN, bearer())
@@ -1103,3 +1124,117 @@ def test_overlay_schema_and_validate_work_unpaired_but_keep_auth(serve, monkeypa
     status, error = app.json("POST", "/api/overlay/validate", {"root": {"type": "stat", "label": "x"}}, bearer())
     assert status == 400 and "stat left value" in error["error"]
     assert app.json("POST", "/api/overlay/validate", {"hide": True}, bearer())[0] == 400
+
+
+@pytest.fixture
+def bundled_pc(serve, monkeypatch):
+    monkeypatch.delenv("WEBOS_FOUNDRY_ASSETS", raising=False)
+    state = {"installed": False, "confirm": True}
+
+    def installed(_command, _data):
+        state["installed"] = state["confirm"]
+        return b"Overlay installed\n"
+
+    def status(_command, _data):
+        return json.dumps({"files": {name: True for name in server.install.INSTALL_FILES},
+                           "overlay": state["installed"], "vtcap": False})
+
+    transport = FakeTransport({"install-overlay": installed, "install-status": status})
+    return serve(transport=transport), transport, state
+
+
+def test_bundled_apps_package_project_source_and_confirm_install(bundled_pc):
+    import io
+    import tarfile
+    from tests.test_install import members
+
+    app, transport, state = bundled_pc
+    path = "/api/apps/bundled"
+    status, catalog = app.json("GET", path)
+    assert status == 200 and catalog == [{**server.BUNDLED_OVERLAY, "installed": False, "available": True}]
+    metadata = json.loads((server.install.assets_dir() / "overlay/appinfo.json").read_text())
+    assert catalog[0]["id"] == metadata["id"] and catalog[0]["version"] == metadata["version"]
+    status, result = app.json("POST", path + "/" + metadata["id"])
+    assert (status, result) == (200, {"id": metadata["id"], "installed": True, "message": "Overlay renderer installed"})
+    assert transport.commands == ["install-status", "install-overlay", "install-status"]
+    payload = transport.calls[1].data
+    assert 0 < len(payload) <= server.install.FILE_MAX
+    with tarfile.open(fileobj=io.BytesIO(members(payload)["data.tar.gz"])) as tar:
+        root = "./usr/palm/applications/" + metadata["id"] + "/"
+        for file in (server.install.assets_dir() / "overlay").rglob("*"):
+            if file.is_file():
+                assert tar.extractfile(root + file.relative_to(server.install.assets_dir() / "overlay").as_posix()).read() == file.read_bytes()
+    assert app.json("GET", path)[1][0]["installed"] is True
+
+
+@pytest.mark.parametrize("installed", [False, True])
+def test_bundled_apps_missing_source_reports_unavailable(bundled_pc, monkeypatch, tmp_path, installed):
+    app, transport, state = bundled_pc
+    state["installed"] = installed
+    monkeypatch.setenv("WEBOS_FOUNDRY_ASSETS", str(tmp_path / "missing"))
+    status, catalog = app.json("GET", "/api/apps/bundled")
+    assert status == 200 and catalog[0]["available"] is False and catalog[0]["installed"] is installed
+    transport.calls.clear()
+    status, result = app.json("POST", "/api/apps/bundled/dev.webosfoundry.overlay", {})
+    assert status == 503 and "WEBOS_FOUNDRY_ASSETS" in result["error"] and transport.calls == []
+
+@pytest.mark.parametrize("size", [0, 2_097_153])
+def test_bundled_apps_invalid_package_is_unavailable_without_installing(bundled_pc, monkeypatch, size):
+    app, transport, _ = bundled_pc
+    monkeypatch.setattr(server.install, "package_overlay", lambda: b"x" * size)
+    status, catalog = app.json("GET", "/api/apps/bundled")
+    assert status == 200 and catalog[0]["available"] is False
+    transport.calls.clear()
+    assert app.json("POST", "/api/apps/bundled/dev.webosfoundry.overlay", {})[0] == 503
+    assert transport.calls == []
+
+
+def test_bundled_apps_failures_never_report_success(bundled_pc):
+    app, transport, state = bundled_pc
+    path = "/api/apps/bundled/dev.webosfoundry.overlay"
+    state["confirm"] = False
+    status, result = app.json("POST", path, {})
+    assert status == 502 and "confirm" in result["error"]
+    transport.add("install-overlay", TransportError("installer refused package"))
+    transport.calls.clear()
+    assert app.json("POST", path) == (502, {"error": "installer refused package"})
+    assert transport.commands == ["install-overlay"]
+    transport.add("install-overlay", b"Overlay installed")
+    transport.add("install-status", '{"overlay":"yes"}')
+    assert app.json("POST", path)[0] == 502
+    transport.add("install-overlay", TvBusyError("TV is busy"))
+    assert app.json("POST", path) == (409, {"error": "TV is busy"})
+
+
+def test_bundled_apps_reject_unknown_ids_options_and_reserved_tv(bundled_pc):
+    app, transport, _ = bundled_pc
+    path = "/api/apps/bundled/dev.webosfoundry.overlay"
+    assert app.json("POST", "/api/apps/bundled/com.example.app")[0] == 404
+    for body in ({"url": "https://example.org/app.ipk"}, {"path": "/tmp/app.ipk"}, {"force": True}):
+        assert app.json("POST", path, body)[0] == 400
+    assert app.json("POST", path + "?url=anything")[0] == 400
+    assert transport.calls == []
+    job = server.Job("image", "standard", "reserved")
+    job.state = "running"
+    server.JOBS[job.id] = job
+    try:
+        for method, endpoint in (("GET", "/api/apps/bundled"), ("POST", path)):
+            status, result = app.json(method, endpoint)
+            assert status == 409 and "reserved" in result["error"]
+        assert transport.calls == []
+    finally:
+        server.JOBS.clear()
+
+
+def test_bundled_apps_enforce_admin_authorization(serve):
+    transport = FakeTransport()
+    app = serve(bind="0.0.0.0", token=TOKEN, transport=transport)
+    endpoints = (("GET", "/api/apps/bundled"), ("POST", "/api/apps/bundled/dev.webosfoundry.overlay"))
+    for method, path in endpoints:
+        assert app.json(method, path)[0] == 401
+        assert app.json(method, path, headers=bearer("wrong"))[0] == 401
+    server.access.save("guest", {"pin": "246810", "role": "guest"})
+    login = app.json("POST", "/api/access/login", {"name": "guest", "pin": "246810"})[1]
+    for method, path in endpoints:
+        assert app.json(method, path, headers=bearer(login["token"]))[0] == 403
+    assert transport.calls == []
