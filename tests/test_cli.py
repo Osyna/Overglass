@@ -115,6 +115,8 @@ def test_notify_and_overlay(fake, capsys):
             {"type": "dot", "tone": "info"}, {"type": "text", "text": "T", "size": "l", "weight": "strong"}]},
         {"type": "list", "items": ["a", "b"]},
     ]}}
+    assert wof("overlay", "show", "--title", "T", "--size", "xl") == 0
+    assert json.loads(fake.calls[3].data)["size"] == "xl"
     assert wof("overlay", "hide") == 0
     assert wof("overlay", "show") == 1 and "needs a title" in capsys.readouterr().err
     assert wof("notify", "say", "yo", "--volume", "99") == 1

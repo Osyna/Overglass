@@ -162,7 +162,7 @@ def cmd_notify_say(args):
 
 def cmd_overlay_show(args):
     card = {"title": args.title, "body": args.body, "lines": args.line or None, "image": args.image,
-            "kind": args.kind, "position": args.position, "seconds": args.seconds}
+            "kind": args.kind, "position": args.position, "size": args.size, "seconds": args.seconds}
     print(notify.overlay_show(_transport(args), {key: value for key, value in card.items() if value is not None}))
 
 
@@ -410,6 +410,7 @@ def build_parser():
     command.add_argument("--image", metavar="URL")
     command.add_argument("--kind", choices=("info", "success", "warning", "alert"))
     command.add_argument("--position", choices=("top-left", "top-right", "bottom-left", "bottom-right", "center"))
+    command.add_argument("--size", choices=("xs", "s", "m", "l", "xl", "full"))
     command.add_argument("--seconds", type=int, help="0-300; 0 = until hidden")
     add("hide", cmd_overlay_hide, "hide the card", group)
 

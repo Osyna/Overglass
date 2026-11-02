@@ -19,9 +19,11 @@ Commands that talk to the TV only ever send verbs from the dispatcher grammar
 | [`wof settings`](#wof-settings) | AI picture/sound settings |
 | [`wof notify`](#wof-notify) | Toast, spoken announcement |
 | [`wof overlay`](#wof-overlay) | On-screen card |
+| [`wof scene`](#wof-scene) | Save and run a named sequence of steps |
+| [`wof schedule`](#wof-schedule) | Run a scene automatically at a time of day |
+| [`wof webhook`](#wof-webhook) | A private link that runs one scene |
+| [`wof connector`](#wof-connector) | Pollable data sources rendered as an overlay card |
 | [`wof screenshot`](#wof-screenshot) / [`wof stream`](#wof-stream) | Capture the HDMI picture |
-| [`wof process`](#wof-process) | AI picture/sound processing of a file |
-| [`wof serve`](#wof-serve) | HTTP API + web UI |
 | [`wof config`](#wof-config) | Show / edit the local config |
 
 ## wof pair
@@ -209,17 +211,18 @@ wof notify say "Dinner is ready" --volume 10
 wof overlay show [--title T] [--body T] [--line T ...] [--image URL]
                  [--kind info|success|warning|alert]
                  [--position top-left|top-right|bottom-left|bottom-right|center]
-                 [--seconds N]
+                 [--size xs|s|m|l|xl|full] [--seconds N]
 wof overlay hide
 ```
 
 Draws one card over whatever is on screen (including HDMI) through the installed overlay app
-`dev.webosfoundry.overlay`; the foreground app does not change. Limits: title ≤ 80 characters, body ≤ 400,
-up to 10 `--line` values of ≤ 120, image an `http(s)` URL ≤ 500 (fetched by the TV, so it must be
-reachable from the TV), seconds an integer 0-300 (0 keeps the card until `hide`, default 8). At least
-a title, body, line or image is required; unknown fields and control characters are refused, and
-nothing is launched while the TV is in standby. The first card after a cold start takes about 2.5 s;
-later cards update in place. A remote button press while a card is up dismisses it and is consumed.
+`dev.webosfoundry.overlay`; the foreground app does not change. These flags are the shorthand path:
+title ≤ 80 characters, body ≤ 400, up to 10 `--line` values of ≤ 120, image an `http(s)` URL ≤ 500
+(fetched by the TV, so it must be reachable from the TV), seconds an integer 0-300 (0 keeps the card
+until `hide`, default 8), size defaults to `m`. At least a title, body, line or image is required;
+unknown fields and control characters are refused, and nothing is launched while the TV is in
+standby. The first card after a cold start takes about 2.5 s; later cards update in place. A remote
+button press while a card is up dismisses it and is consumed.
 
 ```sh
 wof overlay show --title Dinner --body "It is ready." --kind success --position top-right --seconds 10
@@ -227,10 +230,90 @@ wof overlay show --title Dinner --body "It is ready." --kind success --position 
 wof overlay hide
 ```
 
-The card sent to the TV is this JSON (base64-encoded on the wire):
+The CLI's shorthand flags compile into an equivalent JSON widget tree before it reaches the TV
+(stack, row, text, image, badge, dot, progress, countdown, list, divider — depth ≤ 4, ≤ 40 widgets,
+≤ 32768 bytes; full schema: [ARCHITECTURE.md §3a](../ARCHITECTURE.md)). The CLI has no flags for a
+custom tree; build one with the web UI's Advanced builder, `curl`/`POST /api/overlay` with a `root`
+field, or a scene's `overlay` step (`wof scene`, below).
 
-```json
-{"title": "Dinner", "body": "It is ready.", "kind": "success", "position": "top-right", "seconds": 10}
+## wof scene
+
+```
+wof scene list [--json]
+wof scene set NAME FILE.json
+wof scene delete NAME
+wof scene run NAME
+```
+
+A scene is a named sequence of 1-20 steps, run in order, stopping at the first failure. `set` reads
+`{"steps": [...]}` from `FILE.json` (`-` for stdin), validates it (an `overlay` step's card is
+compiled into a widget tree at save time, the same as `wof overlay show`) and saves it; `run` prints
+one line per completed step. A step is `{"type": "remote", "action", "value"?}` (same actions as
+`wof remote`), `{"type": "setting", "category", "key", "value", "context"?}` (same settings as
+`wof settings set`), `{"type": "overlay", "card"}` (same shape `POST /api/overlay` accepts), or
+`{"type": "wait", "seconds": 0-10}`.
+
+```sh
+cat > movie-night.json <<'EOF'
+{"steps": [
+  {"type": "setting", "category": "sound", "key": "aiSound", "value": "off", "context": {}},
+  {"type": "overlay", "card": {"title": "Movie night", "kind": "info", "seconds": 5}}
+]}
+EOF
+wof scene set movie-night movie-night.json
+wof scene run movie-night
+```
+
+## wof schedule
+
+```
+wof schedule list [--json]
+wof schedule set [--id ID] SCENE HH:MM [--days mon,tue,...] [--disabled]
+wof schedule delete ID
+```
+
+Runs a saved scene automatically at a time of day (the server's local clock), on the given days
+(omit `--days` for every day). Needs `wof serve` (or the on-TV server) running continuously; a missed
+time while the server was stopped is not caught up. Omit `--id` to create a new entry; pass it to
+update an existing one.
+
+```sh
+wof schedule set movie-night 20:00 --days fri,sat
+```
+
+## wof webhook
+
+```
+wof webhook list [--json]
+wof webhook create SCENE [--label TEXT]
+wof webhook delete TOKEN
+```
+
+Mints a private URL (`/webhook/<token>`, no sign-in required) that runs one named scene — for
+triggering from another app, a phone shortcut, or a smart-home routine. `create` prints the token and
+the relative URL; prefix it with your server's address to get the full link. Delete the webhook to
+revoke it; anyone holding the URL can run that scene until then.
+
+```sh
+wof webhook create movie-night --label "Movie night"
+# token t0k3n...  url /webhook/t0k3n...
+curl http://host:8765/webhook/t0k3n...
+```
+
+## wof connector
+
+```
+wof connector football [--league bl1] [--show]
+```
+
+Polls a built-in data source and prints the resulting overlay card as JSON; `--show` sends it to the
+TV instead (same as `wof overlay show` with a `root` tree). `football` uses the free,
+no-API-key [OpenLigaDB](https://api.openligadb.de/) API: up to 6 matches of the given league's
+current matchday (default `bl1`, Bundesliga), each match's score or kickoff time if it has not
+started yet. No API key, no TV pairing needed to preview (pairing is only needed for `--show`).
+
+```sh
+wof connector football --league bl1 --show
 ```
 
 ## wof screenshot

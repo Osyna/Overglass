@@ -52,7 +52,19 @@ server's configured hosts answers `421`, and cross-origin / cross-site non-GET r
 | `GET` | `/api/details` | Status | OLED panel hours and temperature, pixel refresher runs, power-on reason and history, ambient light, input signal, sleep timer and today's app usage. |
 | `POST` | `/api/notify/toast` | Notify | Show a message on the TV screen as a toast. |
 | `POST` | `/api/notify/say` | Notify | Speak a message through the TV speaker (text to speech) at a chosen volume, then restore the TV. |
-| `POST` | `/api/overlay` | Notify | Show a custom card on the TV (title, text, lines, optional image, colour kind, position, duration), or hide it. |
+| `POST` | `/api/overlay` | Notify | Show a custom card on the TV, built from your own JSON layout of widgets, or hide it. |
+| `GET` | `/api/scenes` | Scenes | Every saved scene with its steps. |
+| `PUT` | `/api/scenes/{name}` | Scenes | Save a scene: a named sequence of 1-20 steps, run together in order by POST .../run. |
+| `DELETE` | `/api/scenes/{name}` | Scenes | Remove a saved scene. |
+| `POST` | `/api/scenes/{name}/run` | Scenes | Run every step of a saved scene, in order, stopping at the first failure. |
+| `GET` | `/api/webhooks` | Webhooks | List webhook tokens, scenes and display labels. |
+| `POST` | `/api/webhooks` | Webhooks | Create a revocable URL for one saved scene. |
+| `DELETE` | `/api/webhooks/{token}` | Webhooks | Revoke one webhook URL. |
+| `GET` | `/webhook/{token}` | Webhooks | Run the one scene granted by this capability URL. |
+| `GET` | `/api/schedule` | Schedule | List local scene schedules. |
+| `POST` | `/api/schedule` | Schedule | Create a local scene schedule. |
+| `PUT` | `/api/schedule/{id}` | Schedule | Replace an existing local schedule entry. |
+| `DELETE` | `/api/schedule/{id}` | Schedule | Delete a local schedule entry. |
 | `GET` | `/api/screenshot` | Status | Capture the picture the TV shows from its HDMI input (without the TV's own menus) as an image. |
 | `GET` | `/api/screen/stream` | Status | Live low-resolution view of the HDMI picture: raw RGB frames in a close-delimited binary stream. |
 | `POST` | `/api/remote/{action}` | Remote | Send one remote action and wait for the TV to confirm it. |
@@ -112,23 +124,34 @@ curl -s -X POST -H "Authorization: Bearer TOKEN" -H "Content-Type: application/j
 
 ### `POST /api/overlay`
 
-Body is a card, or exactly `{"hide": true}`:
+Body is exactly `{"hide": true}`, or a card: either a `root` widget tree, or the shorthand fields
+compiled into an equivalent tree server-side:
 
 ```json
 {"title": "Dinner", "body": "It is ready.", "lines": ["Table 4"], "image": "https://example.com/a.png",
- "kind": "success", "position": "top-right", "seconds": 10}
+ "kind": "success", "position": "top-right", "size": "m", "seconds": 10}
 ```
 
-All fields optional but at least one of `title`, `body`, `lines`, `image`. `title` ≤ 80 chars, `body`
-≤ 400, `lines` ≤ 10 items of ≤ 120, `image` an `http(s)` URL ≤ 500 chars that the **TV** can fetch, `kind`
-`info|success|warning|alert`, `position` `top-left|top-right|bottom-left|bottom-right|center`,
-`seconds` integer 0-300 (0 = until hidden, default 8). Unknown fields are refused. A TV in standby
-or an invalid card answers `502` with the TV script's message. Response `{"message": "Overlay card shown"}`
-or `"... hidden"`.
+Shorthand fields are all optional but need at least one of `title`, `body`, `lines`, `image`: `title`
+≤ 80 chars, `body` ≤ 400, `lines` ≤ 10 items of ≤ 120, `image` an `http(s)` URL ≤ 500 chars that the
+**TV** can fetch, `kind` `info|success|warning|alert`. `position`
+`top-left|top-right|bottom-left|bottom-right|center` (default `top-right`), `size`
+`xs|s|m|l|xl|full` (default `m`), `seconds` integer 0-300 (0 = until hidden, default 8) apply to both
+paths. A `root` tree replaces the shorthand entirely (the two are mutually exclusive in one request):
+a node is `{"type": stack|row|text|image|badge|dot|progress|countdown|list|divider, ...fields,
+"children"?: [...]}`, depth ≤ 4, ≤ 40 widgets total, ≤ 32768 bytes of the final JSON. Full per-type
+field list: [ARCHITECTURE.md §3a](../ARCHITECTURE.md). Unknown fields are refused. A TV in standby
+or an invalid card answers `502` with the TV script's message. Response `{"message": "Overlay card
+shown"}` or `"... hidden"`.
 
 ```sh
 curl -s -X POST -H "Authorization: Bearer TOKEN" -H "Content-Type: application/json" \
   -d '{"hide": true}' http://host:8765/api/overlay
+curl -s -X POST -H "Authorization: Bearer TOKEN" -H "Content-Type: application/json" -d '{
+  "root": {"type": "stack", "gap": 12, "children": [
+    {"type": "text", "text": "Dinner", "size": "l", "weight": "strong"},
+    {"type": "progress", "value": 0.6, "label": "Cooking"}]}
+}' http://host:8765/api/overlay
 ```
 
 ### `GET /api/screenshot`
@@ -200,6 +223,60 @@ finished jobs stay downloadable until then.
 curl -s -X POST -H "Authorization: Bearer TOKEN" --data-binary @photo.png \
   "http://host:8765/api/jobs?profile=ai-picture-sr&name=photo.png"
 curl -s -H "Authorization: Bearer TOKEN" http://host:8765/api/jobs/JOB_ID/result -o out.png
+```
+
+### Scenes
+
+A scene is a named sequence of 1-20 steps (remote, setting, overlay, wait), run in order, stopping
+at the first failure. Full step shapes and validation: [ARCHITECTURE.md](../ARCHITECTURE.md)
+(search `## Scenes`).
+
+* `GET /api/scenes` -> `{"scenes": {name: {"steps": [...]}}}`.
+* `PUT /api/scenes/{name}` body `{"steps": [...]}` -> `{"message": "Scene saved"}`. An `overlay`
+  step's card is validated and compiled into a widget tree here, not every time the scene runs.
+* `DELETE /api/scenes/{name}` -> `{"message": "Scene deleted"}`; `400` if unknown.
+* `POST /api/scenes/{name}/run` -> `{"messages": [one per completed step]}`; `404` unknown scene,
+  `409` while a job reserves the TV, `502` at the step that failed (earlier steps already ran).
+
+```sh
+curl -s -X PUT -H "Authorization: Bearer TOKEN" -H "Content-Type: application/json" -d \
+  '{"steps": [{"type": "overlay", "card": {"title": "Movie night", "seconds": 5}}]}' \
+  http://host:8765/api/scenes/movie-night
+curl -s -X POST -H "Authorization: Bearer TOKEN" http://host:8765/api/scenes/movie-night/run
+```
+
+### Local scheduler
+
+Runs a saved scene automatically at a time of day. Needs `wof serve` (or the on-TV server) running
+continuously; entries and detail: [ARCHITECTURE.md](../ARCHITECTURE.md) (search `## Local scheduler`).
+
+* `GET /api/schedule` -> `{"entries": {id: {"scene", "time", "days", "enabled"}}}`.
+* `POST /api/schedule` body `{"scene", "time": "HH:MM", "days"?: ["mon", ...], "enabled"?}` ->
+  creates and returns `{"id", ...}`.
+* `PUT /api/schedule/{id}` updates an existing id (`404` if unknown).
+* `DELETE /api/schedule/{id}`.
+
+```sh
+curl -s -X POST -H "Authorization: Bearer TOKEN" -H "Content-Type: application/json" \
+  -d '{"scene": "movie-night", "time": "20:00", "days": ["fri", "sat"]}' \
+  http://host:8765/api/schedule
+```
+
+### Webhooks
+
+A private capability URL that runs one saved scene, with no sign-in. Trust model and token details:
+[ARCHITECTURE.md](../ARCHITECTURE.md) (search `## Webhook quick triggers`).
+
+* `GET /api/webhooks` (needs the normal bearer token) -> `{"webhooks": {token: {"scene", "label"}}}`.
+* `POST /api/webhooks` body `{"scene", "label"?}` -> `{"token", "url": "/webhook/<token>", "message": ...}`.
+* `DELETE /api/webhooks/{token}` revokes it.
+* `GET /webhook/{token}` -- **no bearer token, ever; the token is the credential** -- runs the scene,
+  `{"message": "Webhook fired: N step(s) run"}`; `404` unknown token or a since-deleted scene.
+
+```sh
+curl -s -X POST -H "Authorization: Bearer TOKEN" -H "Content-Type: application/json" \
+  -d '{"scene": "movie-night", "label": "Movie night"}' http://host:8765/api/webhooks
+curl -s http://host:8765/webhook/TOKEN   # no Authorization header
 ```
 
 ## Maintaining this page
