@@ -143,42 +143,63 @@ The overlay card started as five fixed fields (title, body, lines, image, kind).
 bounded layout language so a user can design their own card in JSON alone, with the same rendering
 engine behind both a one-line "show a toast" call and a multi-widget dashboard.
 
-**Request body** is either `{"hide": true}` or a card:
+**Request body** is `{"hide": true}`, a single card, or a multi-region card:
 
 ```
-{"position"?: top-left|top-right|bottom-left|bottom-right|center (default top-right),
- "size"?: xs|s|m|l|xl|full (default m, a width band: 320/420/560/760/960/1760px),
+{"position"?: top-left|top-right|bottom-left|bottom-right|center   (floating card, default top-right)
+              |top|bottom|left|right                                (edge bar / edge panel, flush with the screen edge)
+ "size"?: xs|s|m|l|xl|full  (default m; a floating card's width band 320/420/560/760/960/1760px,
+                             a left/right panel's width 320/420/520/640/760px/50%),
  "seconds"?: 0-300 (default 8, 0 = stays until hidden),
+ "theme"?: {"accent"?, "surface"?, "text"?, "muted"?, "line"?: "#rrggbb", "opacity"? 0.2-1 (surface alpha,
+            default 0.94), "radius"? 0-32 (default 16), "scale"? 0.75-1.5 (whole-card zoom),
+            "font"? sans|condensed|mono},
  "root": <node>}
+
+{"seconds"?, "theme"?, "regions": [{"position", "size"?, "root": <node>}, ...]}   1-4 regions, distinct positions
 ```
 
-or, as a shorthand that is compiled into a `root` tree server-side (`notify._compile_card`, the only
-place that knows both shapes — the TV never sees anything but a tree): `{"title"?, "body"?, "lines"?,
-"image"?, "kind"?}`, the original fields, unchanged for every existing caller (web UI's basic card
-form, the Home Assistant `overlay_show` service, `wof overlay`).
+Only one `overlay`-type window can be visible on this TV (`docs/FINDINGS.md`), so a broadcast-style
+layout — a full-width top bar with crests, score and clock plus a right-hand panel of sections — is
+**one window with several regions**: the overlay app draws one `.card` per region inside its
+full-screen transparent window. `theme` and `seconds` apply to every region; the theme becomes CSS
+custom properties on the app's stage (`--accent`, `--surface` as `rgb(r g b / opacity)`, `--fg`,
+`--fg-2`, `--line`, `--radius`, `--scale` via `zoom`, `data-font`), so a card can be a flat black
+edge-to-edge bar with a lime accent or a soft translucent corner card from the same widget tree.
 
-**Node** is `{"type": one of the 12 below, ...type fields, "children"?: [node, ...]}`. Depth ≤ 5,
-total nodes ≤ 60, serialised JSON ≤ 32768 bytes raw (no more base64 tax — see below; dispatch.sh's stdin
-upload itself allows up to 65536 bytes, a more generous hard ceiling behind this pre-flight check).
-Caps were raised from the original 4/40 once `compare`/`sparkline` and richer dashboards (ARCHITECTURE.md
-§12, the addon framework) made the original ceiling too tight for a genuinely rich single card; 32768
-bytes stays the binding constraint (still well short of the achievable ~110KB at 60 nodes), so it keeps
-meaning something.
+The shorthand `{"title"?, "body"?, "lines"?, "image"?, "kind"?}` is still compiled into a `root` tree
+server-side (`notify._compile_card`, the only place that knows both shapes — the TV never sees anything
+but trees), unchanged for every existing caller (web UI's basic card form, the Home Assistant
+`overlay_show` service, `wof overlay`).
+
+**Node** is `{"type": one of the 18 below, ...type fields, "children"?: [node, ...]}`. Depth ≤ 5,
+total nodes ≤ 80 **across every region of one card**, serialised JSON ≤ 49152 bytes raw (dispatch.sh's
+stdin upload allows 65536, a more generous hard ceiling behind this pre-flight check). `tone` is one of
+`info|success|warning|alert|accent`; `accent` is the theme's accent colour, so a widget follows the
+theme instead of a fixed semantic colour. `icon` is one of 16 built-in 24px stroke glyphs: `ball bolt
+chart trophy pulse layers clock pin sun card swap target info bell star flag` (path data lives in
+`overlay.js` `ICONS` and is mirrored by the web UI's preview).
 
 | Type | Fields | Renders as |
 | --- | --- | --- |
 | `stack` | `gap`? 0-48, `align`? start\|center\|end, `children` 1-20 | vertical flex box |
 | `row` | `gap`? 0-48, `align`? start\|center\|end, `children` 1-10 | horizontal flex box |
-| `text` | `text` ≤400, `size`? xs\|s\|m\|l\|xl, `weight`? normal\|strong, `color`? fg\|fg-2\|info\|success\|warning\|alert | a line of text |
-| `image` | `src` http(s) URL ≤500, `shape`? square\|circle | fetched by the TV; `circle` is a fixed 64px crest/avatar tile |
-| `badge` | `text` ≤24, `tone`? info\|success\|warning\|alert | a small filled pill |
-| `dot` | `tone`? info\|success\|warning\|alert | a plain coloured circle (what the old `kind` dot was) |
+| `text` | `text` ≤400, `size`? xs\|s\|m\|l\|xl, `weight`? normal\|strong, `color`? fg\|fg-2\|tone | a line of text |
+| `image` | `src` http(s) URL ≤500, `shape`? square\|circle, `size`? s\|m\|l | fetched by the TV; `circle` is a 40/64/120px crest tile |
+| `badge` | `text` ≤24, `tone`? | a small filled pill; `accent` tone is outlined in the accent colour (the "LIVE" chip) |
+| `dot` | `tone`? | a plain coloured circle (what the old `kind` dot was) |
 | `progress` | `value` 0-1, `label`? ≤40, `tone`? | a filled bar |
 | `countdown` | `target` ISO 8601 datetime, `label`? ≤40 | a live clock ticking down to `target`, drawn client-side in the overlay app — no server polling |
+| `clock` | `format`? time\|seconds\|date, `label`? ≤40 | the TV's live local time, ticking client-side |
 | `list` | `items` 1-10 of ≤120, `style`? bullet\|number\|plain | the old `lines` |
 | `divider` | — | a thin rule |
 | `compare` | `segments` 2-4 of `{label ≤24, value ≤16, fraction 0-1, tone?}` | an N-segment proportional bar with a label+value above each segment (possession, win probability, any real side-by-side comparison) |
-| `sparkline` | `points` 3-24 of numbers -1..1, `tone`? | a small zero-centred bar chart (momentum, any real recent-history signal); addon authors normalise their own values into -1..1 |
+| `sparkline` | `points` 3-24 of numbers -1..1, `axis`? exactly 3 labels ≤6 (top, middle, bottom), `tone`? | a zero-centred bar chart with a midline (momentum, any real recent-history signal); authors normalise their values into -1..1 |
+| `section` | `title` ≤40, `icon`?, `action`? ≤24 | a section header: accent icon, upper-case title, muted right-aligned action text, rule beneath |
+| `event` | `time` ≤8, `text` ≤120, `icon`?, `tone`? | a timeline row: monospace time, icon (or tone dot), text |
+| `stat` | `label` ≤40, `left` ≤16, `right` ≤16, `fraction` 0-1, `tone`? | one two-sided comparison row: label, left value, bar filled to `fraction` from the left, right value |
+| `status` | `label` ≤40, `state` online\|offline\|degraded\|unknown, `detail`? ≤24 | a source row: label, coloured dot + state, right-aligned detail (a latency, a time) |
+| `meta` | `items` 1-4 of `{label ≤24, value ≤40, icon?}` | small-label-over-value cells separated by rules (venue, matchday, conditions) |
 
 **Three independent validators**, defence in depth exactly like every other verb: `notify.py`
 (`check_overlay_request`/`_check_node`, before the server ever contacts the TV), `notify.js` (`tree()`/
@@ -534,19 +555,23 @@ Network failures and malformed JSON/match fields raise a readable `RuntimeError`
 | `matchIsFinished` | Finished matches get a `FULL TIME` badge; unfinished matches whose kickoff has already passed get a `LIVE` badge — both are read straight from real fields, never invented. OpenLigaDB has no explicit "live" flag or running clock, so no minute is ever shown or guessed for a live match, only the last reported score |
 | `matchResults[]` | Score entries with integer `resultOrderID`, `pointsTeam1`, `pointsTeam2`; select the greatest order, not the array's last entry, so a half-time result cannot replace a later score |
 | `matchDateTimeUTC` | ISO 8601 kickoff, formatted as `08 Nov 16:30 UTC` for a match that has not started |
-| `goals[].matchMinute`, `.goalGetterName`, `.scoringTeamId`, `.isPenalty`, `.isOwnGoal` | One `list` line per goal of the first (featured) match only: `"12' H. Kane — Bayern"`, with `(pen.)`/`(OG)` suffixes; the team shown is whichever team's id matches `scoringTeamId`, taken as the API reports it |
+| `goals[].matchMinute`, `.goalGetterName`, `.scoringTeamId`, `.isPenalty`, `.isOwnGoal` | One `event` row per goal of the first (featured) match only, under a `section` "Goals": time `12'`, ball icon, `"H. Kane — Bayern"` with `(pen.)`/`(OG)` suffixes (tone warning/alert); the team shown is whichever team's id matches `scoringTeamId`, taken as the API reports it |
+| the HTTP round trip itself | A closing `status` row "OpenLigaDB · Online · N ms" where N is the latency this very poll measured, plus an "Updated HH:MM UTC" `meta` cell — the only "data source" facts the card shows are the ones it just observed |
 
-The card is a large-width `stack`: a two-line header (league, matchday), then per match a `row` of
-(crest+name, score/status `badge`, name+crest), a `divider`, and — for the first match only — the
-goal list. At most six matches are shown, with an explicit "Showing 6 of N matches" line when
-truncated. An empty array renders "No matches available". Polling validates the generated tree
-before returning it, so preview and TV display share the same overlay contract — a real response is
-typically under 4KB, well inside §3a's 32768-byte cap.
+The card is a large-width `stack`: league title, a `meta` row (matchday, match count, updated time),
+a stack of matches — per match a `row` of (crest+name, score/status `badge`, name+crest) after a
+`divider`, and for the featured match a sub-stack of `section` + `event` rows — then the source
+`status` row. At most six matches are shown, with an explicit "Showing 6 of N matches" line when
+truncated. An empty array renders "No matches available". Polling validates the generated tree before
+returning it, so preview and TV display share the same overlay contract — a real response is typically
+under 6KB, well inside §3a's 49152-byte cap. An installed addon may add a `theme`, `position` and
+`size` on top (`addons.card_for`), so the same data can be a lime-on-black side panel or a soft corner
+card.
 
 There is no possession, shots, expected goals or win-probability widget on this card: OpenLigaDB does
-not report them, and this connector never fabricates a statistic. The `compare` and `sparkline`
-widget types (§3a) exist as general framework capability for connectors that do have a real source for
-a comparison or a time series; football does not use either.
+not report them, and this connector never fabricates a statistic. The `compare`, `stat` and
+`sparkline` widget types (§3a) exist as general framework capability for connectors that do have a
+real source for a comparison or a time series; football does not use them.
 
 Endpoint and response fields were checked against the public API and the
 [OpenLigaDB API documentation](https://github.com/OpenLigaDB/OpenLigaDB-Samples#api-schema).
@@ -562,15 +587,16 @@ validation (no threading, no TV talk — the same split as `schedule.py` vs. `se
 
 `addons.json` (`config_dir()/addons.json`, mode via the same atomic-tempfile-then-`os.replace` pattern
 as every other store in this project) holds `{connector_id: {"params", "interval_seconds" 15-3600,
-"enabled", "position"?, "size"?}}`. `addons.install(id, body)` validates and upserts one entry;
+"enabled", "position"?, "size"?, "theme"?}}`. `addons.install(id, body)` validates and upserts one entry;
 **enabling an addon disables every other installed addon**, because only one `overlay`-type window can
 be visible on this TV at a time (`docs/FINDINGS.md`, proven live by installing a second overlay app and
 watching the first one's process get torn down) — there is no silent flicker between two addons racing
-to show their card, there is exactly one live addon. `addons.uninstall(id)` removes an entry.
+to show their card, there is exactly one live addon. (A single addon may still fill several screen areas:
+its connector can return a multi-region card, §3a.) `addons.uninstall(id)` removes an entry.
 `addons.catalog()` lists every registered connector's `META` (no config or network touched — it works
 even with nothing installed and nothing paired). `addons.card_for(id, entry)` polls the connector and
-applies the entry's saved `position`/`size` over whatever the connector itself chose, then the caller
-shows it exactly like any other overlay card.
+applies the entry's saved `theme`, plus `position`/`size` for a single-region card, over whatever the
+connector itself chose, then the caller shows it exactly like any other overlay card.
 
 `server.AddonsThread` ticks every 10 seconds, mirroring `SchedulerThread`'s locking exactly: a per-addon
 in-memory `last` timestamp decides when it is due for its own `interval_seconds`; a busy TV
@@ -582,7 +608,7 @@ same `finally` block as every other `wof serve` shutdown step.
 | Route | Behaviour |
 | --- | --- |
 | `GET /api/addons` | `{"catalog": [...META, "id"], "installed": {...}}`; local storage only, works unpaired |
-| `PUT /api/addons/{id}` | Install/update; body `{"params", "interval_seconds"?, "enabled"?, "position"?, "size"?}`; local storage only, works unpaired |
+| `PUT /api/addons/{id}` | Install/update; body `{"params", "interval_seconds"?, "enabled"?, "position"?, "size"?, "theme"?}`; `theme` is the §3a theme object and is applied to every card the addon produces (`position`/`size` only to single-region cards — a multi-region card places itself); local storage only, works unpaired |
 | `DELETE /api/addons/{id}` | Uninstall; 404 if not installed; local storage only, works unpaired |
 | `POST /api/addons/{id}/preview` | Poll once and show now, without touching install state; needs a TV, same `reserved()`/`TV_LOCK`-free semantics as `POST /api/overlay` |
 
@@ -594,6 +620,33 @@ compatibility): a third-party connector dropped into `connectors/` is installabl
 CLI code change, which is the actual "wide for extension" contract — write `poll()` + `META` in one
 file, register it in `CONNECTORS`/`META`, and `wof addon install your-id` and the web UI's Extensions
 catalog both pick it up.
+
+## Saved designs
+
+A design is one validated overlay card — theme, layout (a `root` or `regions`), widgets, `seconds` — under
+a name, so a card a user built once in the web UI's card studio can be shown again from the UI, the
+CLI, a scene or Home Assistant. `webos_foundry/designs.py` stores `{name: card}` in
+`config_dir()/designs.json` (atomic tempfile + `os.replace`, an `RLock` around read-modify-write, the
+same pattern as every other store). `check_design` is exactly `notify.check_overlay_request` minus
+`{"hide": true}`; the stored form is the validated/normalised card, so showing it later re-validates a
+known-good body. Names follow scene rules (1-60 characters, no leading/trailing space); route path
+parameters are URL-decoded by `server.resolve`, so a name with a space is stored as typed.
+
+| Route | Behaviour |
+| --- | --- |
+| `GET /api/designs` | `{"designs": {name: card}}`; local storage only, works unpaired |
+| `PUT /api/designs/{name}` | Save/replace; body is the `POST /api/overlay` card; local storage only, works unpaired |
+| `DELETE /api/designs/{name}` | 404 if missing; local storage only |
+| `POST /api/designs/{name}/show` | Show it on the TV now; 404 if missing; same semantics as `POST /api/overlay` |
+
+A scene's overlay step may be `{"type": "overlay", "design": name}` instead of `{"type": "overlay",
+"card": {...}}`; the name is validated when the scene is saved and **resolved when the scene runs**
+(`designs.show`), so editing the design changes what every scene, schedule and webhook that uses it
+shows — the same late-binding rule webhooks already follow for scene names. A deleted design makes
+those steps fail at run time with "No such design".
+
+CLI: `wof design list [--json]`, `wof design set <name> FILE.json` (`-` for stdin), `wof design delete
+<name>`, `wof design show <name>`. All honour `--config-dir`.
 
 
 ## Webhook quick triggers

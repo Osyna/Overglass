@@ -19,6 +19,7 @@ Commands that talk to the TV only ever send verbs from the dispatcher grammar
 | [`wof settings`](#wof-settings) | AI picture/sound settings |
 | [`wof notify`](#wof-notify) | Toast, spoken announcement |
 | [`wof overlay`](#wof-overlay) | On-screen card |
+| [`wof design`](#wof-design) | Save a finished overlay card under a name and show it again |
 | [`wof scene`](#wof-scene) | Save and run a named sequence of steps |
 | [`wof schedule`](#wof-schedule) | Run a scene automatically at a time of day |
 | [`wof webhook`](#wof-webhook) | A private link that runs one scene |
@@ -232,8 +233,10 @@ wof overlay hide
 ```
 
 The CLI's shorthand flags compile into an equivalent JSON widget tree before it reaches the TV
-(stack, row, text, image, badge, dot, progress, countdown, list, divider, compare, sparkline — depth ≤ 5,
-≤ 60 widgets, ≤ 32768 bytes; full schema: [ARCHITECTURE.md §3a](../ARCHITECTURE.md)). The CLI has no flags for a
+(stack, row, text, image, badge, dot, progress, countdown, clock, list, divider, compare, sparkline,
+section, event, stat, status, meta — depth ≤ 5, ≤ 80 widgets, ≤ 49152 bytes; a card may also carry a
+`theme` and up to 4 `regions`, e.g. a full-width top bar plus a right-hand panel; full schema:
+[ARCHITECTURE.md §3a](../ARCHITECTURE.md)). The CLI has no flags for a
 custom tree; build one with the web UI's Advanced builder, `curl`/`POST /api/overlay` with a `root`
 field, or a scene's `overlay` step (`wof scene`, below).
 
@@ -341,6 +344,28 @@ background refresh; `list`/`install`/`uninstall` work with no TV paired.
 wof addon install football --param league=bl1 --interval 90
 wof addon list
 wof addon uninstall football
+```
+
+## wof design
+
+```
+wof design list [--json]
+wof design set NAME FILE.json
+wof design delete NAME
+wof design show NAME
+```
+
+A design is one complete overlay card (theme, layout or regions, widgets, seconds — the same body
+`POST /api/overlay` takes) saved under a name in the local config, so a card built once in the web
+UI's card studio can be shown again from the CLI, from a scene step (`{"type": "overlay", "design":
+"match-day"}`, resolved when the scene runs) or from Home Assistant through the API. `set` validates
+the file with the overlay rules (`-` reads stdin); `list` prints each name with its layout (position, or
+the region positions); `show` needs a paired TV, the rest work offline.
+
+```sh
+wof design set match-day ~/match-day.json
+wof design list
+wof design show match-day
 ```
 
 ## wof screenshot

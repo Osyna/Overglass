@@ -69,6 +69,10 @@ server's configured hosts answers `421`, and cross-origin / cross-site non-GET r
 | `PUT` | `/api/addons/{id}` | Addons | Install (or update) an addon. wof serve polls it on interval_seconds and shows the result while enabled -- the one-click 'it just stays live' install. |
 | `DELETE` | `/api/addons/{id}` | Addons | Uninstall an addon; stops its background refresh. |
 | `POST` | `/api/addons/{id}/preview` | Addons | Poll an addon once and show it now, without installing or changing saved settings. |
+| `GET` | `/api/designs` | Designs | Every saved overlay design: a named card with its theme, layout and widgets. |
+| `PUT` | `/api/designs/{name}` | Designs | Save (or replace) a design: exactly the card body POST /api/overlay accepts, validated the same way. |
+| `DELETE` | `/api/designs/{name}` | Designs | Remove a saved design. |
+| `POST` | `/api/designs/{name}/show` | Designs | Show a saved design on the TV now. |
 | `GET` | `/api/screenshot` | Status | Capture the picture the TV shows from its HDMI input (without the TV's own menus) as an image. |
 | `GET` | `/api/screen/stream` | Status | Live low-resolution view of the HDMI picture: raw RGB frames in a close-delimited binary stream. |
 | `POST` | `/api/remote/{action}` | Remote | Send one remote action and wait for the TV to confirm it. |
@@ -128,8 +132,8 @@ curl -s -X POST -H "Authorization: Bearer TOKEN" -H "Content-Type: application/j
 
 ### `POST /api/overlay`
 
-Body is exactly `{"hide": true}`, or a card: either a `root` widget tree, or the shorthand fields
-compiled into an equivalent tree server-side:
+Body is exactly `{"hide": true}`, or a card: a `root` widget tree, a multi-region card (`regions`), or
+the shorthand fields compiled into an equivalent tree server-side:
 
 ```json
 {"title": "Dinner", "body": "It is ready.", "lines": ["Table 4"], "image": "https://example.com/a.png",
@@ -139,14 +143,18 @@ compiled into an equivalent tree server-side:
 Shorthand fields are all optional but need at least one of `title`, `body`, `lines`, `image`: `title`
 ≤ 80 chars, `body` ≤ 400, `lines` ≤ 10 items of ≤ 120, `image` an `http(s)` URL ≤ 500 chars that the
 **TV** can fetch, `kind` `info|success|warning|alert`. `position`
-`top-left|top-right|bottom-left|bottom-right|center` (default `top-right`), `size`
-`xs|s|m|l|xl|full` (default `m`), `seconds` integer 0-300 (0 = until hidden, default 8) apply to both
-paths. A `root` tree replaces the shorthand entirely (the two are mutually exclusive in one request):
-a node is `{"type": stack|row|text|image|badge|dot|progress|countdown|list|divider|compare|sparkline,
-...fields, "children"?: [...]}`, depth ≤ 5, ≤ 60 widgets total, ≤ 32768 bytes of the final JSON. Full per-type
-field list: [ARCHITECTURE.md §3a](../ARCHITECTURE.md). Unknown fields are refused. A TV in standby
-or an invalid card answers `502` with the TV script's message. Response `{"message": "Overlay card
-shown"}` or `"... hidden"`.
+`top-left|top-right|bottom-left|bottom-right|center` (floating card, default `top-right`) or
+`top|bottom|left|right` (a full-width edge bar or full-height edge panel), `size` `xs|s|m|l|xl|full`
+(default `m`), `seconds` integer 0-300 (0 = until hidden, default 8) and `theme` apply to every form.
+`theme` is `{"accent"?, "surface"?, "text"?, "muted"?, "line"?: "#rrggbb", "opacity"? 0.2-1, "radius"? 0-32,
+"scale"? 0.75-1.5, "font"? sans|condensed|mono}`. A `root` tree replaces the shorthand entirely (the two are
+mutually exclusive in one request): a node is `{"type": stack|row|text|image|badge|dot|progress|countdown|
+clock|list|divider|compare|sparkline|section|event|stat|status|meta, ...fields, "children"?: [...]}`.
+`{"seconds"?, "theme"?, "regions": [{"position", "size"?, "root"}, ...]}` (1-4 regions with distinct
+positions) draws several cards in the one overlay window — a top bar plus a side panel, say. Caps: depth
+≤ 5, ≤ 80 widgets total across all regions, ≤ 49152 bytes of the final JSON. Full per-type field list:
+[ARCHITECTURE.md §3a](../ARCHITECTURE.md). Unknown fields are refused. A TV in standby or an invalid card
+answers `502` with the TV script's message. Response `{"message": "Overlay card shown"}` or `"... hidden"`.
 
 ```sh
 curl -s -X POST -H "Authorization: Bearer TOKEN" -H "Content-Type: application/json" \

@@ -34,9 +34,14 @@ on-screen cards, screenshots and live view, with a locked-down SSH key instead o
   TV's own scope and availability checks and read-back.
 * **Notifications:** on-screen toast, spoken announcement through the TV speaker (Audio Guidance TTS,
   restored afterwards), and an overlay card drawn over HDMI without changing the foreground app, built
-  from a JSON widget tree (stack, row, text, image/crest, badge, dot, progress bar, live countdown,
-  list, divider, N-way comparison bar, sparkline) with a simple shorthand for a plain title/body/image
-  card, or visually with the web UI's Advanced builder (live local preview, no code needed).
+  from a JSON widget tree of 18 types (stack, row, text, image/crest, badge, dot, progress bar, live
+  countdown and clock, list, divider, N-way comparison bar, two-sided stat, sparkline with axis, section
+  header, timed event, source status, key facts), a theme (accent/surface/text colours, opacity, corner
+  radius, scale, font) and up to four regions in one card — a full-width top bar plus a side panel, like a
+  broadcast scoreboard — with a simple shorthand for a plain title/body/image card, or visually in the
+  web UI's card studio (TV-shaped live preview, templates, no code needed).
+* **Saved designs:** keep a finished card under a name (`wof design set match-day card.json`) and show it
+  again from the UI, CLI, API, a scene step or Home Assistant.
 * **Scenes:** save a named sequence of remote, setting, overlay and wait steps, then run it in one call
   from the CLI, API, web UI or a Home Assistant automation.
 * **Scheduler:** run a saved scene automatically at a time of day, on chosen days of the week, as long
