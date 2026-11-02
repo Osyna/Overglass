@@ -317,3 +317,128 @@ def test_serve_forwards_flags_and_config_dir(paired, monkeypatch, tmp_path):
     assert os.environ["WEBOS_FOUNDRY_HOME"] == str(paired)
     wof("serve", "--generate-token")
     assert seen["argv"][-1] == "--generate-token"
+
+
+def test_webhook_create_list_delete(tmp_path, capsys):
+    from webos_foundry import webhooks
+
+    args = ("--config-dir", str(tmp_path))
+    assert wof(*args, "webhook", "list") == 0
+    assert "No webhooks saved yet" in capsys.readouterr().out
+    assert wof(*args, "webhook", "create", "movie-night", "--label", "Movie night") == 0
+    token, = webhooks.load(tmp_path)
+    output = capsys.readouterr().out
+    assert token in output and "/webhook/" + token in output
+    assert wof(*args, "webhook", "list") == 0
+    output = capsys.readouterr().out
+    assert token in output and "movie-night" in output and "Movie night" in output
+    assert wof(*args, "webhook", "list", "--json") == 0
+    assert json.loads(capsys.readouterr().out) == {token: {"scene": "movie-night", "label": "Movie night"}}
+    assert wof(*args, "webhook", "delete", token) == 0
+    assert "Webhook deleted" in capsys.readouterr().out
+    assert wof(*args, "webhook", "delete", token) == 1
+    assert "No such webhook" in capsys.readouterr().err
+    assert wof(*args, "webhook", "list", "--json") == 0
+    assert json.loads(capsys.readouterr().out) == {}
+
+
+def test_webhook_create_rejects_invalid_fields(tmp_path, capsys):
+    args = ("--config-dir", str(tmp_path))
+    assert wof(*args, "webhook", "create", "") == 1
+    assert "scene name" in capsys.readouterr().err
+    assert wof(*args, "webhook", "create", "scene", "--label", "x" * 61) == 1
+    assert "webhook label" in capsys.readouterr().err
+
+
+def test_connector_football_preview_and_show(monkeypatch, tmp_path, capsys):
+    import io
+    import urllib.request
+
+    from webos_foundry import notify
+
+    matches = [{"leagueName": "Bundesliga", "team1": {"teamName": "Home"},
+                "team2": {"teamName": "Away"}, "matchResults": [],
+                "matchDateTimeUTC": "2026-11-08T16:30:00Z"}]
+    calls = []
+
+    def urlopen(url, timeout):
+        calls.append((url, timeout))
+        return io.BytesIO(json.dumps(matches).encode())
+
+    def no_transport(args):
+        raise AssertionError("Preview must not need a TV or pairing")
+
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(cli, "_transport", no_transport)
+    args = ("--config-dir", str(tmp_path / "unpaired"), "connector", "football")
+    assert wof(*args) == 0
+    body = json.loads(capsys.readouterr().out)
+    assert notify.check_overlay_request(body) == body
+    assert calls == [("https://api.openligadb.de/getmatchdata/bl1", 8)]
+
+    transport = FakeTransport({"notify-overlay": '{"returnValue": true, "overlay": "shown"}'})
+    monkeypatch.setattr(cli, "_transport", lambda args: transport)
+    assert wof(*args, "--league", "bl2", "--show") == 0
+    assert capsys.readouterr().out.strip() == "Overlay card shown"
+    assert calls[-1] == ("https://api.openligadb.de/getmatchdata/bl2", 8)
+    assert json.loads(transport.calls[0].data) == body
+
+
+def test_connector_network_error_is_cli_error(monkeypatch, capsys):
+    import urllib.error
+    import urllib.request
+
+    def urlopen(url, timeout):
+        raise urllib.error.URLError("offline")
+
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    assert wof("connector", "football") == 1
+    assert "wof: Could not fetch OpenLigaDB football data" in capsys.readouterr().err
+
+
+def test_schedule_set_list_update_delete(tmp_path, capsys):
+    args = ("--config-dir", str(tmp_path / "schedule-home"))
+    assert wof(*args, "schedule", "list") == 0
+    assert "No schedule entries" in capsys.readouterr().out
+    assert wof(*args, "schedule", "set", "future-scene", "20:00", "--days", "mon,tue") == 0
+    saved = capsys.readouterr().out
+    assert "saved" in saved
+    assert wof(*args, "schedule", "list", "--json") == 0
+    entries = json.loads(capsys.readouterr().out)
+    entry_id, = entries
+    assert entry_id in saved
+    assert entries[entry_id] == {"id": entry_id, "scene": "future-scene", "time": "20:00",
+                                 "days": ["mon", "tue"], "enabled": True}
+    assert wof(*args, "schedule", "list") == 0
+    listed = capsys.readouterr().out
+    assert all(value in listed for value in (entry_id, "future-scene", "20:00", "mon,tue", "enabled=true"))
+    assert wof(*args, "schedule", "set", "--id", entry_id, "later", "23:59", "--disabled") == 0
+    capsys.readouterr()
+    assert wof(*args, "schedule", "list", "--json") == 0
+    assert json.loads(capsys.readouterr().out) == {
+        entry_id: {"id": entry_id, "scene": "later", "time": "23:59", "days": [], "enabled": False},
+    }
+    assert wof(*args, "schedule", "delete", entry_id) == 0
+    assert entry_id in capsys.readouterr().out
+    assert wof(*args, "schedule", "list", "--json") == 0
+    assert json.loads(capsys.readouterr().out) == {}
+    assert wof(*args, "schedule", "delete", entry_id) == 1
+    assert "No such schedule entry" in capsys.readouterr().err
+
+
+def test_schedule_set_rejects_invalid_entries(tmp_path, capsys):
+    args = ("--config-dir", str(tmp_path))
+    assert wof(*args, "schedule", "set", "s", "24:00") == 1
+    assert "HH:MM" in capsys.readouterr().err
+    assert wof(*args, "schedule", "set", "s", "20:00", "--days", "Mon") == 1
+    assert "days" in capsys.readouterr().err
+    assert wof(*args, "schedule", "set", "--id", "missing", "s", "20:00") == 1
+    assert "No such schedule entry" in capsys.readouterr().err
+
+
+def test_schedule_help_lists_three_subcommands(capsys):
+    with pytest.raises(SystemExit) as exit_info:
+        cli.build_parser().parse_args(["schedule", "--help"])
+    assert exit_info.value.code == 0
+    help_text = capsys.readouterr().out
+    assert all(command in help_text for command in ("list", "set", "delete"))

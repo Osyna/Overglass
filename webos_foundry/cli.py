@@ -8,7 +8,7 @@ import time
 from dataclasses import asdict, fields
 from pathlib import Path
 
-from . import capture, dispatcher, install as install_module, notify, pairing, process, scenes, tv
+from . import capture, connectors, dispatcher, install as install_module, notify, pairing, process, scenes, schedule, tv, webhooks
 from .config import ENV, Config, config_dir
 from .errors import ConfigError, ValidationError, WebosFoundryError
 from .transport import SSHTransport
@@ -200,6 +200,60 @@ def cmd_scene_run(args):
         print(message)
 
 
+def cmd_connector(args):
+    params = {"league": args.league}
+    if args.show:
+        print(connectors.run(args.connector, params, _transport(args)))
+    else:
+        print(json.dumps(connectors.CONNECTORS[args.connector](params), indent=2))
+
+
+def cmd_schedule_list(args):
+    entries = schedule.load(args.config_dir)
+    if args.json:
+        print(json.dumps(entries, indent=2))
+    elif not entries:
+        print("No schedule entries saved yet; see `wof schedule set --help`")
+    else:
+        for entry_id, entry in sorted(entries.items()):
+            print("%s  %s  %s  %s  enabled=%s" %
+                  (entry_id, entry["scene"], entry["time"], ",".join(entry["days"]) or "every day",
+                   str(entry["enabled"]).lower()))
+
+
+def cmd_schedule_set(args):
+    entry = {"scene": args.scene, "time": args.time, "days": args.days.split(",") if args.days else [],
+             "enabled": not args.disabled}
+    entry_id = schedule.save(args.id, entry, args.config_dir)
+    print("Schedule entry %s saved" % entry_id)
+
+
+def cmd_schedule_delete(args):
+    schedule.delete(args.id, args.config_dir)
+    print("Schedule entry %s deleted" % args.id)
+
+
+def cmd_webhook_list(args):
+    saved = webhooks.load(args.config_dir)
+    if args.json:
+        print(json.dumps(saved, indent=2))
+    elif not saved:
+        print("No webhooks saved yet; see `wof webhook create --help`")
+    else:
+        for token, entry in sorted(saved.items()):
+            print("%s  %s  %s" % (token, entry["scene"], entry["label"]))
+
+
+def cmd_webhook_create(args):
+    token = webhooks.create(args.scene, args.label, args.config_dir)
+    print("Webhook created: %s\n/webhook/%s" % (token, token))
+
+
+def cmd_webhook_delete(args):
+    webhooks.delete(args.token, args.config_dir)
+    print("Webhook deleted")
+
+
 def cmd_screenshot(args):
     out = Path(args.out)
     fmt = args.format or ("png" if out.suffix.lower() == ".png" else "jpg")
@@ -369,6 +423,33 @@ def build_parser():
     command.add_argument("name")
     command = add("run", cmd_scene_run, "run every step of a saved scene, in order", group)
     command.add_argument("name")
+
+    group = add("schedule", None, "local-time scene schedules (requires wof serve)").add_subparsers(
+        dest="sub", required=True, metavar="SUB")
+    with_json(add("list", cmd_schedule_list, "list saved schedule entries", group))
+    command = add("set", cmd_schedule_set, "create or replace a schedule entry", group)
+    command.add_argument("--id", help="existing entry ID to replace; omit to create")
+    command.add_argument("scene")
+    command.add_argument("time", metavar="HH:MM")
+    command.add_argument("--days", help="comma-separated mon,tue,wed,thu,fri,sat,sun; default every day")
+    command.add_argument("--disabled", action="store_true")
+    command = add("delete", cmd_schedule_delete, "remove a schedule entry", group)
+    command.add_argument("id")
+
+    group = add("webhook", None, "revocable URLs that run one saved scene").add_subparsers(
+        dest="sub", required=True, metavar="SUB")
+    with_json(add("list", cmd_webhook_list, "list webhook tokens, scenes and labels", group))
+    command = add("create", cmd_webhook_create, "create a public trigger URL for a scene", group)
+    command.add_argument("scene")
+    command.add_argument("--label", help="display label (at most 60 characters)")
+    command = add("delete", cmd_webhook_delete, "revoke a webhook URL", group)
+    command.add_argument("token")
+
+    group = add("connector", None, "external data overlay cards").add_subparsers(
+        dest="connector", required=True, metavar="CONNECTOR")
+    command = add("football", cmd_connector, "current-matchday football scores from OpenLigaDB", group)
+    command.add_argument("--league", default="bl1", help="OpenLigaDB league shortcut (default bl1)")
+    command.add_argument("--show", action="store_true", help="show the card on the TV instead of printing JSON")
 
     command = add("screenshot", cmd_screenshot, "capture the HDMI picture")
     command.add_argument("out", metavar="OUT.jpg")

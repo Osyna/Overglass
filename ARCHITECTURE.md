@@ -456,3 +456,114 @@ laptop on the LAN can reach it with no PC, no SSH key, and no `wof` install need
   SSH-piped binary, not a TV-opened TCP listener). `docs/TV-SERVER.md` states this plainly as the first thing
   to check once the TV is back on, with the one-line way to check it (`curl` from another LAN device).
 
+
+## Local scheduler
+
+`webos_foundry/schedule.py` stores entries in `$WEBOS_FOUNDRY_HOME/schedule.json`
+(or the CLI's `--config-dir`), using a mode-0600 temporary file and atomic rename.
+The dictionary is keyed by short random IDs; each value contains
+`{"id", "scene", "time": "HH:MM", "days": [...], "enabled": true}`.
+Times are 24-hour local times on the computer running `wof serve`. Days are
+`mon,tue,wed,thu,fri,sat,sun`; omitted or empty days means every day.
+Enabled defaults to true. A scene name need not exist when saving the entry.
+
+| HTTP verb and path | Body / result |
+| --- | --- |
+| `GET /api/schedule` | `{"entries": {id: entry}}` |
+| `POST /api/schedule` | Body `{"scene", "time", "days"?, "enabled"?}`; returns `{"id", "message": "Schedule entry saved"}` |
+| `PUT /api/schedule/{id}` | Same body and response; 404 if missing |
+| `DELETE /api/schedule/{id}` | `{"message": "Schedule entry deleted"}`; 404 if missing |
+
+These routes retain normal authentication but need neither pairing nor a TV
+connection. Invalid entry bodies return 400. No new TV dispatcher verb is added:
+the scheduler runs the existing scene primitive and its existing verbs.
+
+| CLI command | Behavior |
+| --- | --- |
+| `wof schedule list [--json]` | Show IDs, scenes, times, days and enabled flags; JSON is the raw entries dictionary |
+| `wof schedule set [--id ID] SCENE HH:MM [--days mon,tue,...] [--disabled]` | Create an ID, or replace the specified existing ID |
+| `wof schedule delete ID` | Remove the entry |
+
+`wof serve` starts a daemon scheduler and signals/stops it at shutdown. It polls
+every 20 seconds, matches enabled entries with the current minute and weekday,
+and runs their saved scenes under `TV_LOCK` using the server's paired transport.
+An in-memory ID-to-local-minute guard suppresses duplicate attempts within that
+minute; `due()` itself is a pure matcher and does not suppress repeated calls.
+Processing reservations or an occupied TV lock skip the attempt, and missing
+scenes, pairing errors and TV failures are logged to stdout without killing the
+thread. Failed/skipped attempts are not retried within that minute. There is no
+catch-up while the server is stopped or busy, and restarting clears the guard.
+The shutdown join is bounded to two seconds; an already-running scene is not
+interrupted and the scheduler thread remains a daemon.
+
+## Data connectors
+
+`webos_foundry.connectors.CONNECTORS` maps connector names to `poll(params: dict) -> dict`
+functions. Polling returns an overlay request accepted by `notify.check_overlay_request` and does
+not need TV pairing. `connectors.run(name, params, transport)` polls the registered source and
+passes the card to `notify.overlay_show`; an unknown name raises `ValidationError`. No connector
+scene step, HTTP route, persistent configuration, or background polling is added.
+
+| CLI | Behaviour |
+| --- | --- |
+| `wof connector football [--league bl1]` | Print the scoreboard overlay body as JSON; never construct a TV transport |
+| `wof connector football [--league bl1] --show` | Poll once and show the scoreboard using the paired TV transport |
+
+The football connector uses the free, unauthenticated current-matchday endpoint
+`https://api.openligadb.de/getmatchdata/<league>`, concretely
+`https://api.openligadb.de/getmatchdata/bl1` for the default Bundesliga. `bl2` selects the second
+Bundesliga; league shortcuts must be 1-40 ASCII letters, digits, underscores or hyphens, starting
+with a letter or digit. The request uses stdlib `urllib.request.urlopen` with an eight-second timeout.
+Network failures and malformed JSON/match fields raise a readable `RuntimeError`.
+
+| OpenLigaDB response field | Used for |
+| --- | --- |
+| Top-level JSON array | Matches in the current matchday, in API order |
+| `leagueName` | Scoreboard header from the first match |
+| `team1.teamName`, `team2.teamName` | Home and away team labels |
+| `matchResults[]` | Score entries with integer `resultOrderID`, `pointsTeam1`, `pointsTeam2`; select the greatest order, not the array's last entry, so a half-time result cannot replace a later score |
+| `matchDateTimeUTC` | ISO 8601 kickoff, formatted as `08 Nov 16:30 UTC` when there are no reported results |
+
+The card is a large-width `stack` with a plain text header, one `row` per match (home label,
+score/kickoff `badge`, away label), and `divider` nodes between matches. At most six matches are
+shown, with an explicit “Showing 6 of N matches” line when truncated: at most 32 widgets and
+three levels, below §3a's caps. An empty array renders “No matches available”. Polling validates
+the generated tree before returning it, so preview and TV display share the same overlay contract.
+There is no invented live score when the upstream has not reported a result.
+
+Endpoint and response fields were checked against the public API and the
+[OpenLigaDB API documentation](https://github.com/OpenLigaDB/OpenLigaDB-Samples#api-schema).
+Automated connector and CLI tests replace `urllib.request.urlopen` with canned responses; they
+do not require live internet or a TV.
+
+
+## Webhook quick triggers
+
+The Python server exposes revocable capability URLs for saved scenes. `webos_foundry/webhooks.py` stores
+`{token: {"scene": name, "label": text}}` in `config_dir()/webhooks.json`, using a private mode-0600
+temporary file followed by `os.replace`. Tokens are generated by `secrets.token_urlsafe(24)`; callers cannot
+choose them. Scene names are 1–60 characters without leading/trailing spaces; optional display labels are
+at most 60 characters and default to an empty string. A scene need not exist when a webhook is created:
+the current saved scene is resolved when the URL is triggered.
+
+| Route | Authentication | Result |
+|---|---|---|
+| `GET /api/webhooks` | Normal API bearer-token policy | `{"webhooks": {token: {"scene", "label"}}}` including full tokens for copying |
+| `POST /api/webhooks` | Normal API bearer-token policy | Body `{"scene", "label"?}`; returns `{"token", "url": "/webhook/<token>", "message": "Webhook created"}` |
+| `DELETE /api/webhooks/{token}` | Normal API bearer-token policy | Revokes the URL; unknown tokens return 400 |
+| `GET /webhook/{token}` | No bearer token; the URL token is the credential | `{"message": "Webhook fired: N step(s) run"}` |
+
+The public trigger is a dynamic route, not a static file. Unknown tokens return 404. If its scene has since
+been deleted (or not yet created), it returns 404 with a scene-specific message. Successful triggers run
+the saved steps in order under the same TV reservation check and lock as direct scene runs, stopping at the
+first failure; busy-TV errors remain 409 and TV failures remain 502. Management routes need no paired TV.
+
+**Trust model:** anyone with the URL can fire that one scene, with no scope beyond that scene: it cannot
+list webhooks, edit scenes, or perform arbitrary API actions. Editing the named scene changes what its URL
+runs. Keep the URL private, including browser history and any intermediary access logs; **revoke it by
+deleting the webhook**. A trigger needs no `Authorization` header even when `auth_mode` is `"token"`:
+`curl -X GET http://host:8765/webhook/<token>`. Server Host/Origin checks still apply.
+
+CLI: `wof webhook list` prints token/scene/label (`--json` prints the raw stored map);
+`wof webhook create movie-night --label "Movie night"` prints the token and full relative URL;
+`wof webhook delete <token>` revokes it. All three honor `--config-dir`.

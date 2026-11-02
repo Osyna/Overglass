@@ -520,6 +520,8 @@ def test_disabled_auth_lets_every_route_through_without_a_token_on_a_non_loopbac
 def test_token_mode_still_401s_every_protected_route(serve):
     app = serve(bind="0.0.0.0", token=TOKEN, transport=DeadTransport())
     for route in server.ROUTES:
+        if route["path"].startswith("/webhook/"):
+            continue  # capability URLs have their own credential, not the API bearer token
         status = app.request(route["method"], concrete(route), b"{}" if route["method"] != "GET" else None,
                              {"Content-Type": "application/json"} if route["method"] != "GET" else {})[0]
         assert (status == 200) == (route["path"] in server.PUBLIC) and (status == 401) == (route["path"] not in server.PUBLIC), route["path"]
@@ -820,3 +822,135 @@ def test_static_files_need_no_token_and_come_from_the_current_web_root(serve, we
     assert app.request("GET", "/css/app.css")[0] == 200
     (web / "late.js").write_text("added after start")
     assert app.request("GET", "/late.js")[2] == b"added after start"
+
+
+def test_webhooks_routes_create_list_fire_and_delete_without_trigger_auth(serve):
+    fake = FakeTransport({"remote": '{"message":"Sent volume_down"}'})
+    app = serve(bind="0.0.0.0", token=TOKEN, transport=fake, auth_mode="token")
+    auth = bearer()
+    scene = {"steps": [{"type": "remote", "action": "volume_down", "value": None}]}
+    assert app.json("PUT", "/api/scenes/movie-night", scene, auth)[0] == 200
+    assert app.json("GET", "/api/webhooks", headers=auth) == (200, {"webhooks": {}})
+    body = {"scene": "movie-night", "label": "Movie night"}
+    status, created = app.json("POST", "/api/webhooks", body, auth)
+    assert status == 200 and created["message"] == "Webhook created"
+    token, url = created["token"], created["url"]
+    assert re.fullmatch(r"[A-Za-z0-9_-]{32}", token)
+    assert url == "/webhook/" + token
+    assert app.json("GET", "/api/webhooks", headers=auth) == (200, {"webhooks": {token: body}})
+    assert app.json("GET", url) == (200, {"message": "Webhook fired: 1 step(s) run"})
+    assert fake.commands == ["remote volume_down"]
+    assert app.json("GET", url, headers=bearer("wrong"))[0] == 200  # bearer is never consulted
+    assert app.json("POST", url)[0] == 405
+    assert app.json("DELETE", "/api/webhooks/" + token, headers=auth) == (200, {"message": "Webhook deleted"})
+    assert app.json("GET", "/api/webhooks", headers=auth) == (200, {"webhooks": {}})
+    assert app.json("GET", url) == (404, {"error": "No such webhook"})
+    assert app.json("DELETE", "/api/webhooks/" + token, headers=auth)[0] == 400
+
+
+@pytest.mark.parametrize("method,path,body", [
+    ("GET", "/api/webhooks", None),
+    ("POST", "/api/webhooks", {"scene": "movie-night"}),
+    ("DELETE", "/api/webhooks/unknown", None),
+])
+def test_webhook_management_requires_api_auth(serve, method, path, body):
+    app = serve(bind="0.0.0.0", token=TOKEN, auth_mode="token", transport=None)
+    assert app.json(method, path, body)[0] == 401
+    assert app.json(method, path, body, bearer("wrong"))[0] == 401
+
+
+def test_webhooks_management_and_unknown_triggers_need_no_pairing(serve):
+    app = serve(bind="0.0.0.0", token=TOKEN, transport=None, auth_mode="token")
+    assert app.json("GET", "/webhook/unknown") == (404, {"error": "No such webhook"})
+    assert app.json("GET", "/api/webhooks", headers=bearer()) == (200, {"webhooks": {}})
+    status, created = app.json("POST", "/api/webhooks", {"scene": "not-created-yet"}, bearer())
+    assert status == 200
+    status, body = app.json("GET", created["url"])
+    assert status == 404 and "scene no longer exists: not-created-yet" in body["error"]
+    assert app.json("DELETE", "/api/webhooks/" + created["token"], headers=bearer())[0] == 200
+
+
+def test_webhook_reports_scene_deleted_after_creation(serve):
+    app = serve(bind="0.0.0.0", token=TOKEN)
+    auth = bearer()
+    scene = {"steps": [{"type": "wait", "seconds": 0}, {"type": "wait", "seconds": 0}]}
+    assert app.json("PUT", "/api/scenes/movie-night", scene, auth)[0] == 200
+    status, created = app.json("POST", "/api/webhooks", {"scene": "movie-night"}, auth)
+    assert status == 200
+    assert app.json("GET", created["url"]) == (200, {"message": "Webhook fired: 2 step(s) run"})
+    assert app.json("DELETE", "/api/scenes/movie-night", headers=auth)[0] == 200
+    assert app.json("GET", created["url"]) == (
+        404, {"error": "Webhook scene no longer exists: movie-night"})
+
+
+@pytest.mark.parametrize("body", [{}, {"scene": ""}, {"scene": "x" * 61}, {"scene": 1},
+                                 {"scene": "x", "label": "y" * 61}, {"scene": "x", "label": []},
+                                 {"scene": "x", "token": "user-chosen"}])
+def test_webhook_validation_errors_are_400(serve, body):
+    app = serve()
+    assert app.json("POST", "/api/webhooks", body)[0] == 400
+
+
+def test_webhook_tv_errors_are_502_and_busy_errors_409(serve, monkeypatch):
+    app = serve(bind="0.0.0.0", token=TOKEN, transport=DeadTransport())
+    scene = {"steps": [{"type": "remote", "action": "volume_down", "value": None}]}
+    assert app.json("PUT", "/api/scenes/movie-night", scene, bearer())[0] == 200
+    status, created = app.json("POST", "/api/webhooks", {"scene": "movie-night"}, bearer())
+    assert status == 200
+    assert app.json("GET", created["url"]) == (502, {"error": "TV offline"})
+
+    def busy():
+        raise TvBusyError("TV busy")
+
+    monkeypatch.setattr(server, "reserved", busy)
+    assert app.json("GET", created["url"]) == (409, {"error": "TV busy"})
+
+
+def test_schedule_routes_create_list_update_and_delete(serve):
+    transport = FakeTransport({})
+    app = serve(transport=transport)
+    assert app.json("GET", "/api/schedule") == (200, {"entries": {}})
+    body = {"scene": "not-saved-yet", "time": "20:00", "days": ["mon"]}
+    status, saved = app.json("POST", "/api/schedule", body)
+    assert status == 200 and saved["message"] == "Schedule entry saved"
+    entry_id = saved["id"]
+    assert app.json("GET", "/api/schedule") == (200, {"entries": {
+        entry_id: {"id": entry_id, **body, "enabled": True},
+    }})
+    changed = {"scene": "later", "time": "00:00", "enabled": False}
+    assert app.json("PUT", "/api/schedule/" + entry_id, changed) == (
+        200, {"id": entry_id, "message": "Schedule entry saved"})
+    assert app.json("GET", "/api/schedule")[1]["entries"][entry_id] == {
+        "id": entry_id, **changed, "days": [],
+    }
+    assert app.json("PUT", "/api/schedule/missing", body)[0] == 404
+    assert app.json("DELETE", "/api/schedule/" + entry_id) == (200, {"message": "Schedule entry deleted"})
+    assert app.json("GET", "/api/schedule") == (200, {"entries": {}})
+    assert app.json("DELETE", "/api/schedule/" + entry_id)[0] == 404
+    assert transport.calls == []
+
+
+def test_schedule_validation_errors_are_400(serve):
+    app = serve(transport=DeadTransport())
+    for body in ({}, {"scene": "s", "time": "24:00"}, {"scene": "s", "time": "20:00", "days": ["MON"]},
+                 {"scene": "s", "time": "20:00", "enabled": 1}):
+        assert app.json("POST", "/api/schedule", body)[0] == 400
+    entry_id = app.json("POST", "/api/schedule", {"scene": "s", "time": "20:00"})[1]["id"]
+    assert app.json("PUT", "/api/schedule/" + entry_id, {"scene": "s", "time": "bad"})[0] == 400
+    assert app.json("GET", "/api/schedule")[1]["entries"][entry_id]["time"] == "20:00"
+
+
+def test_schedule_storage_routes_work_unpaired_but_keep_auth(serve, monkeypatch):
+    def no_transport(_server):
+        pytest.fail("schedule storage must not build a TV transport")
+
+    monkeypatch.setattr(server.FoundryServer, "get_transport", no_transport)
+    app = serve(bind="0.0.0.0", token=TOKEN, transport=None)
+    assert app.json("GET", "/api/schedule")[0] == 401
+    assert app.json("POST", "/api/schedule", {"scene": "s", "time": "20:00"})[0] == 401
+    status, saved = app.json("POST", "/api/schedule", {"scene": "s", "time": "20:00"}, bearer())
+    assert status == 200
+    path = "/api/schedule/" + saved["id"]
+    assert app.json("GET", "/api/schedule", headers=bearer())[0] == 200
+    assert app.json("PUT", path, {"scene": "s", "time": "21:00"}, bearer())[0] == 200
+    assert app.json("DELETE", path, headers=bearer())[0] == 200

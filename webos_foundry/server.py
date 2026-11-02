@@ -25,12 +25,13 @@ import tempfile
 import threading
 import time
 import traceback
+from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from socket import AF_INET6
 from urllib.parse import parse_qs, unquote, urlsplit
 
-from webos_foundry import apps, capture, notify, pairing, process, scenes, tv
+from webos_foundry import apps, capture, notify, pairing, process, scenes, schedule, tv, webhooks
 from webos_foundry.config import AUTH_MODES, Config
 from webos_foundry.errors import ConfigError, NotPairedError, TransportError, TvBusyError, WebosFoundryError
 from webos_foundry.transport import SSHTransport
@@ -194,7 +195,7 @@ def static_file(path):
 def auth_error(path, header, token, loopback, auth_mode="token"):
     """Bearer-token check. Public paths pass; on loopback a missing token passes but a wrong one does not.
     auth_mode "disabled" (explicit opt-in, any bind) passes everything."""
-    if auth_mode == "disabled" or path in PUBLIC or is_static(path):
+    if auth_mode == "disabled" or path in PUBLIC or path.startswith("/webhook/") or is_static(path):
         return None
     presented = bearer(header)
     if loopback and not token:
@@ -396,6 +397,62 @@ def post_scene_run(request, params):
     reserved()
     with TV_LOCK:
         return {"messages": scenes.run_scene(request.transport, saved[params["name"]])}
+
+
+def get_webhooks(_request, _):
+    return {"webhooks": webhooks.load()}
+
+
+def post_webhook(request, _):
+    body = request.json_body()
+    if set(body) - {"scene", "label"}:
+        raise ValueError("A webhook only takes scene and label")
+    token = webhooks.create(body.get("scene"), body.get("label"))
+    return {"token": token, "url": "/webhook/" + token, "message": "Webhook created"}
+
+
+def delete_webhook(_request, params):
+    webhooks.delete(params["token"])
+    return {"message": "Webhook deleted"}
+
+
+def get_webhook(request, params):
+    entry = webhooks.resolve(params["token"])
+    if entry is None:
+        raise ApiError(404, "No such webhook")
+    scene = scenes.load().get(entry["scene"])
+    if scene is None:
+        raise ApiError(404, "Webhook scene no longer exists: %s" % entry["scene"])
+    reserved()
+    with TV_LOCK:
+        messages = scenes.run_scene(request.server.get_transport(), scene)
+    return {"message": "Webhook fired: %d step(s) run" % len(messages)}
+
+
+def get_schedule(_request, _):
+    return {"entries": schedule.load()}
+
+
+def post_schedule(request, _):
+    entry_id = schedule.save(None, request.json_body())
+    return {"id": entry_id, "message": "Schedule entry saved"}
+
+
+def put_schedule(request, params):
+    with schedule.LOCK:
+        if params["id"] not in schedule.load():
+            raise ApiError(404, "No such schedule entry")
+        entry_id = schedule.save(params["id"], request.json_body())
+    return {"id": entry_id, "message": "Schedule entry saved"}
+
+
+def delete_schedule(_request, params):
+    with schedule.LOCK:
+        if params["id"] not in schedule.load():
+            raise ApiError(404, "No such schedule entry")
+        schedule.delete(params["id"])
+    return {"message": "Schedule entry deleted"}
+
 
 
 def stream_args(query):
@@ -723,6 +780,43 @@ ROUTES = (
           notes=TV_LOCK_NOTE + " Answers 409 while a processing job holds the TV, 404 if no scene has that name, "
                                "and 502 (with the TV's message) at the step that failed; earlier steps already ran.",
           example={"path": "/api/scenes/movie-night/run"}),
+    route("GET", "/api/webhooks", "Webhooks", "List webhook tokens, scenes and display labels.", get_webhooks,
+          returns='{"webhooks": {token: {"scene": str, "label": str}}}', tv=[],
+          notes="Normal API authentication; full tokens remain available for copying. Local storage only.",
+          example={"path": "/api/webhooks"}),
+    route("POST", "/api/webhooks", "Webhooks", "Create a revocable URL for one saved scene.", post_webhook,
+          body='{"scene": "1-60 characters", "label"?: "at most 60 characters"}',
+          returns='{"token": str, "url": "/webhook/<token>", "message": "Webhook created"}', tv=[],
+          notes="Normal API authentication. The scene is looked up when triggered, not when created.",
+          example={"path": "/api/webhooks", "body": {"scene": "movie-night", "label": "Movie night"}}),
+    route("DELETE", "/api/webhooks/{token}", "Webhooks", "Revoke one webhook URL.", delete_webhook,
+          returns='{"message": "Webhook deleted"}', tv=[],
+          notes="Normal API authentication; 400 for an unknown token.",
+          example={"path": "/api/webhooks/WEBHOOK_TOKEN"}),
+    route("GET", "/webhook/{token}", "Webhooks", "Run the one scene granted by this capability URL.", get_webhook,
+          returns='{"message": "Webhook fired: N step(s) run"}',
+          tv=["runs the saved scene steps in order, stopping on the first failure"],
+          notes="Public: the URL token is the credential; no bearer token. Anyone with it can run this scene. "
+                "Delete the webhook to revoke it. 404 for unknown tokens or a deleted scene. "
+                "409 while the TV is reserved; 502 for TV failures.",
+          example={"path": "/webhook/WEBHOOK_TOKEN"}),
+    route("GET", "/api/schedule", "Schedule", "List local scene schedules.", get_schedule,
+          returns='{"entries": {id: {"id", "scene", "time", "days", "enabled"}}}', tv=[],
+          notes="Local storage only; no pairing or TV connection needed.", example={"path": "/api/schedule"}),
+    route("POST", "/api/schedule", "Schedule", "Create a local scene schedule.", post_schedule,
+          body='{"scene": str, "time": "HH:MM", "days"?: ["mon", ..., "sun"], "enabled"?: bool}',
+          returns='{"id": str, "message": "Schedule entry saved"}', tv=[],
+          notes="Local time; omitted or empty days means every day, enabled defaults to true. "
+                "The scene need not exist yet. Runs only while wof serve is running.",
+          example={"path": "/api/schedule", "body": {"scene": "movie-night", "time": "20:00", "days": ["mon"]}}),
+    route("PUT", "/api/schedule/{id}", "Schedule", "Replace an existing local schedule entry.", put_schedule,
+          body='{"scene": str, "time": "HH:MM", "days"?: ["mon", ..., "sun"], "enabled"?: bool}',
+          returns='{"id": str, "message": "Schedule entry saved"}', tv=[],
+          notes="404 if the entry does not exist; never contacts the TV.",
+          example={"path": "/api/schedule/example", "body": {"scene": "movie-night", "time": "21:00"}}),
+    route("DELETE", "/api/schedule/{id}", "Schedule", "Delete a local schedule entry.", delete_schedule,
+          returns='{"message": "Schedule entry deleted"}', tv=[],
+          notes="404 if the entry does not exist; never contacts the TV.", example={"path": "/api/schedule/example"}),
     route("GET", "/api/screenshot", "Status",
           "Capture the picture the TV shows from its HDMI input (without the TV's own menus) as an image.", get_screenshot,
           query={"width": "64-3840, even (default 1920); the height follows the 16:9 picture",
@@ -880,14 +974,15 @@ class Handler(BaseHTTPRequestHandler):
                                    self.headers.get("Sec-Fetch-Site"), self.server.hosts)
             if refused:
                 raise ApiError(*refused)
-            if self.command == "GET" and is_static(url.path):
+            if self.command == "GET" and is_static(url.path) and not url.path.startswith("/webhook/"):
                 return self.send_static(url.path)
             denied = auth_error(url.path, self.headers.get("Authorization"), self.server.token, self.server.loopback,
                                 self.server.auth_mode)
             if denied:
                 raise ApiError(*denied)
             handler, params = self.resolve(url.path)
-            if url.path not in LOCAL:
+            if (url.path not in LOCAL and not url.path.startswith("/webhook/")
+                    and not re.fullmatch(r"/api/(?:schedule|webhooks)(?:/[^/]+)?", url.path)):
                 try:
                     self.transport = self.server.get_transport()
                 except NotPairedError:
@@ -1011,6 +1106,51 @@ def stop_jobs():
         print("Recovery workspace kept on the TV: " + recovery, flush=True)
 
 
+class SchedulerThread(threading.Thread):
+    def __init__(self, server):
+        super().__init__(daemon=True)
+        self.server = server
+        self.stop = threading.Event()
+        self.last_fired = {}
+
+    def run(self):
+        while not self.stop.is_set():
+            try:
+                now = datetime.now()
+                minute = now.strftime("%Y-%m-%d %H:%M")
+                self.last_fired = {key: value for key, value in self.last_fired.items() if value == minute}
+                entries = schedule.load()
+                for entry_id in schedule.due(entries, now):
+                    if self.stop.is_set():
+                        break
+                    if self.last_fired.get(entry_id) == minute:
+                        continue
+                    self.last_fired[entry_id] = minute
+                    try:
+                        if not TV_LOCK.acquire(blocking=False):
+                            print("Schedule %s skipped: the TV is busy" % entry_id, flush=True)
+                            continue
+                        try:
+                            with LOCK:
+                                job = active()
+                                if job:
+                                    print("Schedule %s skipped: processing job %s (%s)" %
+                                          (entry_id, job.id, job.state.replace("_", " ")), flush=True)
+                                    continue
+                            name = entries[entry_id]["scene"]
+                            saved = scenes.load()
+                            if name not in saved:
+                                raise ValueError("No such scene: %s" % name)
+                            scenes.run_scene(self.server.get_transport(), saved[name])
+                        finally:
+                            TV_LOCK.release()
+                    except Exception as error:
+                        print("Schedule %s failed: %s" % (entry_id, error), flush=True)
+            except Exception as error:
+                print("Scheduler failed: %s" % error, flush=True)
+            self.stop.wait(20)
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(prog="wof serve", description="HTTP API and web UI for a rooted LG webOS TV")
     parser.add_argument("--host", "--bind", dest="host", default="127.0.0.1",
@@ -1046,11 +1186,15 @@ def main(argv=None):
              else "required" if not server.loopback else "optional" if token else "off")
     print("webOS Foundry: http://%s:%d/  (token %s; Ctrl-C stops; a running job is cancelled and the TV restored first)"
           % (args.host, server.server_address[1], login), flush=True)
+    scheduler = SchedulerThread(server)
+    scheduler.start()
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         pass
     finally:
+        scheduler.stop.set()
+        scheduler.join(2)
         server.server_close()
         stop_stream()
         stop_jobs()
