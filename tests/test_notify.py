@@ -196,23 +196,26 @@ def test_overlay_too_large_for_grammar():
     assert fake.calls == []
 
 
+V4_CARD = {"seconds": 0, "theme": {"accent": "#C8F542", "surface": "#0b0d10", "opacity": 0.92, "radius": 0,
+                                    "scale": 1.1, "font": "condensed"},
+           "regions": [
+               {"position": "top", "size": "full", "root": {"type": "row", "gap": 24, "children": [
+                   {"type": "image", "src": "https://example.com/a.png", "shape": "circle", "size": "s"},
+                   {"type": "text", "text": "0 - 0", "size": "xl", "weight": "strong", "color": "accent"},
+                   {"type": "clock", "format": "time", "label": "1st half"},
+                   {"type": "badge", "text": "LIVE", "tone": "accent"}]}},
+               {"position": "right", "size": "s", "root": {"type": "stack", "children": [
+                   {"type": "section", "title": "Live events", "icon": "bolt", "action": "All events"},
+                   {"type": "event", "time": "08:17", "text": "Yellow card", "icon": "card", "tone": "warning"},
+                   {"type": "stat", "label": "Possession", "left": "62%", "right": "38%", "fraction": 0.62},
+                   {"type": "sparkline", "points": [0.2, -0.1, 0.4], "axis": ["+0.4", "0.0", "-0.4"]},
+                   {"type": "meta", "items": [{"label": "Venue", "value": "Somewhere", "icon": "pin"}]},
+                   {"type": "status", "label": "Match Data API", "state": "online", "detail": "112 ms"}]}}]}
+
+
 def test_overlay_v4_theme_regions_and_widgets_pass_through():
     fake = FakeTransport({"notify-overlay": json.dumps({"returnValue": True, "overlay": "shown"})})
-    card = {"seconds": 0, "theme": {"accent": "#C8F542", "surface": "#0b0d10", "opacity": 0.92, "radius": 0,
-                                     "scale": 1.1, "font": "condensed"},
-            "regions": [
-                {"position": "top", "size": "full", "root": {"type": "row", "gap": 24, "children": [
-                    {"type": "image", "src": "https://example.com/a.png", "shape": "circle", "size": "s"},
-                    {"type": "text", "text": "0 - 0", "size": "xl", "weight": "strong", "color": "accent"},
-                    {"type": "clock", "format": "time", "label": "1st half"},
-                    {"type": "badge", "text": "LIVE", "tone": "accent"}]}},
-                {"position": "right", "size": "s", "root": {"type": "stack", "children": [
-                    {"type": "section", "title": "Live events", "icon": "bolt", "action": "All events"},
-                    {"type": "event", "time": "08:17", "text": "Yellow card", "icon": "card", "tone": "warning"},
-                    {"type": "stat", "label": "Possession", "left": "62%", "right": "38%", "fraction": 0.62},
-                    {"type": "sparkline", "points": [0.2, -0.1, 0.4], "axis": ["+0.4", "0.0", "-0.4"]},
-                    {"type": "meta", "items": [{"label": "Venue", "value": "Somewhere", "icon": "pin"}]},
-                    {"type": "status", "label": "Match Data API", "state": "online", "detail": "112 ms"}]}}]}
+    card = V4_CARD
     notify.overlay_show(fake, card)
     sent = json.loads(fake.calls[0].data)
     assert sent["theme"]["accent"] == "#c8f542"  # normalised to lower case
@@ -221,3 +224,38 @@ def test_overlay_v4_theme_regions_and_widgets_pass_through():
                                                          "right": "38%", "fraction": 0.62}
     assert sent["regions"][1]["root"]["children"][3]["axis"] == ["+0.4", "0.0", "-0.4"]
     assert "position" not in sent and "root" not in sent
+
+
+def test_inspect_overlay_counts_widgets_and_bytes():
+    verdict = notify.inspect_overlay(V4_CARD)
+    assert verdict["ok"] is True and verdict["widgets"] == 12  # row+4, stack+6
+    assert verdict["card"] == notify.check_overlay_request(V4_CARD)
+    assert verdict["bytes"] == len(json.dumps(verdict["card"], ensure_ascii=False, separators=(",", ":")).encode())
+    with pytest.raises(ValidationError):
+        notify.inspect_overlay({"hide": True})
+
+
+def test_overlay_schema_agrees_with_the_validator():
+    """The published JSON Schema must accept what check_overlay_request accepts and refuse what it refuses,
+    for the shapes an assistant is likely to produce."""
+    jsonschema = pytest.importorskip("jsonschema")
+    validator = jsonschema.Draft202012Validator(notify.overlay_schema())
+    jsonschema.Draft202012Validator.check_schema(notify.overlay_schema())
+    for card in (V4_CARD, {"root": {"type": "text", "text": "Hi"}},
+                 {"position": "center", "size": "xl", "seconds": 0, "theme": {"font": "mono"},
+                  "root": {"type": "stack", "children": [{"type": "divider"}, {"type": "dot"}, {"type": "clock"},
+                                                        {"type": "countdown", "target": "2030-01-01T00:00:00Z"},
+                                                        {"type": "progress", "value": 0.5, "tone": "success"},
+                                                        {"type": "list", "items": ["a"], "style": "number"},
+                                                        {"type": "compare", "segments": [
+                                                            {"label": "A", "value": "1", "fraction": 0.5},
+                                                            {"label": "B", "value": "1", "fraction": 0.5}]}]}}):
+        notify.check_overlay_request(card)
+        assert not list(validator.iter_errors(card)), card
+    for bad in ({"root": {"type": "stat", "label": "x"}}, {"root": {"type": "text", "text": "x"}, "regions": []},
+                {"root": {"type": "section", "title": "x", "icon": "rocket"}}, {"theme": {"accent": "lime"}, "root": {"type": "divider"}},
+                {"root": {"type": "meta", "items": []}}, {"root": {"type": "sparkline", "points": [0, 1, 0], "axis": ["a"]}},
+                {"position": "middle", "root": {"type": "divider"}}, {"root": {"type": "text", "text": "x", "extra": 1}}):
+        with pytest.raises(ValidationError):
+            notify.check_overlay_request(bad)
+        assert list(validator.iter_errors(bad)), bad

@@ -203,6 +203,9 @@ def _check_node(node, depth, counter) -> dict:
         if "label" in node:
             out["label"] = _clean(node["label"], 40, "label")
     # divider has no fields
+    unknown = [key for key in node if key not in out]  # every accepted key was copied into out
+    if unknown:
+        raise ValidationError("Unknown %s field: %s" % (kind, ", ".join(map(str, unknown))))
     return out
 
 
@@ -367,6 +370,123 @@ def check_overlay_request(body) -> dict:
     if len(encoded) > MAX_TREE_BYTES:
         raise ValidationError("Card is too large (at most %d bytes of JSON)" % MAX_TREE_BYTES)
     return out
+
+
+def inspect_overlay(body) -> dict:
+    """Validate a card without touching the TV and say what it costs against the caps: the normalised
+    card, its widget count and its serialised size -- for the web UI's paste-JSON check and for people
+    who had an assistant write the JSON for them."""
+    card = check_overlay_request(body)
+    if card.get("hide"):
+        raise ValidationError("Nothing to check in a hide request")
+
+    def count(node):
+        return 1 + sum(count(child) for child in node.get("children", ()))
+    roots = [region["root"] for region in card["regions"]] if "regions" in card else [card["root"]]
+    size = len(json.dumps(card, ensure_ascii=False, separators=(",", ":")).encode())
+    return {"ok": True, "card": card, "widgets": sum(count(root) for root in roots), "bytes": size}
+
+
+def overlay_schema() -> dict:
+    """JSON Schema (draft 2020-12) for a POST /api/overlay card, generated from the same constants
+    _check_node enforces, so a tool or an AI assistant can be handed the exact contract."""
+    def text(limit, description=None):
+        out = {"type": "string", "minLength": 1, "maxLength": limit}
+        if description:
+            out["description"] = description
+        return out
+
+    def enum(values, description=None):
+        out = {"type": "string", "enum": list(values)}
+        if description:
+            out["description"] = description
+        return out
+    fraction = {"type": "number", "minimum": 0, "maximum": 1}
+    tone = enum(TONES, "info/success/warning/alert are fixed colours; accent follows the theme accent")
+    icon = enum(ICONS, "one of the built-in line icons")
+    url = {"type": "string", "format": "uri", "pattern": "^https?://", "maxLength": 500,
+           "description": "http(s) URL the TV itself will fetch"}
+    node_ref = {"$ref": "#/$defs/node"}
+
+    def widget(kind, description, properties, required=()):
+        return {"type": "object", "description": description, "additionalProperties": False,
+                "required": ["type"] + list(required),
+                "properties": {"type": {"const": kind}, **properties}}
+    container = {"gap": {"type": "integer", "minimum": 0, "maximum": 48},
+                 "align": enum(("start", "center", "end"))}
+    widgets = {
+        "stack": widget("stack", "Vertical box of 1-20 widgets", {**container,
+                        "children": {"type": "array", "minItems": 1, "maxItems": 20, "items": node_ref}}, ["children"]),
+        "row": widget("row", "Horizontal box of 1-10 widgets", {**container,
+                      "children": {"type": "array", "minItems": 1, "maxItems": 10, "items": node_ref}}, ["children"]),
+        "text": widget("text", "A line of text", {"text": text(400), "size": enum(TEXT_SIZES), "weight": enum(WEIGHTS),
+                       "color": enum(COLORS, "fg = main text, fg-2 = quieter text, or a tone")}, ["text"]),
+        "image": widget("image", "Picture or crest fetched by the TV", {"src": url, "shape": enum(IMAGE_SHAPES),
+                        "size": enum(IMAGE_SIZES, "circle tile 40/64/120px")}, ["src"]),
+        "badge": widget("badge", "Small filled pill (accent tone = outlined)", {"text": text(24), "tone": tone}, ["text"]),
+        "dot": widget("dot", "Coloured status dot", {"tone": tone}),
+        "progress": widget("progress", "Filled bar", {"value": fraction, "label": text(40), "tone": tone}, ["value"]),
+        "countdown": widget("countdown", "Live countdown to a moment",
+                            {"target": {"type": "string", "format": "date-time"}, "label": text(40)}, ["target"]),
+        "clock": widget("clock", "The TV's live local time", {"format": enum(CLOCK_FORMATS), "label": text(40)}),
+        "list": widget("list", "1-10 short lines", {"items": {"type": "array", "minItems": 1, "maxItems": 10,
+                       "items": text(120)}, "style": enum(LIST_STYLES)}, ["items"]),
+        "divider": widget("divider", "Thin rule", {}),
+        "compare": widget("compare", "2-4 proportional segments side by side (possession, win chance)",
+                          {"segments": {"type": "array", "minItems": 2, "maxItems": 4, "items": {
+                              "type": "object", "additionalProperties": False, "required": ["label", "value", "fraction"],
+                              "properties": {"label": text(24), "value": text(16), "fraction": fraction, "tone": tone}}}},
+                          ["segments"]),
+        "sparkline": widget("sparkline", "Zero-centred bar chart of 3-24 values in -1..1",
+                            {"points": {"type": "array", "minItems": 3, "maxItems": 24,
+                                        "items": {"type": "number", "minimum": -1, "maximum": 1}},
+                             "axis": {"type": "array", "minItems": 3, "maxItems": 3, "items": text(6),
+                                      "description": "top, middle and bottom labels"}, "tone": tone}, ["points"]),
+        "section": widget("section", "Section header: icon, upper-case title, quiet action text on the right",
+                          {"title": text(40), "icon": icon, "action": text(24)}, ["title"]),
+        "event": widget("event", "Timeline row: time, icon or dot, text",
+                        {"time": text(8), "text": text(120), "icon": icon, "tone": tone}, ["time", "text"]),
+        "stat": widget("stat", "Two-sided comparison row; fraction fills the bar from the left",
+                       {"label": text(40), "left": text(16), "right": text(16), "fraction": fraction, "tone": tone},
+                       ["label", "left", "right", "fraction"]),
+        "status": widget("status", "Data-source row: label, state dot, detail such as a latency",
+                         {"label": text(40), "state": enum(STATES), "detail": text(24)}, ["label", "state"]),
+        "meta": widget("meta", "1-4 small label-over-value cells",
+                       {"items": {"type": "array", "minItems": 1, "maxItems": 4, "items": {
+                           "type": "object", "additionalProperties": False, "required": ["label", "value"],
+                           "properties": {"label": text(24), "value": text(40), "icon": icon}}}}, ["items"]),
+    }
+    assert set(widgets) == set(WIDGET_TYPES)  # every widget type is described, none invented
+    theme = {"type": "object", "additionalProperties": False, "description": "Colours and typography of the whole card",
+             "properties": {**{key: {"type": "string", "pattern": "^#[0-9a-fA-F]{6}$"} for key in THEME_COLORS},
+                            "opacity": {"type": "number", "minimum": 0.2, "maximum": 1, "description": "surface alpha"},
+                            "radius": {"type": "integer", "minimum": 0, "maximum": 32, "description": "corner radius px"},
+                            "scale": {"type": "number", "minimum": 0.75, "maximum": 1.5, "description": "whole-card zoom"},
+                            "font": enum(FONTS)}}
+    position = enum(POSITIONS, "corners/center float; top/bottom are full-width bars; left/right full-height panels")
+    size = enum(SIZES, "floating card width band, or a left/right panel's width")
+    seconds = {"type": "integer", "minimum": 0, "maximum": 300, "description": "0 = stays until hidden (default 8)"}
+    return {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "$id": "https://webosfoundry.dev/overlay-card.schema.json",
+        "title": "webOS Foundry overlay card",
+        "description": "One card drawn over the TV picture: a single widget tree at a position, or 1-%d regions "
+                       "(a top bar plus a side panel, say) in the one overlay window. Caps: depth %d, %d widgets in "
+                       "total, %d bytes of JSON. Use placeholder words where a value is unknown; never invent data."
+                       % (MAX_REGIONS, MAX_TREE_DEPTH, MAX_TREE_NODES, MAX_TREE_BYTES),
+        "oneOf": [
+            {"type": "object", "additionalProperties": False, "required": ["root"],
+             "properties": {"position": position, "size": size, "seconds": seconds, "theme": theme, "root": node_ref}},
+            {"type": "object", "additionalProperties": False, "required": ["regions"],
+             "properties": {"seconds": seconds, "theme": theme,
+                            "regions": {"type": "array", "minItems": 1, "maxItems": MAX_REGIONS,
+                                        "description": "distinct positions", "items": {
+                                            "type": "object", "additionalProperties": False, "required": ["position", "root"],
+                                            "properties": {"position": position, "size": size, "root": node_ref}}}}},
+        ],
+        "$defs": {"node": {"description": "One widget; nesting at most %d deep" % MAX_TREE_DEPTH,
+                           "oneOf": [{"$ref": "#/$defs/" + kind} for kind in widgets]}, **widgets},
+    }
 
 
 def _reply(out):

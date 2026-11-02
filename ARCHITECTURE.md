@@ -206,7 +206,26 @@ chart trophy pulse layers clock pin sun card swap target info bell star flag` (p
 `checkNode()`, before it launches the overlay app — any local app on the TV could launch
 `dev.webosfoundry.overlay` directly, bypassing the Python side entirely), and `overlay.js` itself
 (`checkNode()`, since any local app can also launch it with launch params `notify.js` never produced).
-All three enforce the same caps from the same table above; none trusts the layer before it.
+All three enforce the same caps from the same table above; none trusts the layer before it. The two
+servers (`notify.py`, `tv-server/server.js`) additionally **refuse unknown widget fields by name**
+(`Unknown text field: colour`) instead of dropping them: a card typed by a person or written by an
+assistant should fail loudly before it costs a trip to the TV. The TV-side validators keep normalising
+(they only ever receive server-checked trees).
+
+**Written by hand or by an assistant.** `notify.overlay_schema()` generates a JSON Schema (draft
+2020-12) of the whole card from the same constants `_check_node` enforces — `GET /api/overlay/schema`,
+`wof overlay schema` — and `notify.inspect_overlay()` validates a candidate without a TV and reports
+its widget count and byte size against the caps — `POST /api/overlay/validate`, `wof overlay check`.
+`tests/test_notify.py::test_overlay_schema_agrees_with_the_validator` holds the schema and the
+validator to the same verdicts. The web UI's card studio builds its "ask an AI" prompt from its own
+field tables and offers the schema for download; pasted JSON goes through both the client check and
+`/api/overlay/validate`, whose message is shown verbatim.
+
+**Edge regions meet without seams.** `overlay.js` `fitPanels()` insets left/right panels below a top
+bar and above a bottom bar, and records the edge positions present on the stage
+(`data-edges="top right"`); `overlay.css` then drops the panel's border and radius on the shared edge,
+the bar's radius beside a panel, and the bar's shadow over a panel, so a top bar plus a side panel read
+as one HUD surface instead of two overlapping boxes.
 
 **Transport.** `notify-overlay` takes no inline argument any more — the JSON goes as this request's
 stdin, the same `read_upload`-bounded pattern as the install verbs (§3), because a sufficiently large

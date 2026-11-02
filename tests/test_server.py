@@ -1082,3 +1082,24 @@ def test_designs_storage_routes_work_unpaired_but_keep_auth(serve, monkeypatch):
     assert app.json("PUT", "/api/designs/x", DESIGN, bearer())[0] == 200
     assert app.json("GET", "/api/designs", headers=bearer())[0] == 200
     assert app.json("DELETE", "/api/designs/x", headers=bearer())[0] == 200
+
+
+def test_overlay_schema_and_validate_work_unpaired_but_keep_auth(serve, monkeypatch):
+    monkeypatch.setattr(server.FoundryServer, "get_transport",
+                        lambda _server: pytest.fail("schema/validate must not build a TV transport"))
+    app = serve(bind="0.0.0.0", token=TOKEN, transport=None)
+    assert app.json("GET", "/api/overlay/schema")[0] == 401
+    status, schema = app.json("GET", "/api/overlay/schema", headers=bearer())
+    assert status == 200 and schema["$schema"].endswith("2020-12/schema")
+    assert set(schema["$defs"]) == set(notify.WIDGET_TYPES) | {"node"}
+    assert schema["$defs"]["stat"]["required"] == ["type", "label", "left", "right", "fraction"]
+    assert schema["$defs"]["section"]["properties"]["icon"]["enum"] == list(notify.ICONS)
+    status, verdict = app.json("POST", "/api/overlay/validate", DESIGN, bearer())
+    assert status == 200 and verdict["ok"] is True and verdict["widgets"] == 2 and verdict["bytes"] == len(
+        json.dumps(verdict["card"], ensure_ascii=False, separators=(",", ":")).encode())
+    assert verdict["card"] == notify.check_overlay_request(DESIGN)
+    status, verdict = app.json("POST", "/api/overlay/validate", {"title": "Hi"}, bearer())
+    assert status == 200 and verdict["widgets"] == 4  # shorthand is compiled: stack > row > dot + text
+    status, error = app.json("POST", "/api/overlay/validate", {"root": {"type": "stat", "label": "x"}}, bearer())
+    assert status == 400 and "stat left value" in error["error"]
+    assert app.json("POST", "/api/overlay/validate", {"hide": True}, bearer())[0] == 400

@@ -212,8 +212,11 @@ wof notify say "Dinner is ready" --volume 10
 ```
 wof overlay show [--title T] [--body T] [--line T ...] [--image URL]
                  [--kind info|success|warning|alert]
-                 [--position top-left|top-right|bottom-left|bottom-right|center]
+                 [--position top-left|top-right|bottom-left|bottom-right|center|top|bottom|left|right]
                  [--size xs|s|m|l|xl|full] [--seconds N]
+wof overlay show --json FILE.json      # a full card (widget tree, regions, theme); - reads stdin
+wof overlay check FILE.json            # validate without a TV: "Valid card: 24 widgets, 4311 bytes" or the problem
+wof overlay schema                     # print the card's JSON Schema
 wof overlay hide
 ```
 
@@ -236,9 +239,11 @@ The CLI's shorthand flags compile into an equivalent JSON widget tree before it 
 (stack, row, text, image, badge, dot, progress, countdown, clock, list, divider, compare, sparkline,
 section, event, stat, status, meta — depth ≤ 5, ≤ 80 widgets, ≤ 49152 bytes; a card may also carry a
 `theme` and up to 4 `regions`, e.g. a full-width top bar plus a right-hand panel; full schema:
-[ARCHITECTURE.md §3a](../ARCHITECTURE.md)). The CLI has no flags for a
-custom tree; build one with the web UI's Advanced builder, `curl`/`POST /api/overlay` with a `root`
-field, or a scene's `overlay` step (`wof scene`, below).
+[ARCHITECTURE.md §3a](../ARCHITECTURE.md)). For a custom tree, write the card as JSON — by hand, in
+the web UI's card studio, or by asking an assistant with the output of `wof overlay schema` — then
+`wof overlay check card.json` to see widgets/bytes or the exact problem (unknown fields are named, never
+dropped) and `wof overlay show --json card.json` to show it. A scene's `overlay` step (`wof scene`,
+below) and `wof design` take the same JSON.
 
 ## wof scene
 

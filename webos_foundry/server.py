@@ -46,7 +46,7 @@ TYPES = {  # extension -> content type of the files served from web/
 }
 UPLOAD_RE = re.compile(r"/uploads/([0-9a-f]{32})\.ipk")  # unguessable id = the capability the TV fetches an upload by
 PUBLIC = ("/api", "/api/health")  # no bearer token, ever
-LOCAL = PUBLIC + ("/api/config/auth", "/api/pair")  # answered from this server's own state; no TV or pairing needed
+LOCAL = PUBLIC + ("/api/config/auth", "/api/pair", "/api/overlay/schema", "/api/overlay/validate")  # answered from this server's own state; no TV or pairing needed
 NOT_PAIRED = "Not paired; run: wof pair --host <ip>"
 CSP = ("default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' blob:; "
        "font-src 'self'; media-src 'self' blob:; manifest-src 'self'; base-uri 'none'; form-action 'none'; "
@@ -373,6 +373,14 @@ def post_overlay(request, _):
     card = request.json_body()
     reserved()
     return {"message": notify.overlay_show(request.transport, card)}
+
+
+def get_overlay_schema(request, _):
+    return notify.overlay_schema()
+
+
+def post_overlay_validate(request, _):
+    return notify.inspect_overlay(request.json_body())
 
 
 def get_scenes(_request, _):
@@ -806,6 +814,21 @@ ROUTES = (
                 "The image URL is fetched by the TV, so it must be reachable from the TV.",
           example={"path": "/api/overlay", "body": {"title": "Dinner", "body": "It is ready.", "kind": "success",
                                                     "position": "top-right", "seconds": 10}}),
+    route("GET", "/api/overlay/schema", "Notify",
+          "The JSON Schema of an overlay card, for tools and AI assistants that write cards for you.", get_overlay_schema,
+          returns="A JSON Schema (draft 2020-12) object describing every envelope field, the theme, regions and all "
+                  "18 widget types with their limits.", tv=[],
+          notes="Generated from the server's own validation constants, so it never drifts from what POST /api/overlay "
+                "accepts. Needs no TV and no pairing.",
+          example={"path": "/api/overlay/schema"}),
+    route("POST", "/api/overlay/validate", "Notify",
+          "Check a card without showing it: is it valid, how many widgets, how many bytes.", post_overlay_validate,
+          body="Any candidate POST /api/overlay card (widget tree, regions or shorthand).",
+          returns='{"ok": true, "card": <normalised card>, "widgets": N, "bytes": N}; an invalid card answers 400 with '
+                  'the same plain-English reason POST /api/overlay would give.', tv=[],
+          notes="Never contacts the TV; works unpaired. Made for pasting JSON an assistant wrote and seeing exactly "
+                "what is wrong before sending it.",
+          example={"path": "/api/overlay/validate", "body": {"root": {"type": "text", "text": "Hello"}}}),
     route("GET", "/api/scenes", "Scenes", "Every saved scene with its steps.", get_scenes,
           returns='{"scenes": {name: {"steps": [step, ...]}}}', tv=[],
           notes="Reads this server's own state; never contacts the TV.", example={"path": "/api/scenes"}),

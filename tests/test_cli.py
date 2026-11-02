@@ -6,7 +6,7 @@ import sys
 import pytest
 
 from tests.fakes import FakeTransport, make_assets
-from webos_foundry import cli, dispatcher, process, tv
+from webos_foundry import cli, dispatcher, notify, process, tv
 from webos_foundry.config import Config
 from webos_foundry.errors import TransportError
 
@@ -464,6 +464,27 @@ def test_design_set_list_show_delete(tmp_path, capsys, monkeypatch):
     assert "No such design" in capsys.readouterr().err
     card.write_text(json.dumps({"root": {"type": "nope"}}))
     assert wof(*args, "design", "set", "bad", str(card)) == 1
+
+
+def test_overlay_json_check_and_schema(tmp_path, capsys, monkeypatch):
+    card = tmp_path / "card.json"
+    card.write_text(json.dumps({"theme": {"radius": 0}, "regions": [
+        {"position": "top", "root": {"type": "text", "text": "Top"}},
+        {"position": "right", "root": {"type": "status", "label": "Source", "state": "online"}}]}))
+    assert wof("overlay", "check", str(card)) == 0
+    assert capsys.readouterr().out.strip() == "Valid card: 2 widgets, 169 bytes"
+    card.write_text(json.dumps({"root": {"type": "text", "text": "x", "colour": "fg"}}))
+    assert wof("overlay", "check", str(card)) == 1
+    assert "Unknown text field: colour" in capsys.readouterr().err
+    assert wof("overlay", "schema") == 0
+    schema = json.loads(capsys.readouterr().out)
+    assert set(schema["$defs"]) == set(notify.WIDGET_TYPES) | {"node"}
+    transport = FakeTransport({"notify-overlay": '{"returnValue": true, "overlay": "shown"}'})
+    monkeypatch.setattr(cli, "_transport", lambda a: transport)
+    card.write_text(json.dumps({"position": "bottom", "root": {"type": "clock", "format": "date"}}))
+    assert wof("overlay", "show", "--json", str(card)) == 0
+    assert capsys.readouterr().out.strip() == "Overlay card shown"
+    assert json.loads(transport.calls[0].data) == {"position": "bottom", "root": {"type": "clock", "format": "date"}}
 
 
 def test_schedule_set_list_update_delete(tmp_path, capsys):

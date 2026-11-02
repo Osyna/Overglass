@@ -399,6 +399,8 @@ function checkNode(node, depth, counter) {
     if ('format' in node) out.format = checkEnum(node.format, CLOCK_FORMATS, 'clock format');
     if ('label' in node) out.label = clean(node.label, 40, 'label');
   } // divider has no fields
+  const unknown = Object.keys(node).filter((key) => !(key in out)); // every accepted key was copied into out
+  if (unknown.length) throw bad('Unknown ' + kind + ' field: ' + unknown.join(', '));
   return out;
 }
 
@@ -657,6 +659,15 @@ async function postOverlay(ctx) {
   return {message: await sendCard(checkOverlayRequest(body))};
 }
 
+async function postOverlayValidate(ctx) {
+  const card = checkOverlayRequest(await ctx.jsonBody(true));
+  if (card.hide) throw bad('Nothing to check in a hide request');
+  const count = (node) => 1 + (node.children || []).reduce((sum, child) => sum + count(child), 0);
+  const roots = card.regions ? card.regions.map((region) => region.root) : [card.root];
+  return {ok: true, card, widgets: roots.reduce((sum, root) => sum + count(root), 0),
+    bytes: Buffer.byteLength(JSON.stringify(card), 'utf8')};
+}
+
 async function getScreenshot(ctx) {
   const width = intParam(ctx.query.width === undefined ? '1920' : ctx.query.width, 'width');
   const height = roundHalfEven(width * 9 / 32) * 2; // 16:9, rounded to even
@@ -853,6 +864,12 @@ const ROUTES = [
     notes: 'The foreground app does not change. The TV must be on; an invalid card or a TV in standby answers 502 with the TV script\'s message. ' +
       'The image URL is fetched by the TV, so it must be reachable from the TV.',
     example: {path: '/api/overlay', body: {title: 'Dinner', body: 'It is ready.', kind: 'success', position: 'top-right', seconds: 10}}}),
+  route('POST', '/api/overlay/validate', 'Notify', 'Check a card without showing it: is it valid, how many widgets, how many bytes.', postOverlayValidate, {
+    body: 'Any candidate POST /api/overlay card (widget tree, regions or shorthand).',
+    returns: '{"ok": true, "card": <normalised card>, "widgets": N, "bytes": N}; an invalid card answers 400 with the same reason POST /api/overlay would give.',
+    tv: [],
+    notes: 'Never touches the TV side. The JSON Schema itself is served by the PC-side server (GET /api/overlay/schema) and `wof overlay schema`.',
+    example: {path: '/api/overlay/validate', body: {root: {type: 'text', text: 'Hello'}}}}),
   route('GET', '/api/screenshot', 'Status', "Capture the picture the TV shows from its HDMI input (without the TV's own menus) as an image.", getScreenshot, {
     query: {width: '64-3840, even (default 1920); the height follows the 16:9 picture', format: 'jpg (default) or png'},
     returns: 'image/jpeg or image/png bytes, Cache-Control: no-store',

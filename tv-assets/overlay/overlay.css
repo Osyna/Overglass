@@ -72,6 +72,20 @@ html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background:
 .card[data-pos="left"] { left: 0; border-radius: 0 var(--radius) var(--radius) 0; border-left: none; transform: translateX(-10px); }
 .card[data-pos="right"] { right: 0; border-radius: var(--radius) 0 0 var(--radius); border-right: none; }
 .card[data-pos="left"].show, .card[data-pos="right"].show, .card[data-pos="top"].show { transform: none; }
+/* Adjoining edge regions read as one surface: no second border, shadow or rounded corner at the seam.
+   .stage[data-edges] lists the edge positions present (set by fitPanels()). */
+.stage[data-edges~="top"] .card[data-pos="left"], .stage[data-edges~="top"] .card[data-pos="right"] { border-top: none; }
+.stage[data-edges~="top"] .card[data-pos="right"] { border-top-left-radius: 0; }
+.stage[data-edges~="top"] .card[data-pos="left"] { border-top-right-radius: 0; }
+.stage[data-edges~="bottom"] .card[data-pos="left"], .stage[data-edges~="bottom"] .card[data-pos="right"] { border-bottom: none; }
+.stage[data-edges~="bottom"] .card[data-pos="right"] { border-bottom-left-radius: 0; }
+.stage[data-edges~="bottom"] .card[data-pos="left"] { border-bottom-right-radius: 0; }
+.stage[data-edges~="right"] .card[data-pos="top"] { border-bottom-right-radius: 0; }
+.stage[data-edges~="right"] .card[data-pos="bottom"] { border-top-right-radius: 0; }
+.stage[data-edges~="left"] .card[data-pos="top"] { border-bottom-left-radius: 0; }
+.stage[data-edges~="left"] .card[data-pos="bottom"] { border-top-left-radius: 0; }
+.stage[data-edges~="left"] .card[data-pos="top"], .stage[data-edges~="right"] .card[data-pos="top"],
+.stage[data-edges~="left"] .card[data-pos="bottom"], .stage[data-edges~="right"] .card[data-pos="bottom"] { box-shadow: none; }
 .card[data-pos="left"][data-size="xs"], .card[data-pos="right"][data-size="xs"] { width: 320px; }
 .card[data-pos="left"][data-size="s"], .card[data-pos="right"][data-size="s"] { width: 420px; }
 .card[data-pos="left"][data-size="m"], .card[data-pos="right"][data-size="m"] { width: 520px; }

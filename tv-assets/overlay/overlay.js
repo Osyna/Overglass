@@ -527,10 +527,13 @@
     var top = stage.querySelector('.card[data-pos="top"]');
     var bottom = stage.querySelector('.card[data-pos="bottom"]');
     var inset = {top: top ? top.offsetHeight + 'px' : '', bottom: bottom ? bottom.offsetHeight + 'px' : ''};
-    ['left', 'right'].forEach(function (side) {
-      var panel = stage.querySelector('.card[data-pos="' + side + '"]');
-      if (panel) { panel.style.top = inset.top; panel.style.bottom = inset.bottom; }
+    var edges = [];
+    ['top', 'bottom', 'left', 'right'].forEach(function (side) {
+      var card = stage.querySelector('.card[data-pos="' + side + '"]');
+      if (card) edges.push(side);
+      if (card && (side === 'left' || side === 'right')) { card.style.top = inset.top; card.style.bottom = inset.bottom; }
     });
+    stage.dataset.edges = edges.join(' ');
   }
 
   function render(p) {

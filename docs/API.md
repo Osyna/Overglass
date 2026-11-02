@@ -53,6 +53,8 @@ server's configured hosts answers `421`, and cross-origin / cross-site non-GET r
 | `POST` | `/api/notify/toast` | Notify | Show a message on the TV screen as a toast. |
 | `POST` | `/api/notify/say` | Notify | Speak a message through the TV speaker (text to speech) at a chosen volume, then restore the TV. |
 | `POST` | `/api/overlay` | Notify | Show a custom card on the TV, built from your own JSON layout of widgets, or hide it. |
+| `GET` | `/api/overlay/schema` | Notify | The JSON Schema of an overlay card, for tools and AI assistants that write cards for you. |
+| `POST` | `/api/overlay/validate` | Notify | Check a card without showing it: is it valid, how many widgets, how many bytes. |
 | `GET` | `/api/scenes` | Scenes | Every saved scene with its steps. |
 | `PUT` | `/api/scenes/{name}` | Scenes | Save a scene: a named sequence of 1-20 steps, run together in order by POST .../run. |
 | `DELETE` | `/api/scenes/{name}` | Scenes | Remove a saved scene. |
@@ -164,6 +166,27 @@ curl -s -X POST -H "Authorization: Bearer TOKEN" -H "Content-Type: application/j
     {"type": "text", "text": "Dinner", "size": "l", "weight": "strong"},
     {"type": "progress", "value": 0.6, "label": "Cooking"}]}
 }' http://host:8765/api/overlay
+```
+
+### `GET /api/overlay/schema` and `POST /api/overlay/validate`
+
+Two helpers for people (and assistants) writing cards by hand. Neither touches the TV; both work
+before pairing. `GET /api/overlay/schema` returns a JSON Schema (draft 2020-12) of the whole card body
+— envelope, theme, regions, all 18 widgets with their enums and limits — generated from the server's
+own validation constants, so it cannot drift from what `POST /api/overlay` accepts (`wof overlay
+schema` prints the same). Hand it to ChatGPT, a JSON editor or a code generator.
+
+`POST /api/overlay/validate` takes any candidate card and answers `{"ok": true, "card": <normalised
+card>, "widgets": N, "bytes": N}` so you can see how close you are to the 80-widget / 49152-byte caps,
+or `400 {"error": "..."}` with the exact reason — the same sentence `POST /api/overlay` would give,
+naming the widget and field (`"Unknown text field: colour"`, `"stat left value must be ..."`). Unknown
+widget fields are refused, never silently dropped, so a misspelt key is caught before it costs a
+trip to the TV. The web UI's paste-JSON flow and `wof overlay check FILE` use this.
+
+```sh
+curl -s -H "Authorization: Bearer TOKEN" http://host:8765/api/overlay/schema > overlay-card.schema.json
+curl -s -X POST -H "Authorization: Bearer TOKEN" -H "Content-Type: application/json" \
+  -d @my-card.json http://host:8765/api/overlay/validate
 ```
 
 ### `GET /api/screenshot`

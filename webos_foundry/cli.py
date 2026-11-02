@@ -160,10 +160,26 @@ def cmd_notify_say(args):
     print(notify.say(_transport(args), args.text, args.volume))
 
 
+def _card_file(path):
+    return json.loads(sys.stdin.read() if path == "-" else Path(path).read_text())
+
+
 def cmd_overlay_show(args):
+    if args.json:
+        print(notify.overlay_show(_transport(args), _card_file(args.json)))
+        return
     card = {"title": args.title, "body": args.body, "lines": args.line or None, "image": args.image,
             "kind": args.kind, "position": args.position, "size": args.size, "seconds": args.seconds}
     print(notify.overlay_show(_transport(args), {key: value for key, value in card.items() if value is not None}))
+
+
+def cmd_overlay_check(args):
+    verdict = notify.inspect_overlay(_card_file(args.file))
+    print("Valid card: %d widgets, %d bytes" % (verdict["widgets"], verdict["bytes"]))
+
+
+def cmd_overlay_schema(args):
+    print(json.dumps(notify.overlay_schema(), indent=2))
 
 
 def cmd_overlay_hide(args):
@@ -485,10 +501,15 @@ def build_parser():
     command.add_argument("--line", action="append", help="repeatable")
     command.add_argument("--image", metavar="URL")
     command.add_argument("--kind", choices=("info", "success", "warning", "alert"))
-    command.add_argument("--position", choices=("top-left", "top-right", "bottom-left", "bottom-right", "center"))
-    command.add_argument("--size", choices=("xs", "s", "m", "l", "xl", "full"))
+    command.add_argument("--position", choices=notify.POSITIONS)
+    command.add_argument("--size", choices=notify.SIZES)
     command.add_argument("--seconds", type=int, help="0-300; 0 = until hidden")
+    command.add_argument("--json", metavar="FILE", help="a full card (widget tree, regions, theme) from a JSON file, "
+                                                        "or - for stdin; replaces the flags above")
     add("hide", cmd_overlay_hide, "hide the card", group)
+    command = add("check", cmd_overlay_check, "validate a card file without a TV: widgets, bytes, or the problem", group)
+    command.add_argument("file", metavar="FILE", help="JSON card, or - for stdin")
+    add("schema", cmd_overlay_schema, "print the card JSON Schema for tools and AI assistants", group)
 
     group = add("scene", None, "named sequences of remote/setting/overlay/wait steps").add_subparsers(
         dest="sub", required=True, metavar="SUB")
