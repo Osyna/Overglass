@@ -13,9 +13,11 @@
   var TEXT_COLORS = ['fg', 'fg-2', 'info', 'success', 'warning', 'alert'];
   var TONES = ['info', 'success', 'warning', 'alert'];
   var LIST_STYLES = ['bullet', 'number', 'plain'];
-  var WIDGET_TYPES = ['stack', 'row', 'text', 'image', 'badge', 'dot', 'progress', 'countdown', 'list', 'divider'];
-  var MAX_TREE_DEPTH = 4;
-  var MAX_TREE_NODES = 40;
+  var WIDGET_TYPES = ['stack', 'row', 'text', 'image', 'badge', 'dot', 'progress', 'countdown', 'list', 'divider',
+                      'compare', 'sparkline'];
+  var IMAGE_SHAPES = ['square', 'circle'];
+  var MAX_TREE_DEPTH = 5;
+  var MAX_TREE_NODES = 60;
   var hideTimer = null;
   var closeTimer = null;
   var countdownTimers = [];
@@ -69,6 +71,7 @@
       var src = text(node.src, 500);
       if (!/^https?:\/\//.test(src)) return null;
       out.src = src;
+      out.shape = oneOf(node.shape, IMAGE_SHAPES);
     } else if (kind === 'badge') {
       out.text = text(node.text, 24);
       if (!out.text) return null;
@@ -89,8 +92,33 @@
       out.items = node.items.map(function (item) { return text(item, 120); }).filter(Boolean);
       if (!out.items.length) return null;
       out.style = oneOf(node.style, LIST_STYLES);
+    } else if (kind === 'compare') {
+      if (!Array.isArray(node.segments) || node.segments.length < 2 || node.segments.length > 4) return null;
+      out.segments = [];
+      for (var s = 0; s < node.segments.length; s++) {
+        var seg = checkSegment(node.segments[s]);
+        if (!seg) return null;
+        out.segments.push(seg);
+      }
+    } else if (kind === 'sparkline') {
+      if (!Array.isArray(node.points) || node.points.length < 3 || node.points.length > 24) return null;
+      out.points = [];
+      for (var p = 0; p < node.points.length; p++) {
+        var point = node.points[p];
+        if (typeof point !== 'number' || isNaN(point) || point < -1 || point > 1) return null;
+        out.points.push(point);
+      }
+      out.tone = oneOf(node.tone, TONES);
     } // divider has no fields
     return out;
+  }
+
+  function checkSegment(segment) {
+    if (!segment || typeof segment !== 'object') return null;
+    var label = text(segment.label, 24);
+    var value = text(segment.value, 16);
+    if (!label || !value || typeof segment.fraction !== 'number' || isNaN(segment.fraction)) return null;
+    return {label: label, value: value, fraction: Math.max(0, Math.min(1, segment.fraction)), tone: oneOf(segment.tone, TONES)};
   }
 
   // --- rendering ---
@@ -150,6 +178,7 @@
         e = el('img', 'w-image');
         e.alt = '';
         e.addEventListener('error', function () { e.remove(); });
+        e.dataset.shape = node.shape || 'square';
         e.src = node.src;
         return e;
       case 'badge':
@@ -186,6 +215,42 @@
           e.appendChild(clabel);
         }
         startCountdown(clock, node.target);
+        return e;
+      }
+      case 'compare': {
+        e = el('div', 'w-compare');
+        var labels = el('div', 'w-compare-labels');
+        var bar = el('div', 'w-compare-bar');
+        node.segments.forEach(function (segment) {
+          var cell = el('div', 'w-compare-cell');
+          var lab = el('span', 'w-compare-label');
+          lab.textContent = segment.label;
+          var val = el('span', 'w-compare-value');
+          val.textContent = segment.value;
+          val.dataset.tone = segment.tone || '';
+          cell.appendChild(lab);
+          cell.appendChild(val);
+          labels.appendChild(cell);
+          var seg = el('span', 'w-compare-seg');
+          seg.style.width = (segment.fraction * 100) + '%';
+          seg.dataset.tone = segment.tone || 'neutral';
+          bar.appendChild(seg);
+        });
+        e.appendChild(labels);
+        e.appendChild(bar);
+        return e;
+      }
+      case 'sparkline': {
+        e = el('div', 'w-sparkline');
+        e.dataset.tone = node.tone || 'info';
+        node.points.forEach(function (point) {
+          var col = el('span', 'w-sparkline-col');
+          var fill = el('span', 'w-sparkline-fill');
+          fill.dataset.sign = point < 0 ? 'neg' : 'pos';
+          fill.style.height = (Math.abs(point) * 50) + '%';
+          col.appendChild(fill);
+          e.appendChild(col);
+        });
         return e;
       }
       case 'list':

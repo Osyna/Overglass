@@ -99,6 +99,21 @@ def test_overlay_show_passes_a_root_tree_through_unchanged():
     assert tree_payload(fake.calls[0]) == card
 
 
+def test_overlay_show_passes_v3_widgets_through_unchanged():
+    fake = FakeTransport({"notify-overlay": json.dumps({"returnValue": True, "overlay": "shown"})})
+    card = {"root": {"type": "stack", "children": [
+        {"type": "image", "src": "https://example.com/crest.png", "shape": "circle"},
+        {"type": "compare", "segments": [
+            {"label": "SRB", "value": "51%", "fraction": 0.51, "tone": "success"},
+            {"label": "Draw", "value": "30%", "fraction": 0.30},
+            {"label": "AND", "value": "19%", "fraction": 0.19},
+        ]},
+        {"type": "sparkline", "points": [-0.2, 0.1, 0.3, -0.1, 0.4], "tone": "info"},
+    ]}}
+    assert notify.overlay_show(fake, card) == "Overlay card shown"
+    assert tree_payload(fake.calls[0]) == card
+
+
 def test_overlay_hide():
     fake = FakeTransport({"notify-overlay": json.dumps({"returnValue": True, "overlay": "hidden"})})
     assert notify.overlay_hide(fake) == "Overlay card hidden"
@@ -121,11 +136,19 @@ def test_overlay_hide():
     {"root": {"type": "progress", "value": 1.5}}, {"root": {"type": "progress"}},
     {"root": {"type": "countdown", "target": "not a date"}}, {"root": {"type": "countdown"}},
     {"root": {"type": "list", "items": []}}, {"root": {"type": "list", "items": ["x"] * 11}},
+    {"root": {"type": "image", "src": "https://x/a.png", "shape": "round"}},
+    {"root": {"type": "compare", "segments": []}}, {"root": {"type": "compare", "segments": [{"label": "a"}]}},
+    {"root": {"type": "compare", "segments": [{"label": "a", "value": "1", "fraction": 1.5},
+                                               {"label": "b", "value": "2", "fraction": 0.5}]}},
+    {"root": {"type": "compare", "segments": [{"label": "a", "value": "1", "fraction": 0.5}]}},  # only 1 segment
+    {"root": {"type": "sparkline", "points": [0.1, 0.2]}}, {"root": {"type": "sparkline", "points": [2] * 5}},
+    {"root": {"type": "sparkline", "points": ["x"] * 5}},
     {"root": {"type": "stack", "children": [{"type": "stack", "children": [{"type": "stack", "children": [
-        {"type": "stack", "children": [{"type": "stack", "children": [{"type": "text", "text": "x"}]}]}]}]}]}},  # depth 5
+        {"type": "stack", "children": [{"type": "stack", "children": [{"type": "stack", "children": [
+            {"type": "text", "text": "x"}]}]}]}]}]}]}},  # depth 6
     {"root": {"type": "stack", "children": [{"type": "text", "text": "x"}] * 21}},  # over the 20-children-per-stack cap
-    {"root": {"type": "row", "children": [  # 41 nodes via nested rows: exceeds the 40-widget-total cap
-        {"type": "row", "children": [{"type": "text", "text": "x"}] * 10}] * 5}},
+    {"root": {"type": "row", "children": [  # 67 nodes via nested rows: exceeds the 60-widget-total cap
+        {"type": "row", "children": [{"type": "text", "text": "x"}] * 10}] * 6}},
 ])
 def test_overlay_rejects_bad_cards_before_transport(card):
     fake = FakeTransport()

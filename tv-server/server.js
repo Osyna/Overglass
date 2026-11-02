@@ -51,9 +51,11 @@ const TEXT_SIZES = ['xs', 's', 'm', 'l', 'xl'];
 const TEXT_WEIGHTS = ['normal', 'strong'];
 const TEXT_COLORS = ['fg', 'fg-2', 'info', 'success', 'warning', 'alert'];
 const LIST_STYLES = ['bullet', 'number', 'plain'];
-const WIDGET_TYPES = ['stack', 'row', 'text', 'image', 'badge', 'dot', 'progress', 'countdown', 'list', 'divider'];
-const MAX_TREE_DEPTH = 4;
-const MAX_TREE_NODES = 40;
+const WIDGET_TYPES = ['stack', 'row', 'text', 'image', 'badge', 'dot', 'progress', 'countdown', 'list', 'divider',
+                      'compare', 'sparkline'];
+const IMAGE_SHAPES = ['square', 'circle'];
+const MAX_TREE_DEPTH = 5;
+const MAX_TREE_NODES = 60;
 const SHORTHAND_FIELDS = ['title', 'body', 'lines', 'image', 'kind'];
 const TYPES = {
   '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
@@ -323,6 +325,7 @@ function checkNode(node, depth, counter) {
       throw bad('image src must be an http(s) URL of at most 500 characters');
     }
     out.src = node.src;
+    if ('shape' in node) out.shape = checkEnum(node.shape, IMAGE_SHAPES, 'shape');
   } else if (kind === 'badge') {
     out.text = clean(node.text, 24, 'badge text');
     if ('tone' in node) out.tone = checkEnum(node.tone, CARD_KINDS, 'tone');
@@ -345,7 +348,32 @@ function checkNode(node, depth, counter) {
     if (!Array.isArray(node.items) || node.items.length < 1 || node.items.length > 10) throw bad('list needs 1-10 items');
     out.items = node.items.map((item) => clean(item, 120, 'Each item'));
     if ('style' in node) out.style = checkEnum(node.style, LIST_STYLES, 'style');
+  } else if (kind === 'compare') {
+    if (!Array.isArray(node.segments) || node.segments.length < 2 || node.segments.length > 4) {
+      throw bad('compare needs 2-4 segments');
+    }
+    out.segments = node.segments.map(checkSegment);
+  } else if (kind === 'sparkline') {
+    if (!Array.isArray(node.points) || node.points.length < 3 || node.points.length > 24) {
+      throw bad('sparkline needs 3-24 points');
+    }
+    if (!node.points.every((p) => typeof p === 'number' && !Number.isNaN(p) && p >= -1 && p <= 1)) {
+      throw bad('sparkline points must be numbers between -1 and 1');
+    }
+    out.points = node.points.map(Number);
+    if ('tone' in node) out.tone = checkEnum(node.tone, CARD_KINDS, 'tone');
   } // divider has no fields
+  return out;
+}
+
+function checkSegment(segment) {
+  if (!isObject(segment)) throw bad('Each compare segment must be a JSON object');
+  const out = {label: clean(segment.label, 24, 'segment label'), value: clean(segment.value, 16, 'segment value')};
+  if (typeof segment.fraction !== 'number' || Number.isNaN(segment.fraction) || segment.fraction < 0 || segment.fraction > 1) {
+    throw bad('segment fraction must be a number 0-1');
+  }
+  out.fraction = segment.fraction;
+  if ('tone' in segment) out.tone = checkEnum(segment.tone, CARD_KINDS, 'tone');
   return out;
 }
 

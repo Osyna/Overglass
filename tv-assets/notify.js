@@ -22,9 +22,11 @@ const TEXT_SIZES = ['xs', 's', 'm', 'l', 'xl'];
 const TEXT_WEIGHTS = ['normal', 'strong'];
 const TEXT_COLORS = ['fg', 'fg-2', 'info', 'success', 'warning', 'alert'];
 const LIST_STYLES = ['bullet', 'number', 'plain'];
-const WIDGET_TYPES = ['stack', 'row', 'text', 'image', 'badge', 'dot', 'progress', 'countdown', 'list', 'divider'];
-const MAX_TREE_DEPTH = 4;
-const MAX_TREE_NODES = 40;
+const WIDGET_TYPES = ['stack', 'row', 'text', 'image', 'badge', 'dot', 'progress', 'countdown', 'list', 'divider',
+                      'compare', 'sparkline'];
+const IMAGE_SHAPES = ['square', 'circle'];
+const MAX_TREE_DEPTH = 5;
+const MAX_TREE_NODES = 60;
 
 function luna(uri, payload) {
   const r = spawnSync('luna-send', ['-n', '1', '-w', '3000', uri, JSON.stringify(payload)],
@@ -91,6 +93,7 @@ function checkNode(node, depth, counter) {
       throw new Error('image src must be an http(s) URL of at most 500 characters');
     }
     out.src = node.src;
+    if (node.shape !== undefined) out.shape = checkEnum(node.shape, IMAGE_SHAPES, 'shape');
   } else if (kind === 'badge') {
     out.text = clean(node.text, 24, 'badge text');
     if (node.tone !== undefined) out.tone = checkEnum(node.tone, CARD_KINDS, 'tone');
@@ -113,7 +116,32 @@ function checkNode(node, depth, counter) {
     if (!Array.isArray(node.items) || node.items.length < 1 || node.items.length > 10) throw new Error('list needs 1-10 items');
     out.items = node.items.map((item) => clean(item, 120, 'Each item'));
     if (node.style !== undefined) out.style = checkEnum(node.style, LIST_STYLES, 'style');
+  } else if (kind === 'compare') {
+    if (!Array.isArray(node.segments) || node.segments.length < 2 || node.segments.length > 4) {
+      throw new Error('compare needs 2-4 segments');
+    }
+    out.segments = node.segments.map(checkSegment);
+  } else if (kind === 'sparkline') {
+    if (!Array.isArray(node.points) || node.points.length < 3 || node.points.length > 24) {
+      throw new Error('sparkline needs 3-24 points');
+    }
+    if (!node.points.every((p) => typeof p === 'number' && !Number.isNaN(p) && p >= -1 && p <= 1)) {
+      throw new Error('sparkline points must be numbers between -1 and 1');
+    }
+    out.points = node.points.map(Number);
+    if (node.tone !== undefined) out.tone = checkEnum(node.tone, CARD_KINDS, 'tone');
   } // divider has no fields
+  return out;
+}
+
+function checkSegment(segment) {
+  if (!segment || typeof segment !== 'object' || Array.isArray(segment)) throw new Error('Each compare segment must be a JSON object');
+  const out = {label: clean(segment.label, 24, 'segment label'), value: clean(segment.value, 16, 'segment value')};
+  if (typeof segment.fraction !== 'number' || Number.isNaN(segment.fraction) || segment.fraction < 0 || segment.fraction > 1) {
+    throw new Error('segment fraction must be a number 0-1');
+  }
+  out.fraction = segment.fraction;
+  if (segment.tone !== undefined) out.tone = checkEnum(segment.tone, CARD_KINDS, 'tone');
   return out;
 }
 
@@ -279,6 +307,13 @@ if (process.argv[2] === '--selftest') {
     {type: 'list', items: ['a']},
   ]}};
   assert.deepStrictEqual(treeOf(simpleCard), simpleCard);
+  const v3Card = {root: {type: 'stack', children: [
+    {type: 'image', src: 'https://example.com/crest.png', shape: 'circle'},
+    {type: 'compare', segments: [{label: 'SRB', value: '51%', fraction: 0.51, tone: 'success'},
+                                 {label: 'AND', value: '19%', fraction: 0.19}]},
+    {type: 'sparkline', points: [-0.2, 0.1, 0.3], tone: 'info'},
+  ]}};
+  assert.deepStrictEqual(treeOf(v3Card), v3Card);
   assert.deepStrictEqual(treeOf({hide: true}), {hide: true});
   for (const bad of [{}, {hide: true, root: {type: 'text', text: 'x'}}, {root: {type: 'text', text: 'x'}, extra: 1},
     {root: {type: 'text', text: 'x'.repeat(401)}}, {root: {type: 'text', text: 'a\u0007'}},
@@ -287,7 +322,10 @@ if (process.argv[2] === '--selftest') {
     {root: {type: 'badge', text: 'x', tone: 'red'}}, {seconds: 1.5, root: {type: 'text', text: 'x'}},
     {seconds: 301, root: {type: 'text', text: 'x'}}, {root: {type: 'nope'}}, {root: [1]},
     {root: {type: 'progress', value: 1.5}}, {root: {type: 'countdown', target: 'not a date'}},
-    {root: {type: 'stack', children: [{type: 'stack', children: [{type: 'stack', children: [{type: 'stack', children: [{type: 'stack', children: [{type: 'text', text: 'x'}]}]}]}]}]}}]) {
+    {root: {type: 'image', src: 'https://x/a.png', shape: 'round'}},
+    {root: {type: 'compare', segments: []}}, {root: {type: 'compare', segments: [{label: 'a', value: '1', fraction: 1.5}, {label: 'b', value: '2', fraction: 0.5}]}},
+    {root: {type: 'sparkline', points: [0.1, 0.2]}}, {root: {type: 'sparkline', points: [2, 0.1, 0.2]}},
+    {root: {type: 'stack', children: [{type: 'stack', children: [{type: 'stack', children: [{type: 'stack', children: [{type: 'stack', children: [{type: 'stack', children: [{type: 'text', text: 'x'}]}]}]}]}]}]}}]) {
     assert.throws(() => treeOf(bad), JSON.stringify(bad));
   }
   assert.throws(() => treeOf('not json'));

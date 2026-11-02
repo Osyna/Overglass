@@ -17,9 +17,11 @@ TEXT_SIZES = ("xs", "s", "m", "l", "xl")
 WEIGHTS = ("normal", "strong")
 COLORS = ("fg", "fg-2", "info", "success", "warning", "alert")
 LIST_STYLES = ("bullet", "number", "plain")
-WIDGET_TYPES = ("stack", "row", "text", "image", "badge", "dot", "progress", "countdown", "list", "divider")
-MAX_TREE_DEPTH = 4
-MAX_TREE_NODES = 40
+WIDGET_TYPES = ("stack", "row", "text", "image", "badge", "dot", "progress", "countdown", "list", "divider",
+                "compare", "sparkline")
+IMAGE_SHAPES = ("square", "circle")
+MAX_TREE_DEPTH = 5
+MAX_TREE_NODES = 60
 SHORTHAND_FIELDS = ("title", "body", "lines", "image", "kind")
 _CONTROL = re.compile("[\x00-\x1f\x7f]")
 _URL = re.compile(r"https?://[^\s\"'<>]+")
@@ -106,6 +108,8 @@ def _check_node(node, depth, counter) -> dict:
         if not isinstance(src, str) or len(src) > 500 or not _URL.fullmatch(src):
             raise ValidationError("image src must be an http(s) URL of at most 500 characters")
         out["src"] = src
+        if "shape" in node:
+            out["shape"] = _check_enum(node["shape"], IMAGE_SHAPES, "shape")
     elif kind == "badge":
         out["text"] = _clean(node.get("text"), 24, "badge text")
         if "tone" in node:
@@ -140,7 +144,36 @@ def _check_node(node, depth, counter) -> dict:
         out["items"] = [_clean(item, 120, "Each item") for item in items]
         if "style" in node:
             out["style"] = _check_enum(node["style"], LIST_STYLES, "style")
+    elif kind == "compare":
+        segments = node.get("segments")
+        if not isinstance(segments, list) or not 2 <= len(segments) <= 4:
+            raise ValidationError("compare needs 2-4 segments")
+        out["segments"] = [_check_segment(segment) for segment in segments]
+    elif kind == "sparkline":
+        points = node.get("points")
+        if not isinstance(points, list) or not 3 <= len(points) <= 24:
+            raise ValidationError("sparkline needs 3-24 points")
+        if not all(type(point) in (int, float) and not isinstance(point, bool) and -1 <= point <= 1
+                   for point in points):
+            raise ValidationError("sparkline points must be numbers between -1 and 1")
+        out["points"] = [float(point) for point in points]
+        if "tone" in node:
+            out["tone"] = _check_enum(node["tone"], KINDS, "tone")
     # divider has no fields
+    return out
+
+
+def _check_segment(segment):
+    if not isinstance(segment, dict):
+        raise ValidationError("Each compare segment must be a JSON object")
+    out = {"label": _clean(segment.get("label"), 24, "segment label"),
+           "value": _clean(segment.get("value"), 16, "segment value")}
+    fraction = segment.get("fraction")
+    if type(fraction) not in (int, float) or isinstance(fraction, bool) or not 0 <= fraction <= 1:
+        raise ValidationError("segment fraction must be a number 0-1")
+    out["fraction"] = float(fraction)
+    if "tone" in segment:
+        out["tone"] = _check_enum(segment["tone"], KINDS, "tone")
     return out
 
 
