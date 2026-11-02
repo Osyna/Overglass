@@ -1,0 +1,52 @@
+/* webOS Foundry overlay card, drawn over HDMI at 1920×1080 and read from the sofa. Same palette as web/app.css. */
+:root {
+  --surface: rgb(25 28 34 / 0.94);
+  --line: rgb(255 255 255 / 0.14);
+  --fg: rgb(240 242 245);
+  --fg-2: rgb(196 201 210);
+  --info: rgb(132 181 236);
+  --success: rgb(120 214 150);
+  --warning: rgb(240 190 90);
+  --alert: rgb(240 120 105);
+  --font: "LG Smart UI", "LG Display", "DroidSans", sans-serif;
+  --edge: 56px;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background: transparent; }
+body { font-family: var(--font); color: var(--fg); }
+[hidden] { display: none !important; }
+
+.card {
+  position: absolute;
+  width: max-content; min-width: 420px; max-width: 760px;
+  padding: 26px 32px 30px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  box-shadow: 0 12px 40px rgb(0 0 0 / 0.45);
+  opacity: 0;
+  transform: translateY(10px);
+  transition: opacity 180ms cubic-bezier(0.16, 1, 0.3, 1), transform 180ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+.card.show { opacity: 1; transform: none; }
+.card[data-pos="top-left"] { top: var(--edge); left: var(--edge); }
+.card[data-pos="top-right"] { top: var(--edge); right: var(--edge); }
+.card[data-pos="bottom-left"] { bottom: var(--edge); left: var(--edge); }
+.card[data-pos="bottom-right"] { bottom: var(--edge); right: var(--edge); }
+.card[data-pos="center"] { top: 50%; left: 50%; transform: translate(-50%, calc(-50% + 10px)); }
+.card[data-pos="center"].show { transform: translate(-50%, -50%); }
+
+.card-head { display: flex; align-items: center; gap: 14px; }
+.dot { width: 14px; height: 14px; border-radius: 50%; background: var(--accent, var(--info)); flex: none; }
+.card[data-kind="success"] { --accent: var(--success); }
+.card[data-kind="warning"] { --accent: var(--warning); }
+.card[data-kind="alert"] { --accent: var(--alert); }
+h1 { margin: 0; font-size: 36px; font-weight: 600; line-height: 1.2; letter-spacing: -0.01em; }
+.body { margin: 12px 0 0; font-size: 28px; line-height: 1.4; color: var(--fg-2); max-width: 40ch; }
+.body:empty { display: none; }
+.lines { list-style: none; margin: 14px 0 0; padding: 0; display: grid; gap: 6px; font-size: 26px; color: var(--fg-2); font-variant-numeric: tabular-nums; }
+.lines:empty { display: none; }
+.image { display: block; margin-top: 18px; max-width: 696px; max-height: 392px; border-radius: 10px; }
+.time { margin: 22px -32px -30px; height: 4px; border-radius: 0 0 16px 16px; overflow: hidden; }
+.time span { display: block; height: 100%; background: var(--accent, var(--info)); transform-origin: left; }
+.card[data-pinned="true"] .time { display: none; }

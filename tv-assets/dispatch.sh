@@ -1,0 +1,334 @@
+#!/bin/sh
+# webOS Foundry forced-command dispatcher (POSIX sh, never eval). sshd runs it for the dedicated key:
+#   command="sh /var/lib/webosbrew/webos-foundry/dispatch.sh",restrict ssh-ed25519 ...
+# The client's request arrives in $SSH_ORIGINAL_COMMAND; it is matched verb by verb against the grammar in
+# ARCHITECTURE.md section 3 and every argument is validated again here. Anything else exits 64.
+LC_ALL=C
+export LC_ALL
+umask 022
+set -f
+
+D=/var/lib/webosbrew/webos-foundry
+LOCK=/tmp/webos-foundry.lock
+TMP=/tmp
+# vtcap lives on the dev-mode storage the original capture client was proven to execute from.
+VTDIR=/media/developer/webos-foundry-vtcap
+LS2=/var/luna-service2-dev
+LSCTL=/usr/sbin/ls-control
+OVERLAY_ID=dev.webosfoundry.overlay
+VT_ID=dev.webosfoundry.vtcap
+INSTALLER=luna://com.webos.appInstallService/dev/
+BUSY="TV is busy with AI processing or another change; try again shortly."
+B64_FILE_MAX=1500000
+
+deny() {
+  echo "webos-foundry: $1" >&2
+  exit 64
+}
+
+# --- argument validators (each mirrors one token of the section 3 grammar) -----------------------------
+
+is_b64() { # value maxlen  ==  [A-Za-z0-9+/]{1,maxlen}={0,2}
+  b=${1%%=*}
+  p=${1#"$b"}
+  case $b in '' | *[!A-Za-z0-9+/]*) return 1 ;; esac
+  case $p in '' | = | ==) ;; *) return 1 ;; esac
+  [ "${#b}" -le "$2" ]
+}
+
+is_int() { # value mindigits maxdigits  ==  [0-9]{min,max}
+  case $1 in '' | *[!0-9]*) return 1 ;; esac
+  [ "${#1}" -ge "$2" ] && [ "${#1}" -le "$3" ]
+}
+
+is_ident() { # [A-Za-z][A-Za-z0-9_]*
+  case $1 in [A-Za-z]*) ;; *) return 1 ;; esac
+  case $1 in *[!A-Za-z0-9_]*) return 1 ;; esac
+}
+
+is_profile() { # [A-Za-z][A-Za-z0-9_-]*
+  case $1 in [A-Za-z]*) ;; *) return 1 ;; esac
+  case $1 in *[!A-Za-z0-9_-]*) return 1 ;; esac
+}
+
+dec() { # strip leading zeros so $(( )) never reads octal
+  n=$1
+  while :; do
+    case $n in 0?*) n=${n#0} ;; *) break ;; esac
+  done
+  echo "$n"
+}
+
+b64d() {
+  if command -v base64 >/dev/null 2>&1; then
+    base64 -d
+  else
+    node -e 'process.stdout.write(Buffer.from(require("fs").readFileSync(0, "utf8"), "base64"))'
+  fi
+}
+
+# Runs a command under the TV lock; lock timeout (rc 75) is reported as the shared "busy" message.
+locked() { # waitseconds command...
+  w=$1
+  shift
+  flock -w "$w" -E 75 "$LOCK" "$@" </dev/null
+  rc=$?
+  [ "$rc" -eq 75 ] && echo "$BUSY" >&2
+  return "$rc"
+}
+
+# --- verbs ---------------------------------------------------------------------------------------------
+
+do_status() {
+  sh "$D/status.sh"
+  echo
+  echo @@@
+  luna-send -n 1 -w 1500 luna://com.webos.service.audio/master/getVolume '{}' </dev/null || true
+}
+
+do_screenshot() { # width height jpg|png
+  w=$(dec "$1")
+  h=$(dec "$2")
+  [ $((w % 2)) -eq 0 ] && [ $((h % 2)) -eq 0 ] || deny "width and height must be even"
+  [ "$w" -ge 64 ] && [ "$w" -le 3840 ] && [ "$h" -ge 36 ] && [ "$h" -le 2160 ] || deny "size out of range"
+  d=$((w * 9 - h * 16))
+  [ "$d" -le 16 ] && [ "$d" -ge -16 ] || deny "height must keep the 16:9 picture shape"
+  case $3 in jpg) fmt=JPG ;; png) fmt=PNG ;; esac
+  p=$TMP/webos-foundry-shot-$$.$3
+  trap 'rm -f "$p"' EXIT
+  req=$(printf '{"path":"%s","method":"VIDEO","format":"%s","width":%s,"height":%s}' "$p" "$fmt" "$w" "$h")
+  r=$(luna-send -n 1 -w 8000 luna://com.webos.service.capture/executeOneShot "$req" </dev/null)
+  case $r in
+    *'"returnValue":true'*) [ -s "$p" ] && cat "$p" && exit 0 ;;
+  esac
+  echo "Capture failed: $r" >&2
+  exit 3
+}
+
+do_process() { # image|audio profile arg...   (the media upload is this session's stdin)
+  kind=$1
+  profile=$2
+  shift 2
+  if [ "$kind" = image ]; then
+    input=input.mp4 cap=16777216 result=captured.png script=process-image.js
+  else
+    input=input.wav cap=8388608 result=captured.wav script=process-audio.js
+  fi
+  trap '' HUP # a dropped client must not stop a job that has to restore the TV
+  umask 077
+  ws=$(mktemp -d "$TMP/webos-foundry-ai.XXXXXXXX") || { echo "Cannot create a TV workspace" >&2; exit 1; }
+  head -c $((cap + 1)) >"$ws/$input"
+  if [ "$(wc -c <"$ws/$input")" -gt "$cap" ]; then
+    rm -rf "$ws"
+    echo "Upload is larger than $cap bytes" >&2
+    exit 1
+  fi
+  flock -n -E 75 "$LOCK" node "$D/$script" "$ws" "$profile" "$@" >"$ws/result.json" 2>"$ws/error.txt" </dev/null
+  rc=$?
+  if [ "$rc" -eq 75 ]; then
+    rm -rf "$ws"
+    echo "$BUSY" >&2
+    exit 75
+  fi
+  if [ "$rc" -ne 0 ]; then
+    cat "$ws/error.txt" >&2
+    # Only a failed restoration needs restore.json/the media again; everything else is already clean.
+    case $(cat "$ws/error.txt") in
+      *'Restoration failed'*) echo "Private TV workspace kept for recovery: $ws" >&2 ;;
+      *) rm -rf "$ws" ;;
+    esac
+    exit "$rc"
+  fi
+  [ -s "$ws/$result" ] || { cat "$ws/error.txt" >&2; echo "TV produced no $result; workspace kept: $ws" >&2; exit 1; }
+  cat "$ws/result.json" "$ws/$result"
+  rc=$?
+  rm -rf "$ws"
+  exit "$rc"
+}
+
+do_install_status() {
+  out='{"files":{'
+  for f in status.sh details.js notify.js settings.js remote.js process-image.js process-audio.js dispatch.sh; do
+    [ -f "$D/$f" ] && v=true || v=false
+    out=$out'"'$f'":'$v,
+  done
+  out=${out%,}'},"overlay":'
+  if [ -d "/media/developer/apps/usr/palm/applications/$OVERLAY_ID" ] || [ -d "/usr/palm/applications/$OVERLAY_ID" ]; then out=${out}true; else out=${out}false; fi
+  if [ -x "$VTDIR/vtcap" ] && [ -f "$LS2/roles.d/$VT_ID.json" ]; then out=${out}',"vtcap":true}'; else out=${out}',"vtcap":false}'; fi
+  echo "$out"
+}
+
+do_install() { # name base64
+  case $1 in
+    dispatch.sh | status.sh) mode=755 ;;
+    details.js | notify.js | settings.js | remote.js | process-image.js | process-audio.js) mode=644 ;;
+    *) deny "unknown file" ;;
+  esac
+  mkdir -p "$D" || exit 1
+  printf '%s' "$2" | b64d >"$D/$1.new" && [ -s "$D/$1.new" ] || { rm -f "$D/$1.new"; echo "Empty or undecodable upload" >&2; exit 1; }
+  chmod "$mode" "$D/$1.new" && mv "$D/$1.new" "$D/$1"
+}
+
+installer() { # install|remove json
+  timeout 85 luna-send -w 84000 -i "$INSTALLER$1" "$2" </dev/null || true
+}
+
+do_install_overlay() {
+  ipk=$TMP/$OVERLAY_ID.ipk
+  trap 'rm -f "$ipk"' EXIT
+  (umask 077 && printf '%s' "$1" | b64d >"$ipk") && [ -s "$ipk" ] || { echo "Empty or undecodable IPK" >&2; exit 1; }
+  out=$(installer install '{"id":"com.ares.defaultName","ipkUrl":"'"$ipk"'","subscribe":true}')
+  if printf '%s\n' "$out" | grep -Eq '"state"[[:space:]]*:[[:space:]]*"installed"'; then
+    echo "Overlay installed"
+  else
+    echo "Overlay install did not complete: $out" >&2
+    exit 1
+  fi
+}
+
+remove_overlay() {
+  out=$(installer remove '{"id":"'"$OVERLAY_ID"'","subscribe":true}')
+  printf '%s\n' "$out" | grep -Eq '"state"[[:space:]]*:[[:space:]]*"removed"'
+}
+
+do_uninstall_overlay() {
+  remove_overlay && echo "Overlay removed" || { echo "Overlay removal did not complete" >&2; exit 1; }
+}
+
+do_install_vtcap() {
+  mkdir -p "$VTDIR" "$LS2/roles.d" "$LS2/manifests.d" || exit 1
+  printf '%s' "$1" | b64d >"$VTDIR/vtcap.new" && [ -s "$VTDIR/vtcap.new" ] || { rm -f "$VTDIR/vtcap.new"; echo "Empty or undecodable binary" >&2; exit 1; }
+  chmod 755 "$VTDIR/vtcap.new" && mv "$VTDIR/vtcap.new" "$VTDIR/vtcap" || exit 1
+  # Names and rights: only what vtCapture_create needs (captureservice's own role minus its server names).
+  printf '%s' '{"exeName":"'"$VTDIR"'/vtcap","type":"regular","allowedNames":["com.webos.service.capture.client*","com.webos.rm.client.*"],"permissions":[{"service":"com.webos.service.capture.client*","outbound":["*"]},{"service":"com.webos.rm.client.*","outbound":["com.webos.media"]}]}' >"$LS2/roles.d/$VT_ID.json" || exit 1
+  printf '%s' '{"id":"'"$VT_ID"'","version":"1.0.0","roleFiles":["'"$LS2/roles.d/$VT_ID.json"'"]}' >"$LS2/manifests.d/$VT_ID.json" || exit 1
+  "$LSCTL" scan-volatile-dirs </dev/null
+  echo "vtcap installed"
+}
+
+remove_vtcap() {
+  rm -f "$LS2/roles.d/$VT_ID.json" "$LS2/manifests.d/$VT_ID.json" "$VTDIR/vtcap" "$VTDIR/vtcap.new"
+  rmdir "$VTDIR" 2>/dev/null
+  "$LSCTL" scan-volatile-dirs </dev/null
+}
+
+do_uninstall_all() {
+  remove_overlay
+  remove_vtcap
+  rm -rf "$D"
+  echo "webOS Foundry removed from the TV (scripts, overlay app, vtcap role)."
+  echo "Delete the line containing webos-foundry/dispatch.sh from /home/root/.ssh/authorized_keys by hand."
+  exit 0
+}
+
+# --- request parsing -----------------------------------------------------------------------------------
+
+cmd=${SSH_ORIGINAL_COMMAND-}
+case $cmd in
+  '') deny "no command" ;;
+  # Whole-request allowlist: also rejects newlines, $, `, ;, &, |, quotes, backslashes and globs.
+  *[!A-Za-z0-9+/=._' '-]*) deny "unexpected character in command" ;;
+  ' '* | *' ' | *'  '*) deny "malformed spacing" ;;
+esac
+IFS=' '
+set -- $cmd
+verb=$1
+argc=$#
+
+case $verb in
+  status)
+    [ "$argc" -eq 1 ] || deny "usage: status"
+    do_status
+    ;;
+  details)
+    [ "$argc" -eq 1 ] || deny "usage: details"
+    exec node "$D/details.js" </dev/null
+    ;;
+  remote)
+    case "$argc ${2-}" in
+      '2 wake' | '2 power_off' | '2 home' | '2 back' | '2 up' | '2 down' | '2 left' | '2 right' | '2 ok' | \
+        '2 mute' | '2 unmute' | '2 volume_up' | '2 volume_down')
+        locked 5 node "$D/remote.js" "$2"
+        ;;
+      '3 hdmi')
+        case $3 in [1-4]) ;; *) deny "HDMI input must be 1-4" ;; esac
+        locked 5 node "$D/remote.js" hdmi "$3"
+        ;;
+      *) deny "usage: remote <action> | remote hdmi <1-4>" ;;
+    esac
+    ;;
+  settings-list)
+    [ "$argc" -eq 1 ] || deny "usage: settings-list"
+    locked 5 node "$D/settings.js" list
+    ;;
+  settings-set)
+    [ "$argc" -eq 4 ] && is_ident "$2" && is_ident "$3" && is_b64 "$4" 4000 || deny "usage: settings-set <category> <key> <base64>"
+    locked 5 node "$D/settings.js" set "$2" "$3" "$4"
+    ;;
+  notify-toast)
+    [ "$argc" -eq 2 ] && is_b64 "$2" 400 || deny "usage: notify-toast <base64>"
+    exec node "$D/notify.js" toast "$2" </dev/null
+    ;;
+  notify-say)
+    [ "$argc" -eq 2 ] || { [ "$argc" -eq 3 ] && is_int "$3" 1 2; } || deny "usage: notify-say <base64> [volume]"
+    is_b64 "$2" 400 || deny "usage: notify-say <base64> [volume]"
+    locked 10 node "$D/notify.js" say "$2" ${3+"$3"}
+    ;;
+  notify-overlay)
+    [ "$argc" -eq 2 ] && is_b64 "$2" 8000 || deny "usage: notify-overlay <base64>"
+    exec node "$D/notify.js" overlay "$2" </dev/null
+    ;;
+  screenshot)
+    [ "$argc" -eq 4 ] && is_int "$2" 2 4 && is_int "$3" 2 4 || deny "usage: screenshot <width> <height> jpg|png"
+    case $4 in jpg | png) ;; *) deny "format must be jpg or png" ;; esac
+    do_screenshot "$2" "$3" "$4"
+    ;;
+  stream-start)
+    [ "$argc" -eq 6 ] && is_int "$2" 2 4 && is_int "$3" 2 4 && is_int "$4" 1 3 && is_int "$5" 1 4 || deny "usage: stream-start <w> <h> <fps> <seconds> <dump>"
+    case $6 in [0-5]) ;; *) deny "dump must be 0-5" ;; esac
+    # The process becomes the SSH session: SIGTERM/closed pipe from the client is the only way to stop it.
+    exec "$VTDIR/vtcap" -w "$(dec "$2")" -h "$(dec "$3")" -f "$(dec "$4")" -t "$(dec "$5")" -d "$6"
+    ;;
+  process-image)
+    [ "$argc" -eq 4 ] && is_profile "$2" && is_int "$3" 2 4 && is_int "$4" 2 4 || deny "usage: process-image <profile> <width> <height>"
+    do_process image "$2" "$3" "$4"
+    ;;
+  process-audio)
+    [ "$argc" -eq 3 ] && is_profile "$2" && is_int "$3" 1 2 || deny "usage: process-audio <profile> <seconds>"
+    do_process audio "$2" "$3"
+    ;;
+  idle-wait)
+    [ "$argc" -eq 1 ] || deny "usage: idle-wait"
+    locked 25 true
+    ;;
+  install-status)
+    [ "$argc" -eq 1 ] || deny "usage: install-status"
+    do_install_status
+    ;;
+  install)
+    [ "$argc" -eq 3 ] && is_b64 "$3" "$B64_FILE_MAX" || deny "usage: install <file> <base64>"
+    do_install "$2" "$3"
+    ;;
+  install-overlay)
+    [ "$argc" -eq 2 ] && is_b64 "$2" "$B64_FILE_MAX" || deny "usage: install-overlay <base64>"
+    do_install_overlay "$2"
+    ;;
+  uninstall-overlay)
+    [ "$argc" -eq 1 ] || deny "usage: uninstall-overlay"
+    do_uninstall_overlay
+    ;;
+  install-vtcap)
+    [ "$argc" -eq 2 ] && is_b64 "$2" "$B64_FILE_MAX" || deny "usage: install-vtcap <base64>"
+    do_install_vtcap "$2"
+    ;;
+  uninstall-vtcap)
+    [ "$argc" -eq 1 ] || deny "usage: uninstall-vtcap"
+    remove_vtcap
+    ;;
+  uninstall-all)
+    [ "$argc" -eq 1 ] || deny "usage: uninstall-all"
+    do_uninstall_all
+    ;;
+  *) deny "unknown request" ;;
+esac
+exit $?

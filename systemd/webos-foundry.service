@@ -1,0 +1,23 @@
+[Unit]
+Description=webOS Foundry HTTP API and web UI
+Documentation=https://github.com/webos-foundry/webos-foundry
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=webos-foundry
+Group=webos-foundry
+Environment=WEBOS_FOUNDRY_HOME=/var/lib/webos-foundry/config
+# Adjust to `command -v wof`. A non-loopback --host needs server_token in the config (or add --token).
+ExecStart=/usr/local/bin/wof serve --host 0.0.0.0
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/webos-foundry
+
+[Install]
+WantedBy=multi-user.target

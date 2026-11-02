@@ -1,0 +1,313 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>webOS Foundry</title>
+<link rel="stylesheet" href="/app.css">
+<script src="/app.js" defer></script>
+</head>
+<body>
+<svg class="sprite" aria-hidden="true">
+  <symbol id="i-power" viewBox="0 0 24 24"><path d="M12 3v8"/><path d="M6.3 6.8a8 8 0 1 0 11.4 0"/></symbol>
+  <symbol id="i-moon" viewBox="0 0 24 24"><path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5Z"/></symbol>
+  <symbol id="i-up" viewBox="0 0 24 24"><path d="m6 15 6-6 6 6"/></symbol>
+  <symbol id="i-down" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+  <symbol id="i-left" viewBox="0 0 24 24"><path d="m15 6-6 6 6 6"/></symbol>
+  <symbol id="i-right" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></symbol>
+  <symbol id="i-back" viewBox="0 0 24 24"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/></symbol>
+  <symbol id="i-home" viewBox="0 0 24 24"><path d="m3 10 9-7 9 7"/><path d="M5 9v11h14V9"/></symbol>
+  <symbol id="i-minus" viewBox="0 0 24 24"><path d="M5 12h14"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+  <symbol id="i-speaker" viewBox="0 0 24 24"><path d="M11 5 6 9H3v6h3l5 4V5Z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/></symbol>
+  <symbol id="i-muted" viewBox="0 0 24 24"><path d="M11 5 6 9H3v6h3l5 4V5Z"/><path d="m16 9 5 6M21 9l-5 6"/></symbol>
+  <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 11a8 8 0 0 0-14.6-4.5L4 8"/><path d="M4 3v5h5"/><path d="M4 13a8 8 0 0 0 14.6 4.5L20 16"/><path d="M20 21v-5h-5"/></symbol>
+  <symbol id="i-upload" viewBox="0 0 24 24"><path d="M12 15V4"/><path d="m7 9 5-5 5 5"/><path d="M4 15v4a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-4"/></symbol>
+  <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 4v11"/><path d="m7 10 5 5 5-5"/><path d="M4 15v4a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-4"/></symbol>
+  <symbol id="i-copy" viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V5a1 1 0 0 0-1-1H5a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h3"/></symbol>
+  <symbol id="i-stop" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="1.5"/></symbol>
+  <symbol id="i-camera" viewBox="0 0 24 24"><path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13" r="3.5"/></symbol>
+</svg>
+
+<header class="top">
+  <div class="ident">
+    <h1>webOS Foundry</h1>
+    <span class="addr" id="tv-addr"></span>
+  </div>
+  <dl class="status" id="status" aria-live="polite" aria-label="TV status">
+    <div class="power" data-power="unknown"><dt>Power</dt><dd id="st-power">—</dd></div>
+    <div><dt>Input</dt><dd id="st-source">—</dd></div>
+    <div><dt>SoC</dt><dd id="st-temp" class="num">—</dd></div>
+    <div><dt>Volume</dt><dd id="st-volume" class="num">—</dd></div>
+  </dl>
+  <button class="btn icon-only" id="refresh-status" type="button" aria-label="Refresh status" title="Refresh status">
+    <svg><use href="#i-refresh"/></svg>
+  </button>
+  <nav class="views" aria-label="View">
+    <button type="button" class="tab" data-view="control" aria-current="page">Control</button>
+    <button type="button" class="tab" data-view="api">API</button>
+  </nav>
+  <button class="btn quiet" id="token-btn" type="button" title="Set the API token">Token</button>
+</header>
+
+<p class="notice" id="notice" role="status" hidden></p>
+<p class="notice" id="pair-hint" role="status" hidden>Not paired with a TV. On the machine running this server, run <code>wof pair --host &lt;tv-ip&gt;</code>, then reload this page.</p>
+
+<dialog id="token-dialog" aria-labelledby="h-token">
+  <form method="dialog" id="token-form">
+    <h2 id="h-token">API token</h2>
+    <p class="lede" id="token-lede">This server requires a bearer token: the <code>server_token</code> in the webOS Foundry config.json, or the one passed to <code>wof serve --token</code>. It is kept in this browser only.</p>
+    <div class="field">
+      <label for="token-input">Token</label>
+      <input type="password" id="token-input" autocomplete="off" spellcheck="false">
+    </div>
+    <p class="result-msg" id="token-msg" role="status" hidden></p>
+    <div class="row">
+      <button class="btn primary" type="submit" id="token-save">Save token</button>
+      <button class="btn" type="button" id="token-clear">Forget token</button>
+      <button class="btn quiet" type="button" id="token-cancel">Cancel</button>
+    </div>
+  </form>
+</dialog>
+
+<div class="layout">
+  <main id="view-control" class="control">
+    <div class="col col-a">
+    <section class="panel remote" aria-labelledby="h-remote">
+      <header class="panel-head"><h2 id="h-remote">Remote</h2><span class="hint" id="remote-hint"></span></header>
+
+      <div class="group">
+        <h3>Power</h3>
+        <div class="row">
+          <button class="btn" type="button" data-action="wake"><svg><use href="#i-power"/></svg><span>Wake</span></button>
+          <button class="btn" type="button" data-action="power_off" data-needs-on><svg><use href="#i-moon"/></svg><span>Standby</span></button>
+        </div>
+      </div>
+
+      <div class="group">
+        <h3>Input</h3>
+        <div class="inputs" role="group" aria-label="Input">
+          <button class="seg" type="button" data-action="hdmi" data-value="1" data-needs-on>HDMI 1</button>
+          <button class="seg" type="button" data-action="hdmi" data-value="2" data-needs-on>HDMI 2</button>
+          <button class="seg" type="button" data-action="hdmi" data-value="3" data-needs-on>HDMI 3</button>
+          <button class="seg" type="button" data-action="hdmi" data-value="4" data-needs-on>HDMI 4</button>
+          <button class="seg" type="button" data-action="home" data-needs-on>Luma</button>
+        </div>
+      </div>
+
+      <div class="group">
+        <h3>Navigate</h3>
+        <div class="pad" role="group" aria-label="Direction pad">
+          <button class="key up" type="button" data-action="up" data-needs-on aria-label="Up"><svg><use href="#i-up"/></svg></button>
+          <button class="key left" type="button" data-action="left" data-needs-on aria-label="Left"><svg><use href="#i-left"/></svg></button>
+          <button class="key ok" type="button" data-action="ok" data-needs-on>OK</button>
+          <button class="key right" type="button" data-action="right" data-needs-on aria-label="Right"><svg><use href="#i-right"/></svg></button>
+          <button class="key down" type="button" data-action="down" data-needs-on aria-label="Down"><svg><use href="#i-down"/></svg></button>
+        </div>
+        <div class="row">
+          <button class="btn" type="button" data-action="back" data-needs-on><svg><use href="#i-back"/></svg><span>Back</span></button>
+          <button class="btn" type="button" data-action="home" data-needs-on><svg><use href="#i-home"/></svg><span>Home</span></button>
+        </div>
+        <p class="keys">Keyboard: <kbd>←</kbd><kbd>↑</kbd><kbd>→</kbd><kbd>↓</kbd> move · <kbd>Enter</kbd> OK · <kbd>Backspace</kbd> Back · <kbd>H</kbd> Home</p>
+      </div>
+
+      <div class="group">
+        <h3>Volume <span class="sub">TV speaker</span></h3>
+        <div class="row volume">
+          <button class="btn icon-only" type="button" data-action="volume_down" data-needs-on aria-label="Volume down"><svg><use href="#i-minus"/></svg></button>
+          <output class="level num" id="volume-level" aria-label="Volume">—</output>
+          <button class="btn icon-only" type="button" data-action="volume_up" data-needs-on aria-label="Volume up"><svg><use href="#i-plus"/></svg></button>
+          <button class="btn mute" type="button" id="mute" data-action="mute" data-needs-on aria-pressed="false"><svg><use href="#i-speaker"/></svg><span>Mute</span></button>
+        </div>
+      </div>
+    </section>
+    <section class="panel notify" aria-labelledby="h-notify">
+      <header class="panel-head"><h2 id="h-notify">Notify</h2><span class="hint" id="notify-hint"></span></header>
+      <form id="notify-form" class="notify-form">
+        <div class="field">
+          <label for="notify-text">Message</label>
+          <input type="text" id="notify-text" maxlength="200" autocomplete="off" placeholder="Dinner is ready">
+        </div>
+        <div class="field">
+          <div class="field-head"><label for="notify-volume">Speak volume</label><output class="num" id="notify-volume-out" for="notify-volume">15</output></div>
+          <input type="range" id="notify-volume" min="1" max="40" step="1" value="15">
+        </div>
+        <div class="row">
+          <button class="btn primary" type="submit" id="toast" disabled>Toast</button>
+          <button class="btn" type="button" id="speak" disabled><svg><use href="#i-speaker"/></svg><span>Speak</span></button>
+        </div>
+        <p class="result-msg" id="notify-msg" role="status" hidden></p>
+      </form>
+    </section>
+
+    <section class="panel overlay" aria-labelledby="h-overlay">
+      <header class="panel-head"><h2 id="h-overlay">On-screen card</h2><span class="hint" id="overlay-hint"></span></header>
+      <form id="overlay-form" class="notify-form">
+        <div class="field">
+          <label for="ov-title">Title</label>
+          <input type="text" id="ov-title" maxlength="80" autocomplete="off" placeholder="Dinner">
+        </div>
+        <div class="field">
+          <label for="ov-body">Text</label>
+          <textarea id="ov-body" rows="2" maxlength="400" placeholder="It is ready."></textarea>
+        </div>
+        <div class="field">
+          <label for="ov-lines">Lines <span class="sub">one per line, up to 10</span></label>
+          <textarea id="ov-lines" rows="3"></textarea>
+        </div>
+        <div class="pair">
+          <div class="field">
+            <label for="ov-kind">Kind</label>
+            <select id="ov-kind">
+              <option value="info" selected>Info</option>
+              <option value="success">Success</option>
+              <option value="warning">Warning</option>
+              <option value="alert">Alert</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="ov-position">Position</label>
+            <select id="ov-position">
+              <option value="top-left">Top left</option>
+              <option value="top-right" selected>Top right</option>
+              <option value="bottom-left">Bottom left</option>
+              <option value="bottom-right">Bottom right</option>
+              <option value="center">Center</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="ov-seconds">Seconds <span class="sub">0 = pinned</span></label>
+            <input type="number" id="ov-seconds" min="0" max="300" step="1" value="8">
+          </div>
+        </div>
+        <div class="row">
+          <button class="btn primary" type="submit" id="ov-show" disabled>Show</button>
+          <button class="btn" type="button" id="ov-hide" disabled>Hide</button>
+          <button class="btn" type="button" id="ov-details" disabled>Show TV details on screen</button>
+        </div>
+        <p class="result-msg" id="overlay-msg" role="status" hidden></p>
+      </form>
+    </section>
+
+    </div>
+    <div class="col col-b">
+
+    <section class="panel settings" aria-labelledby="h-settings">
+      <header class="panel-head">
+        <h2 id="h-settings">Picture &amp; sound</h2>
+        <button class="btn quiet" type="button" id="refresh-settings"><svg><use href="#i-refresh"/></svg><span>Reload</span></button>
+      </header>
+      <p class="lede">Values and choices come from the TV for its current input and picture mode. Changes persist in the scope shown.</p>
+      <div id="settings-body" class="settings-body" aria-live="polite"></div>
+    </section>
+
+    <section class="panel process" aria-labelledby="h-process">
+      <header class="panel-head"><h2 id="h-process">Process a file on the TV</h2></header>
+      <form id="job-form" class="job-form">
+        <label class="drop" id="drop">
+          <input type="file" id="file" accept=".png,.jpg,.jpeg,.wav,image/png,image/jpeg,audio/wav">
+          <svg><use href="#i-upload"/></svg>
+          <span class="drop-main" id="drop-main">Choose an image or WAV, or drop it here</span>
+          <span class="drop-sub" id="drop-sub">PNG, JPEG or WAV</span>
+        </label>
+        <div class="field" id="profile-field" hidden>
+          <label for="profile">Profile</label>
+          <select id="profile"></select>
+        </div>
+        <p class="limits" id="limits" hidden></p>
+        <div class="row">
+          <button class="btn primary" type="submit" id="start" disabled>Process on TV</button>
+        </div>
+      </form>
+      <div id="job" class="job" hidden aria-live="polite">
+        <div class="job-head">
+          <div><strong id="job-title"></strong><span class="job-state" id="job-state"></span></div>
+          <span class="num elapsed" id="job-elapsed"></span>
+        </div>
+        <p class="job-msg" id="job-msg"></p>
+        <div class="row">
+          <button class="btn danger" type="button" id="job-cancel" hidden><svg><use href="#i-stop"/></svg><span>Cancel</span></button>
+          <button class="btn" type="button" id="job-release" hidden><svg><use href="#i-refresh"/></svg><span>Check TV release</span></button>
+          <a class="btn primary" id="job-download" hidden><svg><use href="#i-download"/></svg><span>Download</span></a>
+        </div>
+        <div class="preview" id="job-preview"></div>
+        <details class="job-log">
+          <summary>Processor log</summary>
+          <pre id="job-log"></pre>
+        </details>
+      </div>
+    </section>
+
+    <section class="panel details" aria-labelledby="h-details">
+      <header class="panel-head">
+        <h2 id="h-details">TV details</h2>
+        <button class="btn quiet" type="button" id="refresh-details"><svg><use href="#i-refresh"/></svg><span>Reload</span></button>
+      </header>
+      <div id="details-body" aria-live="polite"></div>
+    </section>
+
+    <section class="panel live" aria-labelledby="h-live">
+      <header class="panel-head"><h2 id="h-live">Live view</h2><span class="hint num" id="live-stats"></span></header>
+      <p class="lede">A low-resolution live stream of the HDMI picture, drawn on this page. It is the connected PC's screen: treat it as private. Frames are not stored, and the stream stops when you stop it, hide this page or close the tab.</p>
+      <div class="row">
+        <select id="live-size" aria-label="Size" class="inline">
+          <option value="160x90" selected>160 × 90</option>
+          <option value="320x180">320 × 180</option>
+        </select>
+        <select id="live-fps" aria-label="Frames per second" class="inline">
+          <option value="15">15 fps</option>
+          <option value="30" selected>30 fps</option>
+          <option value="60">60 fps</option>
+        </select>
+        <button class="btn primary" type="button" id="live-start" disabled>Start</button>
+        <button class="btn danger" type="button" id="live-stop" hidden><svg><use href="#i-stop"/></svg><span>Stop</span></button>
+      </div>
+      <p class="result-msg" id="live-msg" role="status" hidden></p>
+      <div class="live-view" id="live-view" hidden>
+        <canvas id="live-canvas" width="160" height="90" role="img" aria-label="Live picture from the TV"></canvas>
+        <ul class="swatches" aria-label="Average colour of each screen edge">
+          <li><span class="chip" id="chip-top"></span><span>Top</span><code id="hex-top"></code></li>
+          <li><span class="chip" id="chip-bottom"></span><span>Bottom</span><code id="hex-bottom"></code></li>
+          <li><span class="chip" id="chip-left"></span><span>Left</span><code id="hex-left"></code></li>
+          <li><span class="chip" id="chip-right"></span><span>Right</span><code id="hex-right"></code></li>
+        </ul>
+      </div>
+    </section>
+
+    <section class="panel screenshot" aria-labelledby="h-shot">
+      <header class="panel-head"><h2 id="h-shot">Screenshot</h2></header>
+      <p class="lede">Captures the picture on the TV's HDMI input. It shows whatever the connected PC displays, so treat it as private: it is not stored by this server.</p>
+      <div class="row">
+        <select id="shot-width" aria-label="Size" class="inline">
+          <option value="960">960 × 540</option>
+          <option value="1920" selected>1920 × 1080</option>
+          <option value="3840">3840 × 2160</option>
+        </select>
+        <button class="btn primary" type="button" id="shot-capture" disabled><svg><use href="#i-camera"/></svg><span>Capture</span></button>
+        <a class="btn" id="shot-download" hidden><svg><use href="#i-download"/></svg><span>Download</span></a>
+      </div>
+      <p class="result-msg" id="shot-msg" role="status" hidden></p>
+      <figure class="shot" id="shot-view" hidden></figure>
+    </section>
+    </div>
+  </main>
+
+  <main id="view-api" class="api" hidden>
+    <section class="api-intro" id="api-intro"></section>
+    <div id="api-routes"></div>
+  </main>
+
+  <aside class="log" aria-labelledby="h-log">
+    <header class="panel-head">
+      <h2 id="h-log">Requests</h2>
+      <label class="check"><input type="checkbox" id="log-polls"> Show polling</label>
+      <button class="btn quiet" type="button" id="log-clear">Clear</button>
+    </header>
+    <p class="lede">Every call this page makes to the API, with its response. Copy any of them as curl.</p>
+    <ol id="log-list" class="log-list" reversed></ol>
+    <p class="empty" id="log-empty">No requests yet.</p>
+  </aside>
+</div>
+</body>
+</html>

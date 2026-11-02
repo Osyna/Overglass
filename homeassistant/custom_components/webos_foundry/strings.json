@@ -1,0 +1,34 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connect to webOS Foundry",
+        "description": "Address and token of a running `wof serve`.",
+        "data": {
+          "host": "Host",
+          "port": "Port",
+          "token": "API token"
+        },
+        "data_description": {
+          "token": "The `server_token` from the server's config.json, or the one passed to `wof serve --token`."
+        }
+      },
+      "reauth_confirm": {
+        "title": "Re-enter the API token",
+        "data": {
+          "token": "API token"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Cannot reach the webOS Foundry server at that host and port.",
+      "invalid_auth": "The server rejected the API token.",
+      "not_paired": "The server is reachable but has no paired TV; run `wof pair` first.",
+      "tv_error": "The server is reachable but could not read the TV status."
+    },
+    "abort": {
+      "already_configured": "This server is already configured.",
+      "reauth_successful": "The token was updated."
+    }
+  }
+}

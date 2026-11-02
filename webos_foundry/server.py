@@ -1,0 +1,842 @@
+"""HTTP API and web UI for a rooted LG webOS TV.
+
+`wof serve` (or `python -m webos_foundry.server`) serves http://127.0.0.1:8765/. The page in web/ is only a client
+of the /api routes below; GET /api returns their catalogue, including what each route does on the TV. All TV
+access goes through one SSHTransport built from the saved config (webos_foundry.tv / notify / capture / process);
+file processing runs in a worker thread per job.
+
+Auth: bound to a loopback address a bearer token is optional (but must be right when sent); bound anywhere else
+it is required. GET /api, GET /api/health and the static UI files never need one.
+"""
+import argparse
+import hmac
+import ipaddress
+import json
+import re
+import secrets
+import shutil
+import signal
+import struct
+import sys
+import tempfile
+import threading
+import time
+import traceback
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from socket import AF_INET6
+from urllib.parse import parse_qs, urlsplit
+
+from webos_foundry import capture, notify, process, tv
+from webos_foundry.config import Config
+from webos_foundry.errors import ConfigError, NotPairedError, TransportError, TvBusyError, WebosFoundryError
+from webos_foundry.transport import SSHTransport
+
+WEB = Path(__file__).resolve().parent.parent / "web"
+STATIC = {
+    "/": ("index.html", "text/html; charset=utf-8"),
+    "/app.css": ("app.css", "text/css; charset=utf-8"),
+    "/app.js": ("app.js", "text/javascript; charset=utf-8"),
+}
+PUBLIC = ("/api", "/api/health")  # no bearer token, ever
+NOT_PAIRED = "Not paired; run: wof pair --host <ip>"
+CSP = ("default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' blob:; "
+       "media-src 'self' blob:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
+MAX_JSON = 64 * 1024
+MAX_UPLOAD = 16 * 1024 * 1024
+KEEP_JOBS = 20  # finished jobs whose files stay downloadable until the server stops
+ACTIVE = ("running", "cancelling", "restoring", "release_unconfirmed")
+PROFILE_LABELS = {
+    "ai-picture-sr": "AI Picture Pro + Super Resolution",
+    "ai-picture": "AI Picture Pro",
+    "ai-sound": "AI Sound Pro",
+    "clear-voice": "Clear Voice Pro",
+    "standard": "Standard (no AI, baseline)",
+}
+KINDS = {
+    "image": {
+        "ext": ".png", "type": "image/png", "profiles": process.IMAGE_PROFILES,
+        "limits": "8-bit PNG or JPEG, 16:9 with even dimensions up to 1920×1080, at most 16 MiB; never resized. "
+                  "Sent to the TV as lossy H.264 8-bit 4:2:0 and shown on screen while it processes. "
+                  "Returns a 3840×2160 PNG captured from the TV's video plane.",
+        "tv": "process-image.js plays the image in com.webos.app.mediadiscovery, applies the profile in Normal mode, "
+              "captures it with luna://com.webos.service.capture/executeOneShot, then restores picture mode and settings",
+    },
+    "audio": {
+        "ext": ".wav", "type": "audio/wav", "profiles": process.AUDIO_PROFILES,
+        "limits": "Stereo 48 kHz signed 16-bit PCM WAV, 1–30 s, at most 8 MiB, not silent. HDMI 4 must be disconnected; "
+                  "speakers stay muted. Returns a peak-normalized 32-bit WAV; capture precision is low.",
+        "tv": "process-audio.js switches to the HDMI 4 context, applies the sound profile, mutes the speakers, plays the file "
+              "through PulseAudio and records SoundEngineCapture (hw:LGSIC,3), then restores input, sound and volume",
+    },
+}
+KEY = "luna://com.webos.service.networkinput/sendSpecialKey"
+VOLUME = "luna://com.webos.service.audio/master/"
+REMOTE = {
+    "wake": ("Wake from standby (Wake-on-LAN)",
+             "UDP magic packet for the configured TV MAC to the configured broadcast address. Sending does not prove "
+             "the TV woke: read /api/status"),
+    "power_off": ("Standby", "luna://com.webos.service.tvpower/power/powerOff, then getPowerState until Active Standby"),
+    "home": ("Home key; opens Luma", KEY + ' {"key":"HOME"}, then waits for com.webos.app.home in front'),
+    "back": ("Back key", KEY + ' {"key":"BACK"}'),
+    "up": ("Up key", KEY + ' {"key":"UP"}'),
+    "down": ("Down key", KEY + ' {"key":"DOWN"}'),
+    "left": ("Left key", KEY + ' {"key":"LEFT"}'),
+    "right": ("Right key", KEY + ' {"key":"RIGHT"}'),
+    "ok": ("OK key", KEY + ' {"key":"ENTER"}'),
+    "hdmi": ("Switch input; body {\"value\": 1-4}",
+             'luna://com.webos.applicationManager/launch {"id":"com.webos.app.hdmiN"}, then getForegroundAppInfo until it is in front'),
+    "volume_up": ("Volume +1 on the TV speaker", VOLUME + "setVolume, then getVolume readback"),
+    "volume_down": ("Volume −1 on the TV speaker", VOLUME + "setVolume, then getVolume readback"),
+    "mute": ("Mute the TV speaker", VOLUME + 'muteVolume {"mute":true}, then getVolume readback'),
+    "unmute": ("Unmute the TV speaker", VOLUME + 'muteVolume {"mute":false}, then getVolume readback'),
+}
+TV_LOCK_NOTE = ("Runs as one node process on the TV under /tmp/webos-foundry.lock, the lock processing jobs hold, "
+                "so a check-change-readback cannot interleave with another client.")
+
+LOCK = threading.RLock()  # job table and job fields
+TV_LOCK = threading.Lock()  # one TV command from this server at a time
+JOBS = {}
+STREAM_LOCK = threading.Lock()  # one live view at a time
+STREAM_STOP = threading.Event()  # set when the server stops
+STREAM_SIZES = {160: 90, 320: 180}
+STREAM_MAX_SECONDS = 600
+ROOT = None  # private temporary directory for uploads and results, created on first upload, removed on exit
+
+
+class ApiError(Exception):
+    def __init__(self, status, message):
+        super().__init__(message)
+        self.status = status
+
+
+class Job:
+    def __init__(self, kind, profile, name):
+        self.id = secrets.token_hex(4)
+        self.kind, self.profile, self.name = kind, profile, name
+        self.state, self.outcome, self.exit_code = "running", None, None
+        self.created, self.finished = time.time(), None
+        self.recovery, self.release_error = None, None
+        self.log = []
+        self.cancel = threading.Event()
+        self.dir = self.output = self.thread = None
+
+
+def sniff(data):
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image", ".png"
+    if data.startswith(b"\xff\xd8\xff"):
+        return "image", ".jpg"
+    if data[:4] == b"RIFF" and data[8:12] == b"WAVE":
+        return "audio", ".wav"
+    raise ApiError(415, "Upload a PNG, JPEG or WAV file")
+
+
+def safe_stem(name):
+    return re.sub(r"[^A-Za-z0-9._-]+", "-", Path(name).stem).strip(".-")[:60] or "upload"
+
+
+def is_loopback(host):
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return host.lower() == "localhost"
+
+
+def allowed_hosts(bind, port):
+    """Host header values this server answers to; None (any) for a wildcard bind, where the token is the defence."""
+    if bind in ("", "0.0.0.0", "::"):
+        return None
+    names = {bind} | ({"127.0.0.1", "localhost", "::1"} if is_loopback(bind) else set())
+    return {("[%s]:%d" if ":" in name else "%s:%d") % (name, port) for name in names}
+
+
+def caller_error(method, host, origin, fetch_site, hosts):
+    """Refuse DNS-rebound Host names and cross-site browser writes. `hosts` is allowed_hosts(), None = any Host."""
+    if hosts is not None and host not in hosts:
+        return 421, "Unexpected Host header; use one of: " + ", ".join(sorted(hosts))
+    if method != "GET":
+        if origin is not None and origin not in {"http://" + h for h in (hosts if hosts is not None else {host})}:
+            return 403, "Cross-origin requests are refused"
+        if fetch_site not in (None, "same-origin", "none"):
+            return 403, "Cross-site requests are refused"
+    return None
+
+
+def bearer(header):
+    scheme, _, value = (header or "").partition(" ")
+    return value.strip() if scheme.lower() == "bearer" and value.strip() else None
+
+
+def auth_error(path, header, token, loopback):
+    """Bearer-token check. Public paths pass; on loopback a missing token passes but a wrong one does not."""
+    if path in PUBLIC or path in STATIC:
+        return None
+    presented = bearer(header)
+    if loopback and not token:
+        return None
+    if presented is None:
+        return None if loopback else (401, "Missing bearer token: send Authorization: Bearer <server_token>")
+    if token and hmac.compare_digest(presented.encode(), token.encode()):
+        return None
+    return 401, "Invalid bearer token"
+
+
+def active():
+    return next((job for job in JOBS.values() if job.state in ACTIVE), None)
+
+
+def reserved():
+    with LOCK:
+        job = active()
+        if job:
+            raise ApiError(409, "The TV is reserved by processing job %s (%s); wait until it is released"
+                           % (job.id, job.state.replace("_", " ")))
+
+
+def find(job_id):
+    with LOCK:
+        if job_id not in JOBS:
+            raise ApiError(404, "No such job")
+        return JOBS[job_id]
+
+
+def snapshot(job, log=True):
+    with LOCK:
+        out = {"id": job.id, "kind": job.kind, "profile": job.profile, "name": job.name, "state": job.state,
+               "outcome": job.outcome, "exit_code": job.exit_code, "created": job.created, "finished": job.finished,
+               "recovery_workspace": job.recovery, "release_error": job.release_error,
+               "result": "/api/jobs/%s/result" % job.id if job.state == "done" else None}
+        if log:
+            out["log"] = "".join(job.log)[-65536:]
+        return out
+
+
+def log_line(job, text):
+    with LOCK:
+        job.log.append(text.rstrip("\n") + "\n")
+
+
+def run(job, transport, source):
+    enhance = process.enhance_image if job.kind == "image" else process.enhance_audio
+    code = 0
+    try:
+        info = enhance(transport, str(source), str(job.output), job.profile,
+                       log=lambda text: log_line(job, text), cancel=job.cancel)
+        log_line(job, json.dumps(info))
+    except Exception as error:  # the worker must always reach release(), whatever the processor raised
+        code = 1
+        log_line(job, str(error).strip() or type(error).__name__)
+    kept = re.search(r"Private TV workspace kept for recovery: (\S+)", "".join(job.log))
+    with LOCK:
+        job.exit_code = code
+        job.recovery = kept.group(1) if kept else None
+        job.outcome = ("done" if code == 0 and job.output.is_file()
+                       else "cancelled" if job.cancel.is_set() else "failed")
+        job.state = "restoring"
+    release(job, transport)
+
+
+def release(job, transport):
+    """A job only ends once the TV lock is free, i.e. its TV-side process restored the TV and exited."""
+    try:
+        process.wait_for_idle(transport)
+        error = None
+    except (WebosFoundryError, RuntimeError, OSError) as failure:
+        error = str(failure).strip() or type(failure).__name__
+    with LOCK:
+        job.release_error = error
+        job.state = "release_unconfirmed" if error else job.outcome
+        job.finished = time.time()
+
+
+def prune():
+    finished = [job for job in JOBS.values() if job.state not in ACTIVE]
+    for job in finished[:max(0, len(JOBS) - KEEP_JOBS)]:
+        shutil.rmtree(job.dir, ignore_errors=True)
+        del JOBS[job.id]
+
+
+def paired_host():
+    """The configured TV host, or None when this install is not paired."""
+    try:
+        return Config.load().tv_host or None
+    except (ConfigError, NotPairedError):
+        return None
+
+
+# ---- route handlers: (request, path parameters) -> dict | (status, dict) | None when already sent
+
+def api_index(request, _):
+    return {
+        "tv": {"address": paired_host()},
+        "base": "http://%s" % (request.headers.get("Host") or "%s:%d" % request.server.server_address[:2]),
+        "auth": "Authorization: Bearer <server_token> on every route except GET /api and GET /api/health; "
+                "optional on a loopback bind, required otherwise.",
+        "errors": "Every non-2xx response is {\"error\": \"message\"}. 401 means the bearer token is missing or wrong; "
+                  "409 means the TV is reserved by a processing job or busy with another change; 502 means the TV "
+                  "refused or did not answer; 503 means this install is not paired with a TV.",
+        "kinds": {kind: {"profiles": [{"id": p, "label": PROFILE_LABELS.get(p, p)} for p in spec["profiles"]],
+                         "limits": spec["limits"], "returns": spec["type"]} for kind, spec in KINDS.items()},
+        "routes": [{k: v for k, v in route.items() if k not in ("handler", "regex")} for route in ROUTES],
+    }
+
+
+def get_health(_request, _):
+    host = paired_host()
+    return {"paired": host is not None, "tv_host": host}
+
+
+def get_status(request, _):
+    return tv.get_status(request.transport)
+
+
+def post_remote(request, params):
+    action = params["action"]
+    if action not in tv.REMOTE_ACTIONS:
+        raise ApiError(404, "Unknown remote action; GET /api lists them")
+    value = request.json_body(required=False).get("value")
+    reserved()
+    with TV_LOCK:
+        return {"action": action, "message": tv.remote(request.transport, action, value)}
+
+
+def get_settings(request, _):
+    reserved()
+    with TV_LOCK:
+        return tv.get_settings(request.transport)
+
+
+def put_setting(request, params):
+    body = request.json_body()
+    reserved()
+    with TV_LOCK:
+        return {"message": tv.set_setting(request.transport, params["category"], params["key"],
+                                          body.get("value"), body.get("context"))}
+
+
+def get_details(request, _):
+    return tv.get_details(request.transport)
+
+
+def post_toast(request, _):
+    return {"message": notify.toast(request.transport, request.json_body().get("message"))}
+
+
+def post_say(request, _):
+    body = request.json_body()
+    reserved()
+    with TV_LOCK:
+        return {"message": notify.say(request.transport, body.get("message"), body.get("volume", 15))}
+
+
+def screenshot_args(query):
+    try:
+        width = int(query.get("width", "1920"))
+    except ValueError:
+        raise ValueError("width must be an integer") from None
+    return width, round(width * 9 / 32) * 2, query.get("format", "jpg")  # height: 16:9, rounded to even
+
+
+def get_screenshot(request, _):
+    data, kind = capture.screenshot(request.transport, *screenshot_args(request.query))
+    request.send_bytes(200, data, kind)
+
+
+def post_overlay(request, _):
+    card = request.json_body()
+    reserved()
+    if card == {"hide": True}:
+        return {"message": notify.overlay_hide(request.transport)}
+    return {"message": notify.overlay_show(request.transport, card)}
+
+
+def stream_args(query):
+    try:
+        width = int(query.get("width", "160"))
+        height = int(query.get("height", STREAM_SIZES.get(width, 0)))
+        fps = int(query.get("fps", "30"))
+    except ValueError:
+        raise ValueError("width, height and fps must be integers") from None
+    if STREAM_SIZES.get(width) != height:
+        raise ValueError("Size must be 160×90 or 320×180")
+    if not 10 <= fps <= 60:
+        raise ValueError("fps must be 10-60")
+    return width, height, fps
+
+
+def get_stream(request, _):
+    args = stream_args(request.query)
+    reserved()
+    if not STREAM_LOCK.acquire(blocking=False):
+        raise ApiError(409, "A live view is already running; stop it first")
+    frames, started = None, False
+    try:
+        frames = capture.stream(request.transport, *args)
+        first = next(frames, None)  # a start-up failure still reaches the client as a JSON error
+        if first is None:
+            raise RuntimeError("The TV stopped the stream before the first frame")
+        request.send_response(200)
+        for name, value in (("Content-Type", "application/octet-stream"), ("Cache-Control", "no-store"),
+                            ("X-Content-Type-Options", "nosniff"), ("Referrer-Policy", "no-referrer"),
+                            ("Content-Security-Policy", CSP)):
+            request.send_header(name, value)
+        request.end_headers()
+        started = True
+        width, height, frame = first
+        request.wfile.write(b"WOF1" + struct.pack("<HH", width, height))
+        deadline = time.monotonic() + STREAM_MAX_SECONDS
+        while True:
+            request.wfile.write(frame)
+            nxt = next(frames, None)
+            if nxt is None or STREAM_STOP.is_set() or time.monotonic() > deadline:
+                break
+            frame = nxt[2]
+    except (BrokenPipeError, ConnectionResetError):
+        pass  # the viewer left
+    except Exception:
+        if not started:
+            raise
+        traceback.print_exc()  # headers are out: all that is left is to end the stream
+    finally:
+        if frames is not None and hasattr(frames, "close"):
+            frames.close()  # stops the TV-side client before the next stream may start
+        STREAM_LOCK.release()
+
+
+def get_jobs(_request, _):
+    with LOCK:
+        jobs, current = list(JOBS.values())[::-1], active()
+        return {"active": current.id if current else None, "jobs": [snapshot(job, log=False) for job in jobs]}
+
+
+def post_job(request, _):
+    global ROOT
+    data = request.raw_body(MAX_UPLOAD)
+    kind, ext = sniff(data)
+    profiles = KINDS[kind]["profiles"]
+    profile = request.query.get("profile", profiles[0])
+    if profile not in profiles:
+        raise ApiError(400, "A %s profile must be one of: %s" % (kind, ", ".join(profiles)))
+    if kind == "audio":
+        process.input_audio(data)  # same contract as the processor, rejected (400) before the TV is touched
+    job = Job(kind, profile, safe_stem(request.query.get("name", "upload")))
+    with TV_LOCK, LOCK:  # TV_LOCK: never start while a remote/settings command is still running
+        reserved()
+        if ROOT is None:
+            ROOT = Path(tempfile.mkdtemp(prefix="wof-web-"))
+        job.dir = Path(tempfile.mkdtemp(prefix=job.id + "-", dir=ROOT))
+        source = job.dir / ("input" + ext)
+        source.write_bytes(data)
+        job.output = job.dir / ("result" + KINDS[kind]["ext"])
+        job.thread = threading.Thread(target=run, args=(job, request.transport, source), daemon=True)
+        JOBS[job.id] = job
+        prune()
+    job.thread.start()
+    return 202, snapshot(job)
+
+
+def get_job(_request, params):
+    return snapshot(find(params["id"]))
+
+
+def post_cancel(_request, params):
+    job = find(params["id"])
+    with LOCK:
+        if job.state != "running":
+            raise ApiError(409, "Only a running job can be cancelled; this one is " + job.state.replace("_", " "))
+        job.state = "cancelling"
+        job.cancel.set()  # the processor checks it between steps; a TV-side step already running finishes first
+    return 202, snapshot(job)
+
+
+def post_release(request, params):
+    job = find(params["id"])
+    with LOCK:
+        if job.state != "release_unconfirmed":
+            raise ApiError(409, "Release is only rechecked after it could not be confirmed")
+        job.state = "restoring"
+    threading.Thread(target=release, args=(job, request.transport), daemon=True).start()
+    return 202, snapshot(job)
+
+
+def get_result(request, params):
+    job = find(params["id"])
+    with LOCK:
+        state = job.state
+    if state != "done" or not job.output.is_file():
+        raise ApiError(409, "No result: the job is " + state.replace("_", " "))
+    request.send_bytes(200, job.output.read_bytes(), KINDS[job.kind]["type"],
+                       "%s-%s%s" % (job.name, job.profile, KINDS[job.kind]["ext"]))
+
+
+def route(method, path, group, summary, handler, **doc):
+    pattern = re.compile("^" + re.sub(r"\\\{(\w+)\\\}", r"(?P<\1>[^/]+)", re.escape(path)) + "$")
+    return {"method": method, "path": path, "group": group, "summary": summary, **doc,
+            "handler": handler, "regex": pattern}
+
+
+ROUTES = (
+    route("GET", "/api", "Reference", "This catalogue: TV address, processing profiles and every route.", api_index,
+          returns="Catalogue object", tv=[], notes="Needs no token.", example={"path": "/api"}),
+    route("GET", "/api/health", "Reference",
+          "Whether this install is paired with a TV, and its address. The only route besides GET /api that needs no token.",
+          get_health,
+          returns='{"paired": bool, "tv_host": str | null}', tv=[],
+          notes="Reads the saved config only; it never contacts the TV, so it answers while the TV is off.",
+          example={"path": "/api/health"}),
+    route("GET", "/api/status", "Status", "Power, foreground source, Luma, SoC temperature, volume and mute.", get_status,
+          returns='{"power": "on|off|unknown", "raw_power_state", "source": "HDMI 1|Luma|LG Home|Off|…", "app_id", '
+                  '"is_luma", "temperature_c", "temperature_source", "volume", "muted"} — volume/muted are null in standby',
+          tv=["dispatch verb status → sh /var/lib/webosbrew/webos-foundry/status.sh: "
+              "luna://com.webos.service.tvpower/power/getPowerState, "
+              "luna://com.webos.applicationManager/getForegroundAppInfo, the mounted Home manifest (Luma check), "
+              "/proc/thermalinfo/soc_temperature",
+              VOLUME + "getVolume"],
+          notes="Read-only; does not take the TV lock, so it also works while a job runs.",
+          example={"path": "/api/status"}),
+    route("GET", "/api/details", "Status",
+          "OLED panel hours and temperature, pixel refresher runs, power-on reason and history, ambient light, "
+          "input signal, sleep timer and today's app usage.", get_details,
+          returns='{"lux": int, "panel_hours": int, "panel_temperature_c": int (whole °C), "pixel_refresher": '
+                  '{"full_runs", "full_last_panel_hours", "standby_runs", "standby_last_panel_hours"}, "power_on_reason": str, '
+                  '"power_history": [{"reason", "panel_hours"}] newest first (10), "signal": {"app_id", "width", "height", '
+                  '"fps", "hdr", "pixel_encoding", "timing", "content_type", "game_mode", "allm", "vrr"}, '
+                  '"sleep_timer": str, "usage_today": [{"app_id", "seconds", "launches"}]} — a field is null when its '
+                  'TV service did not answer, and the signal is null when no source is connected',
+          tv=["dispatch verb details → node details.js (≈0.7 s): pqcontroller/getInfo {key: eyeQLux}, "
+              "oledepl/getOledPanelUTT, getPanelTemperature, getPixelRefresherInfoList, tvpower/power/getPowerOnReason, "
+              "micomservice/listPowerOnOffHistoryWithUTT, videooutput/getStatus, settings/getSystemSettings (time.sleepTimer), "
+              "usercontextmanager/getRank"],
+          notes="Read-only and takes no TV lock, so it also works while a job runs. Never calls a setter, refresher or reset.",
+          example={"path": "/api/details"}),
+    route("POST", "/api/notify/toast", "Notify", "Show a message on the TV screen as a toast.", post_toast,
+          body='{"message": "1-200 characters, no control characters"}',
+          returns='{"message": "Toast shown on the TV"}',
+          tv=["dispatch verb notify-toast → node notify.js toast BASE64: luna://com.webos.notification/createToast "
+              '{"message", "persistent": false, "noaction": true}'],
+          notes="Takes no TV lock and does not change any setting.",
+          example={"path": "/api/notify/toast", "body": {"message": "Dinner is ready"}}),
+    route("POST", "/api/notify/say", "Notify",
+          "Speak a message through the TV speaker (text to speech) at a chosen volume, then restore the TV.", post_say,
+          body='{"message": "1-200 characters, no control characters", "volume": 1-40 (optional, default 15)}',
+          returns='{"message": "Spoke N characters at volume V; …restored"}',
+          tv=["dispatch verb notify-say → node notify.js say BASE64 VOLUME: borrows option.audioGuidance "
+              "(settings/setSystemSettings), audio/master/setVolume and muteVolume, speaks with "
+              "luna://com.webos.service.tts/speak {text, clear}, then restores all three and reads them back"],
+          notes=TV_LOCK_NOTE + " Answers 409 while a processing job holds the TV. It needs TV-speaker output and the TV on; "
+                               "volume is on the TV's 0-100 scale.",
+          example={"path": "/api/notify/say", "body": {"message": "Dinner is ready", "volume": 10}}),
+    route("POST", "/api/overlay", "Notify",
+          "Show a custom card on the TV (title, text, lines, optional image, colour kind, position, duration), or hide it.",
+          post_overlay,
+          body='A card: {"title"?: ≤80 chars, "body"?: ≤400, "lines"?: ≤10 texts of ≤120, "image"?: http(s) URL ≤500, '
+               '"kind"?: info|success|warning|alert, "position"?: top-left|top-right|bottom-left|bottom-right|center, '
+               '"seconds"?: integer 0-300 (0 = stays until hidden, default 8)} with at least a title, body, lines or image, '
+               'or exactly {"hide": true}. Unknown fields are refused.',
+          returns='{"message": "Overlay card shown|hidden"}',
+          tv=["dispatch verb notify-overlay → node notify.js overlay BASE64: checks the TV is on and validates the card, then "
+              'luna://com.webos.applicationManager/launch {"id": "dev.webosfoundry.overlay", "params": card} '
+              "(app installed by wof install, source tv-assets/overlay/)"],
+          notes="The foreground app does not change (HDMI 1 stays in front). The first card after a cold start takes "
+                "about 2.5 s to appear; later cards update it in place. A remote button press while a card is up "
+                "dismisses it and is consumed, not passed to the input. The TV must be on; an invalid card or a TV in "
+                "standby answers 502 with the TV script's message. Answers 409 while a processing job holds the TV. "
+                "The image URL is fetched by the TV, so it must be reachable from the TV.",
+          example={"path": "/api/overlay", "body": {"title": "Dinner", "body": "It is ready.", "kind": "success",
+                                                    "position": "top-right", "seconds": 10}}),
+    route("GET", "/api/screenshot", "Status",
+          "Capture the picture the TV shows from its HDMI input (without the TV's own menus) as an image.", get_screenshot,
+          query={"width": "64-3840, even (default 1920); the height follows the 16:9 picture",
+                 "format": "jpg (default) or png"},
+          returns="image/jpeg or image/png bytes, Cache-Control: no-store",
+          tv=["dispatch verb screenshot → luna://com.webos.service.capture/executeOneShot "
+              '{"method": "VIDEO", "path": "/tmp/wof-shot-RANDOM.jpg", "format", "width", "height"}, cat the file, rm it, '
+              "all in one SSH command (≈0.4 s at 960, ≈0.8 s at 3840)"],
+          notes="PRIVACY: this is whatever the connected PC shows (desktop, documents, messages). Nothing is stored here "
+                "and the TV file is deleted, but the response is the full picture: do not share it. Copy-protected (HDCP) "
+                "sources cannot be captured and answer 502.",
+          example={"path": "/api/screenshot?width=960&format=jpg"}),
+    route("GET", "/api/screen/stream", "Status",
+          "Live low-resolution view of the HDMI picture: raw RGB frames in a close-delimited binary stream.", get_stream,
+          query={"width": "160 (default) or 320", "height": "90 for width 160 (default), 180 for width 320",
+                 "fps": "10-60 (default 30)"},
+          returns="application/octet-stream, no Content-Length, HTTP/1.0 close-delimited: the bytes 'WOF1', u16le width, "
+                  "u16le height, then frames of width*height*3 bytes of RGB24 in a row-major loop until the client "
+                  "disconnects, the 10-minute cap passes or the TV stops",
+          tv=["dispatch verb stream-start → native vtcap client over SSH (capture.stream): libvtcapture display-output "
+              "tap at the requested size and rate; it is stopped (SIGTERM) when the stream ends. Measured "
+              "30 and 60 fps at 160×90 and 320×180 with 8-23% of one TV core"],
+          notes="PRIVACY: this is the connected PC's screen, live. The server keeps no frames. One stream at a time "
+                "(409 while another runs), 409 while a processing job reserves the TV, 502 when the capture client "
+                "cannot start (for example the vtcap role is not installed: run wof install). Close the "
+                "connection to stop it. It takes no TV lock; a job started while it runs does not stop it.",
+          stream=True, example={"path": "/api/screen/stream?width=160&height=90&fps=30"}),
+    route("POST", "/api/remote/{action}", "Remote", "Send one remote action and wait for the TV to confirm it.", post_remote,
+          body='Optional JSON. Only hdmi takes a body: {"value": 1-4}',
+          returns='{"action": "…", "message": "what the TV confirmed"}',
+          values=[{"name": name, "detail": detail, "tv": tv_text} for name, (detail, tv_text) in REMOTE.items()],
+          tv=[], notes=TV_LOCK_NOTE + " Wake is the exception: it is a LAN broadcast from this computer.",
+          example={"path": "/api/remote/hdmi", "body": {"value": 1}}),
+    route("GET", "/api/settings", "Picture & sound", "The allowed AI picture and sound settings, as the TV reports them now.",
+          get_settings,
+          returns='[{"category", "key", "label", "value", "values": [allowed now], "available": bool, '
+                  '"context": {axis: value}}] — context is the input/mode scope the value belongs to; {} means global',
+          tv=["dispatch verb settings-list → node settings.js list: "
+              "luna://com.webos.service.settings/getSystemSettingDesc and getSystemSettings per category"],
+          values=[{"name": "%s.%s" % (c, k), "detail": label} for c, k, label in tv.SETTINGS],
+          notes=TV_LOCK_NOTE, example={"path": "/api/settings"}),
+    route("PUT", "/api/settings/{category}/{key}", "Picture & sound",
+          "Change one setting. It persists on the TV in the scope given by its context.", put_setting,
+          body='{"value": "one of values", "context": the context object from GET /api/settings}',
+          returns='{"message": "…"}',
+          tv=["dispatch verb settings-set → node settings.js set: rechecks context, availability and allowed values "
+              "with getSystemSettingDesc/getSystemSettings, calls luna://com.webos.service.settings/setSystemSettings, "
+              "then reads the value back"],
+          notes=TV_LOCK_NOTE + " A changed input or picture mode since the read is refused, so a value never lands "
+                               "in the wrong scope.",
+          example={"path": "/api/settings/sound/aiSound", "body": {"value": "on", "context": {}}}),
+    route("GET", "/api/jobs", "Processing", "Processing jobs, newest first, and the one reserving the TV.", get_jobs,
+          returns='{"active": id | null, "jobs": [job without log]}', tv=[], example={"path": "/api/jobs"}),
+    route("POST", "/api/jobs", "Processing",
+          "Upload a PNG/JPEG or WAV (raw request body) and process it on the TV.", post_job,
+          query={"profile": "processing profile for the file's kind (default: the first)",
+                 "name": "original file name, used for the download name"},
+          body="The file bytes (Content-Type: application/octet-stream). The kind is detected from the content.",
+          returns="202 and the job. The TV is reserved until the job state is done, failed or cancelled.",
+          tv=["dispatch verbs process-image / process-audio (payload piped on stdin): " + KINDS["image"]["tv"],
+              KINDS["audio"]["tv"]],
+          notes="One job at a time. Remote and settings routes answer 409 until the TV is released.",
+          example={"path": "/api/jobs?profile=ai-picture-sr&name=photo.png", "upload": "photo.png"}),
+    route("GET", "/api/jobs/{id}", "Processing", "One job with its processor log.", get_job,
+          returns='{"id", "kind", "profile", "state": "running|cancelling|restoring|release_unconfirmed|done|failed|'
+                  'cancelled", "outcome", "exit_code", "log", "result": download path | null, "recovery_workspace", '
+                  '"release_error"}',
+          tv=[], example={"path": "/api/jobs/JOB_ID"}),
+    route("POST", "/api/jobs/{id}/cancel", "Processing",
+          "Cancel a running job. The processor stops at its next step and the TV is restored before the job ends.",
+          post_cancel,
+          returns="202 and the job (state cancelling)", tv=[],
+          notes="A TV-side step already running finishes first; a cancelled job saves no result. Interrupted jobs keep "
+                "their private /tmp/wof-*.* workspace on the TV for recovery.",
+          example={"path": "/api/jobs/JOB_ID/cancel"}),
+    route("POST", "/api/jobs/{id}/release", "Processing",
+          "Check again whether the TV was released after release_unconfirmed.", post_release,
+          returns="202 and the job (state restoring)",
+          tv=["dispatch verb idle-wait → flock on /tmp/webos-foundry.lock, waiting up to 25 s"],
+          example={"path": "/api/jobs/JOB_ID/release"}),
+    route("GET", "/api/jobs/{id}/result", "Processing", "Download the processed file of a done job.", get_result,
+          returns="image/png (3840×2160) or audio/wav (32-bit) as an attachment", tv=[],
+          example={"path": "/api/jobs/JOB_ID/result"}),
+)
+
+
+class FoundryServer(ThreadingHTTPServer):
+    daemon_threads = True
+
+    def __init__(self, address, token=None, transport=None):
+        if ":" in address[0]:
+            self.address_family = AF_INET6
+        super().__init__(address, Handler)
+        self.token = token or None
+        self.loopback = is_loopback(address[0])
+        self.hosts = allowed_hosts(address[0], self.server_address[1])
+        self.transport = transport  # None until paired; get_transport() builds it from the saved config on demand
+        self.transport_lock = threading.Lock()
+
+    def get_transport(self):
+        with self.transport_lock:
+            if self.transport is None:
+                self.transport = SSHTransport(Config.require())
+            return self.transport
+
+
+class Handler(BaseHTTPRequestHandler):
+    server_version = "webos-foundry"
+
+    def do_GET(self):
+        self.dispatch()
+
+    do_POST = do_PUT = do_DELETE = do_PATCH = do_GET  # unsupported verbs get the JSON 405/404, not http.server's HTML
+
+    def dispatch(self):
+        url = urlsplit(self.path)
+        try:
+            refused = caller_error(self.command, self.headers.get("Host"), self.headers.get("Origin"),
+                                   self.headers.get("Sec-Fetch-Site"), self.server.hosts)
+            if refused:
+                raise ApiError(*refused)
+            if self.command == "GET" and url.path in STATIC:
+                name, kind = STATIC[url.path]
+                return self.send_bytes(200, (WEB / name).read_bytes(), kind)
+            denied = auth_error(url.path, self.headers.get("Authorization"), self.server.token, self.server.loopback)
+            if denied:
+                raise ApiError(*denied)
+            handler, params = self.resolve(url.path)
+            if url.path not in PUBLIC:
+                try:
+                    self.transport = self.server.get_transport()
+                except NotPairedError:
+                    raise ApiError(503, NOT_PAIRED) from None
+                except ConfigError as error:
+                    raise ApiError(503, str(error)) from None
+            self.query = {k: v[-1] for k, v in parse_qs(url.query).items()}
+            result = handler(self, params)
+            if result is not None:
+                status, body = result if isinstance(result, tuple) else (200, result)
+                self.send_json(status, body)
+        except (BrokenPipeError, ConnectionResetError):
+            pass  # the client left
+        except ApiError as error:
+            headers = {"WWW-Authenticate": "Bearer"} if error.status == 401 else {}
+            self.send_json(error.status, {"error": str(error)}, headers)
+        except TvBusyError as error:
+            self.send_json(409, {"error": str(error).strip()})
+        except (ConfigError, NotPairedError) as error:
+            self.send_json(503, {"error": str(error).strip() or NOT_PAIRED})
+        except ValueError as error:  # includes ValidationError and bad JSON
+            self.send_json(400, {"error": str(error)})
+        except (TransportError, WebosFoundryError, RuntimeError, OSError) as error:
+            self.send_json(502, {"error": str(error).strip() or type(error).__name__})
+        except Exception:
+            traceback.print_exc()
+            self.send_json(500, {"error": "Internal server error; see the wof serve terminal"})
+
+    def resolve(self, path):
+        methods = []
+        for item in ROUTES:
+            match = item["regex"].match(path)
+            if match:
+                if item["method"] == self.command:
+                    return item["handler"], match.groupdict()
+                methods.append(item["method"])
+        if methods:
+            raise ApiError(405, "Use %s for %s" % (" or ".join(methods), path))
+        raise ApiError(404, "No such endpoint; GET /api lists them")
+
+    def length(self, limit):
+        if "Transfer-Encoding" in self.headers:
+            raise ApiError(411, "Send a Content-Length; chunked bodies are not accepted")
+        try:
+            size = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            raise ApiError(400, "Invalid Content-Length") from None
+        if not 0 <= size <= limit:
+            raise ApiError(413, "Request body must be at most %d MiB" % (limit // 1048576) if limit >= 1048576
+                           else "Request body is too large")
+        return size
+
+    def raw_body(self, limit):
+        size = self.length(limit)
+        if not size:
+            raise ApiError(400, "Send the file as the request body")
+        return self.rfile.read(size)
+
+    def json_body(self, required=True):
+        size = self.length(MAX_JSON)
+        if not size:
+            if required:
+                raise ApiError(400, "Send a JSON body")
+            return {}
+        if self.headers.get("Content-Type", "").split(";")[0].strip() != "application/json":
+            raise ApiError(415, "Send the body as application/json")
+        body = json.loads(self.rfile.read(size))
+        if not isinstance(body, dict):
+            raise ApiError(400, "The JSON body must be an object")
+        return body
+
+    def send_json(self, status, body, headers=None):
+        self.send_bytes(status, json.dumps(body).encode(), "application/json", headers=headers)
+
+    def send_bytes(self, status, data, kind, filename=None, headers=None):
+        self.send_response(status)
+        self.send_header("Content-Type", kind)
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("Content-Security-Policy", CSP)
+        for name, value in (headers or {}).items():
+            self.send_header(name, value)
+        if filename:  # safe_stem and fixed profile names only
+            self.send_header("Content-Disposition", 'attachment; filename="%s"' % filename)
+        self.end_headers()
+        self.wfile.write(data)
+
+
+def stop_stream():
+    STREAM_STOP.set()
+    if STREAM_LOCK.acquire(timeout=30):  # the stream's handler thread stops the TV-side client first
+        STREAM_LOCK.release()
+
+
+def stop_jobs():
+    with LOCK:
+        job = active()
+        if job and job.state == "running":
+            job.state = "cancelling"
+            job.cancel.set()
+    if not job:
+        return
+    print("Stopping job %s and waiting for the TV to be restored..." % job.id, flush=True)
+    if job.thread:
+        job.thread.join(180)
+    with LOCK:
+        state, recovery, error = job.state, job.recovery, job.release_error
+    print("Job %s: %s" % (job.id, state.replace("_", " ")), flush=True)
+    if error:
+        print("TV release unconfirmed (%s). Check the TV picture and sound settings." % error, flush=True)
+    if recovery:
+        print("Recovery workspace kept on the TV: " + recovery, flush=True)
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(prog="wof serve", description="HTTP API and web UI for a rooted LG webOS TV")
+    parser.add_argument("--host", "--bind", dest="host", default="127.0.0.1",
+                        help="address to listen on (default 127.0.0.1; anything else requires a token)")
+    parser.add_argument("--port", type=int, default=8765)
+    parser.add_argument("--token", help="bearer token (default: server_token from the config)")
+    parser.add_argument("--generate-token", action="store_true",
+                        help="print a new random token and exit; save it as server_token or pass it with --token")
+    args = parser.parse_args(argv)
+    if args.generate_token:
+        print(secrets.token_urlsafe(32))
+        return 0
+    token = args.token
+    if not token:
+        try:
+            token = Config.load().server_token
+        except (ConfigError, NotPairedError):
+            token = None
+    if not is_loopback(args.host) and not token:
+        print("Refusing to listen on %s without a token: set server_token in the config or pass --token "
+              "(wof serve --generate-token makes one)." % args.host, file=sys.stderr)
+        return 2
+    global ROOT
+    server = FoundryServer((args.host, args.port), token=token)
+
+    def interrupt(*_):
+        raise KeyboardInterrupt
+
+    signal.signal(signal.SIGTERM, interrupt)
+    if paired_host() is None:
+        print(NOT_PAIRED, flush=True)
+    print("webOS Foundry: http://%s:%d/  (token %s; Ctrl-C stops; a running job is cancelled and the TV restored first)"
+          % (args.host, server.server_address[1], "required" if not server.loopback else "optional" if token else "off"),
+          flush=True)
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        server.server_close()
+        stop_stream()
+        stop_jobs()
+        if ROOT is not None:
+            shutil.rmtree(ROOT, ignore_errors=True)
+            ROOT = None
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

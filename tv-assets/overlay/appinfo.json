@@ -1,0 +1,19 @@
+{
+  "id": "dev.webosfoundry.overlay",
+  "version": "1.0.1",
+  "vendor": "webOS Foundry contributors",
+  "type": "web",
+  "main": "index.html",
+  "title": "webOS Foundry Overlay",
+  "icon": "icon.png",
+  "visible": false,
+  "transparent": true,
+  "defaultWindowType": "overlay",
+  "handlesRelaunch": true,
+  "noSplashOnLaunch": true,
+  "spinnerOnLaunch": false,
+  "disableBackHistoryAPI": true,
+  "supportTouchMode": "none",
+  "requiredACG": [],
+  "resolution": "1920x1080"
+}

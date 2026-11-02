@@ -1,0 +1,16 @@
+services:
+  webos-foundry:
+    build: .
+    image: webos-foundry:latest
+    restart: unless-stopped
+    ports:
+      - "8765:8765"
+    volumes:
+      # config.json, the dedicated SSH key and known_hosts live here; pair once, it persists.
+      - webos-foundry-config:/config
+    # `wof serve --host 0.0.0.0` refuses to start without a token. Either keep `server_token` in the
+    # config volume (see docs/INSTALL.md) or uncomment this and export WOF_TOKEN before `docker compose up`:
+    # command: ["serve", "--host", "0.0.0.0", "--token", "${WOF_TOKEN:?set WOF_TOKEN}"]
+
+volumes:
+  webos-foundry-config:

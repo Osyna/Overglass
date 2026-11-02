@@ -185,7 +185,7 @@ for a multi-install, non-loopback-capable server:
 - **Auth:** every route except `GET /api` (and the static UI files) requires
   `Authorization: Bearer <server_token>` when the server is bound to a non-loopback address; on
   `127.0.0.1`/`::1` the token is optional but still accepted (keeps `curl` on the TV host frictionless,
-  while `wof serve --bind 0.0.0.0` for a separate HA host refuses to start without a token in the
+  while `wof serve --host 0.0.0.0` for a separate HA host refuses to start without a token in the
   config or `--token`). A wrong/missing token on a non-loopback bind returns `401`.
 - **CORS/Host checks**: identical DNS-rebinding and cross-site-write refusal already proven in
   `c5_web.py`'s `caller_error`, generalised to the configured bind host(s).
@@ -250,3 +250,51 @@ The dispatcher grammar in §3, the config schema in §2, and the function signat
 seams every piece below builds against in parallel. If a builder needs a field this file does not
 list, it adds the field here first (as an additive, backward-compatible change) rather than
 inventing a private side channel.
+
+## 9. Wire formats and additive amendments (added by the core-Python build)
+
+- **`status`** — `status.sh` stdout is the four JSON documents (power state, foreground app, Home
+  manifest, thermal), then a line `@@@`, then the reply of
+  `luna-send -n 1 -w 1500 luna://com.webos.service.audio/master/getVolume '{}'` (`|| true`).
+  `tv.get_status` parses it; a missing/invalid volume part is only an error while the TV is on.
+- **`details`** — `details.js` stdout is one JSON object with exactly the keys in `tv.DETAIL_TYPES`.
+- **`settings-list` / `settings-set`** — `settings.js` prints one JSON value on stdout (list of
+  `{category,key,label,value,values,available,context}` for `list`; for `set` a JSON string such as
+  `key = value (persists ...)`, which `tv.set_setting` prefixes with the label, or `{"message": ...}`
+  which is returned as is), errors on stderr with exit 3. `settings-set` payload is base64 of
+  `{"value": str, "context": {str: str}}`.
+- **`remote`** — `remote.js` prints one JSON string or `{"message": ...}` (the result message).
+- **`install-status`** (additive verb, `wof doctor`) — no arguments; stdout is one JSON object
+  `{"files": {<each INSTALL_FILES name>: bool}, "overlay": bool, "vtcap": bool}`.
+- **`notify-*`** — the last stdout line is JSON `{"returnValue": true, ...}` (`spoke`, `volume`,
+  `overlay` keys as in the reference scripts). Toast/say base64 is capped at 400 characters by the
+  grammar, so the Python side rejects text whose base64 is longer.
+- **`process-image` / `process-audio`** — the payload (H.264 MP4 / 48 kHz stereo 16-bit WAV) is
+  stdin. The TV script owns its workspace and replies on stdout with **one line of compact JSON
+  metadata, a `\n`, then the raw result bytes** (4K PNG / 32-bit stereo 48 kHz WAV capture). Failure:
+  message on stderr, non-zero exit. A busy lock must exit 75 (or print "busy" on stderr) so the
+  transport raises `TvBusyError`.
+- **`screenshot`** — stdout is the raw image bytes.
+- **`stream-start`** — stdout is the `C5F1` stream of `vtcap.c` (`C5F1`, u16le w, u16le h, frames).
+- **Python additions:** `errors.TvBusyError(TransportError)`, `errors.Cancelled`;
+  `process.wait_for_idle(transport)`; `process.enhance_*(..., *, log=None, cancel=None)`;
+  `capture.stream(..., info=None)`; `process.py` and `capture.py` may call local `ffmpeg`/`ffprobe`
+  (subprocess) — only `ssh` access is confined to `transport.py`/`pairing.py`.
+- `tv-assets/` lives at the repo root; `install.py` finds it via `WEBOS_FOUNDRY_ASSETS` or the repo
+  root next to the package (packaging it as package data is a later step).
+- **TV-assets amendments (tv-assets build):**
+  - `dispatch.sh` rejects with exit 64 and `webos-foundry: <reason>` on stderr. Whole-request allowlist first
+    (`[A-Za-z0-9+/=._ -]`, single spaces), then per-verb argument checks.
+  - `remote`, `settings-list`, `settings-set` run under `flock -w 5 -E 75 <lock>` and `notify-say` under
+    `flock -w 10 -E 75` (as the reference did, so a processing job's temporary mute/picture-mode changes
+    cannot race a remote key); lock timeout exits 75 with the shared "TV is busy ..." message. `idle-wait`
+    is `flock -w 25 -E 75 <lock> true`.
+  - `process-image`/`process-audio`: `dispatch.sh` makes `mktemp -d /tmp/webos-foundry-ai.XXXXXXXX`, writes stdin
+    to `input.mp4`/`input.wav` (caps 16 MiB / 8 MiB, else exit 1), runs `flock -n -E 75 <lock> node <script>
+    <workspace> <profile> <args...>`, then prints `result.json` + `captured.png`/`captured.wav` and deletes the
+    workspace. On failure the workspace is kept only when the script reports `Restoration failed`.
+  - `install-status` (added by core-Python): one JSON line `{"files": {name: bool}, "overlay": bool, "vtcap": bool}`.
+  - `install-vtcap` puts the binary at `/media/developer/webos-foundry-vtcap/vtcap` (the dev-mode location the
+    reference proved can be executed and given an LS2 role), role/manifest id `dev.webosfoundry.vtcap` under
+    `/var/luna-service2-dev/{roles.d,manifests.d}`; `stream-start` execs that path.
+  - `vtcap.c` is byte-identical to the reference, including the `C5F1` stream magic.

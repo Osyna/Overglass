@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python3 -m pip install --upgrade pip pytest
+      - run: python3 -m py_compile webos_foundry/*.py scripts/*.py homeassistant/custom_components/webos_foundry/*.py
+      - run: python3 -m pytest tests/ -q
+
+  tv-assets:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: sh -n tv-assets/dispatch.sh tv-assets/status.sh tv-assets/vtcap/build.sh
+      - run: |
+          for f in tv-assets/*.js tv-assets/overlay/*.js; do
+            node --check "$f"
+          done
+
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: node --check web/app.js

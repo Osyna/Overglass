@@ -1,0 +1,148 @@
+toast:
+  name: Toast
+  description: Show a message on the TV screen as a toast.
+  fields:
+    message:
+      name: Message
+      description: 1-200 characters, no control characters.
+      required: true
+      example: Dinner is ready
+      selector:
+        text:
+    config_entry_id: &entry
+      name: TV
+      description: Which webOS Foundry TV; optional when only one is configured.
+      required: false
+      selector:
+        config_entry:
+          integration: webos_foundry
+
+say:
+  name: Say
+  description: Speak a message through the TV speaker, then restore the TV's own audio settings.
+  fields:
+    message:
+      name: Message
+      description: 1-200 characters, no control characters.
+      required: true
+      example: Dinner is ready
+      selector:
+        text:
+    volume:
+      name: Volume
+      description: TV volume while speaking (1-40, server default 15).
+      required: false
+      example: 10
+      selector:
+        number:
+          min: 1
+          max: 40
+    config_entry_id: *entry
+
+overlay_show:
+  name: Show overlay card
+  description: Show a card on the TV (needs at least one of title, body, lines or image).
+  fields:
+    title:
+      name: Title
+      description: Up to 80 characters.
+      required: false
+      selector:
+        text:
+    body:
+      name: Body
+      description: Up to 400 characters.
+      required: false
+      selector:
+        text:
+          multiline: true
+    lines:
+      name: Lines
+      description: Up to 10 lines of up to 120 characters each.
+      required: false
+      selector:
+        object:
+    image:
+      name: Image URL
+      description: http(s) URL, up to 500 characters. The TV fetches it, so it must be reachable from the TV.
+      required: false
+      selector:
+        text:
+    kind:
+      name: Kind
+      description: Card colour.
+      required: false
+      selector:
+        select:
+          options: [info, success, warning, alert]
+    position:
+      name: Position
+      description: Where the card appears.
+      required: false
+      selector:
+        select:
+          options: [top-left, top-right, bottom-left, bottom-right, center]
+    seconds:
+      name: Seconds
+      description: How long the card stays; 0 keeps it until hidden (server default 8).
+      required: false
+      selector:
+        number:
+          min: 0
+          max: 300
+    config_entry_id: *entry
+
+overlay_hide:
+  name: Hide overlay card
+  description: Hide the overlay card.
+  fields:
+    config_entry_id: *entry
+
+remote:
+  name: Remote
+  description: Send one remote action to the TV (wake, power_off, home, back, up, down, left, right, ok, mute, unmute, volume_up, volume_down, hdmi).
+  fields:
+    action:
+      name: Action
+      description: Remote action name; GET /api on the server lists them.
+      required: true
+      example: hdmi
+      selector:
+        text:
+    value:
+      name: Value
+      description: Only for hdmi - the input number, 1-4.
+      required: false
+      example: 1
+      selector:
+        number:
+          min: 1
+          max: 4
+    config_entry_id: *entry
+
+set_setting:
+  name: Set picture/sound setting
+  description: Change one allowed AI picture or sound setting; the scope (context) is read from the TV first.
+  fields:
+    category:
+      name: Category
+      description: Setting category, as listed by GET /api/settings.
+      required: true
+      example: sound
+      selector:
+        text:
+    key:
+      name: Key
+      description: Setting key within the category.
+      required: true
+      example: aiSound
+      selector:
+        text:
+    value:
+      name: Value
+      description: One of the setting's currently allowed values.
+      required: true
+      example: "on"
+      selector:
+        text:
+    config_entry_id: *entry
