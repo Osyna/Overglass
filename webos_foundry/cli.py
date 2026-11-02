@@ -8,7 +8,7 @@ import time
 from dataclasses import asdict, fields
 from pathlib import Path
 
-from . import capture, dispatcher, install as install_module, notify, pairing, process, tv
+from . import capture, dispatcher, install as install_module, notify, pairing, process, scenes, tv
 from .config import ENV, Config, config_dir
 from .errors import ConfigError, ValidationError, WebosFoundryError
 from .transport import SSHTransport
@@ -170,6 +170,36 @@ def cmd_overlay_hide(args):
     print(notify.overlay_hide(_transport(args)))
 
 
+def cmd_scene_list(args):
+    saved = scenes.load(args.config_dir)
+    if args.json:
+        print(json.dumps(saved, indent=2))
+    elif not saved:
+        print("No scenes saved yet; see `wof scene set --help`")
+    else:
+        for name, scene in sorted(saved.items()):
+            print("%s (%d step%s)" % (name, len(scene["steps"]), "" if len(scene["steps"]) == 1 else "s"))
+
+
+def cmd_scene_set(args):
+    text = sys.stdin.read() if args.file == "-" else Path(args.file).read_text()
+    scenes.save(args.name, scenes.check_scene(json.loads(text)), args.config_dir)
+    print("Scene %s saved" % args.name)
+
+
+def cmd_scene_delete(args):
+    scenes.delete(args.name, args.config_dir)
+    print("Scene %s deleted" % args.name)
+
+
+def cmd_scene_run(args):
+    saved = scenes.load(args.config_dir)
+    if args.name not in saved:
+        raise ValidationError("No such scene: %s" % args.name)
+    for message in scenes.run_scene(_transport(args), saved[args.name]):
+        print(message)
+
+
 def cmd_screenshot(args):
     out = Path(args.out)
     fmt = args.format or ("png" if out.suffix.lower() == ".png" else "jpg")
@@ -328,6 +358,17 @@ def build_parser():
     command.add_argument("--position", choices=("top-left", "top-right", "bottom-left", "bottom-right", "center"))
     command.add_argument("--seconds", type=int, help="0-300; 0 = until hidden")
     add("hide", cmd_overlay_hide, "hide the card", group)
+
+    group = add("scene", None, "named sequences of remote/setting/overlay/wait steps").add_subparsers(
+        dest="sub", required=True, metavar="SUB")
+    with_json(add("list", cmd_scene_list, "list saved scenes", group))
+    command = add("set", cmd_scene_set, "save a scene from a JSON file: {\"steps\": [...]}", group)
+    command.add_argument("name")
+    command.add_argument("file", metavar="FILE.json", help="- for stdin")
+    command = add("delete", cmd_scene_delete, "remove a saved scene", group)
+    command.add_argument("name")
+    command = add("run", cmd_scene_run, "run every step of a saved scene, in order", group)
+    command.add_argument("name")
 
     command = add("screenshot", cmd_screenshot, "capture the HDMI picture")
     command.add_argument("out", metavar="OUT.jpg")

@@ -120,6 +120,34 @@ def test_notify_and_overlay(fake, capsys):
     assert wof("notify", "say", "yo", "--volume", "99") == 1
 
 
+def test_scene_set_list_run_delete(fake, tmp_path, capsys):
+    scene_file = tmp_path / "scene.json"
+    scene_file.write_text(json.dumps({"steps": [
+        {"type": "remote", "action": "volume_down", "value": None},
+        {"type": "overlay", "card": {"title": "Movie night", "seconds": 5}},
+    ]}))
+    assert wof("scene", "set", "movie-night", str(scene_file)) == 0
+    assert "movie-night saved" in capsys.readouterr().out
+    assert wof("scene", "list") == 0
+    assert "movie-night (2 steps)" in capsys.readouterr().out
+    fake.add("remote", '{"message": "Sent volume_down"}')
+    fake.add("notify-overlay", '{"returnValue": true, "overlay": "shown"}')
+    assert wof("scene", "run", "movie-night") == 0
+    out = capsys.readouterr().out
+    assert "Sent volume_down" in out and "Overlay card shown" in out
+    assert wof("scene", "run", "nope") == 1
+    assert wof("scene", "delete", "movie-night") == 0
+    assert "movie-night deleted" in capsys.readouterr().out
+    assert wof("scene", "delete", "movie-night") == 1
+
+
+def test_scene_set_rejects_bad_json(fake, tmp_path, capsys):
+    scene_file = tmp_path / "bad.json"
+    scene_file.write_text(json.dumps({"steps": []}))
+    assert wof("scene", "set", "x", str(scene_file)) == 1
+    assert "needs 1-20 steps" in capsys.readouterr().err
+
+
 def test_screenshot_infers_format_and_derives_height(fake, tmp_path):
     fake.add("screenshot", b"\x89PNG\r\n\x1a\nxx")
     out = tmp_path / "shot.png"

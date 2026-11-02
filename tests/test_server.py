@@ -16,6 +16,7 @@ from pathlib import Path
 import pytest
 
 try:
+    from tests.fakes import FakeTransport
     from webos_foundry import capture, notify, process, server, tv
     from webos_foundry.config import Config
     from webos_foundry.errors import Cancelled, TransportError, TvBusyError, ValidationError
@@ -677,6 +678,34 @@ def test_apps_validation_errors_are_400_and_tv_errors_502(serve):
     status, body = app.json("POST", "/api/apps", {"url": "https://example.com/a.ipk"})
     assert status == 502 and "offline" in body["error"]
     assert app.json("GET", "/api/apps")[0] == 502
+
+
+def test_scenes_routes_save_list_run_and_delete(serve):
+    app = serve(transport=FakeTransport({"remote": '{"message":"Sent volume_down"}',
+                                         "settings-set": '"on (persists)"',
+                                         "notify-overlay": '{"returnValue":true,"overlay":"shown"}'}))
+    assert app.json("GET", "/api/scenes") == (200, {"scenes": {}})
+    body = {"steps": [{"type": "remote", "action": "volume_down", "value": None},
+                      {"type": "overlay", "card": {"title": "Movie night", "seconds": 5}}]}
+    assert app.json("PUT", "/api/scenes/movie-night", body) == (200, {"message": "Scene saved"})
+    listed = app.json("GET", "/api/scenes")
+    assert listed[0] == 200 and list(listed[1]["scenes"]) == ["movie-night"]
+    assert listed[1]["scenes"]["movie-night"]["steps"][1]["card"]["root"]["type"] == "stack"  # compiled, not raw
+    assert app.json("POST", "/api/scenes/movie-night/run") == (200, {"messages": ["Sent volume_down", "Overlay card shown"]})
+    assert app.json("POST", "/api/scenes/nope/run")[0] == 404
+    assert app.json("DELETE", "/api/scenes/movie-night") == (200, {"message": "Scene deleted"})
+    assert app.json("GET", "/api/scenes") == (200, {"scenes": {}})
+    assert app.json("DELETE", "/api/scenes/movie-night")[0] == 400
+
+
+def test_scenes_validation_errors_are_400_and_tv_errors_502(serve):
+    app = serve(transport=DeadTransport())
+    assert app.json("PUT", "/api/scenes/x", {"steps": []})[0] == 400
+    assert app.json("PUT", "/api/scenes/x", {"steps": [{"type": "remote", "action": "nope"}]})[0] == 400
+    assert app.json("PUT", "/api/scenes/" + "x" * 61, {"steps": [{"type": "wait", "seconds": 0}]})[0] == 400
+    ok = app.json("PUT", "/api/scenes/x", {"steps": [{"type": "remote", "action": "volume_down", "value": None}]})
+    assert ok[0] == 200
+    assert app.json("POST", "/api/scenes/x/run")[0] == 502
 
 
 def test_ipk_upload_is_served_once_to_the_tv_hashed_and_deleted(serve, monkeypatch):

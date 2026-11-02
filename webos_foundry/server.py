@@ -30,7 +30,7 @@ from pathlib import Path
 from socket import AF_INET6
 from urllib.parse import parse_qs, unquote, urlsplit
 
-from webos_foundry import apps, capture, notify, pairing, process, tv
+from webos_foundry import apps, capture, notify, pairing, process, scenes, tv
 from webos_foundry.config import AUTH_MODES, Config
 from webos_foundry.errors import ConfigError, NotPairedError, TransportError, TvBusyError, WebosFoundryError
 from webos_foundry.transport import SSHTransport
@@ -374,6 +374,30 @@ def post_overlay(request, _):
     return {"message": notify.overlay_show(request.transport, card)}
 
 
+def get_scenes(_request, _):
+    return {"scenes": {name: {"steps": scene["steps"]} for name, scene in scenes.load().items()}}
+
+
+def put_scene(request, params):
+    body = request.json_body()
+    scenes.save(params["name"], scenes.check_scene(body))
+    return {"message": "Scene saved"}
+
+
+def delete_scene(_request, params):
+    scenes.delete(params["name"])
+    return {"message": "Scene deleted"}
+
+
+def post_scene_run(request, params):
+    saved = scenes.load()
+    if params["name"] not in saved:
+        raise ApiError(404, "No such scene")
+    reserved()
+    with TV_LOCK:
+        return {"messages": scenes.run_scene(request.transport, saved[params["name"]])}
+
+
 def stream_args(query):
     try:
         width = int(query.get("width", "160"))
@@ -674,6 +698,31 @@ ROUTES = (
                 "The image URL is fetched by the TV, so it must be reachable from the TV.",
           example={"path": "/api/overlay", "body": {"title": "Dinner", "body": "It is ready.", "kind": "success",
                                                     "position": "top-right", "seconds": 10}}),
+    route("GET", "/api/scenes", "Scenes", "Every saved scene with its steps.", get_scenes,
+          returns='{"scenes": {name: {"steps": [step, ...]}}}', tv=[],
+          notes="Reads this server's own state; never contacts the TV.", example={"path": "/api/scenes"}),
+    route("PUT", "/api/scenes/{name}", "Scenes",
+          "Save a scene: a named sequence of 1-20 steps, run together in order by POST .../run.", put_scene,
+          body='{"steps": [step, ...]}. A step is one of: {"type": "remote", "action", "value"?} (see '
+               'POST /api/remote/{action}), {"type": "setting", "category", "key", "value", "context"?} (see '
+               'PUT /api/settings/{category}/{key}), {"type": "overlay", "card"} (see POST /api/overlay, any '
+               'shorthand or widget-tree body), or {"type": "wait", "seconds": 0-10}.',
+          returns='{"message": "Scene saved"}', tv=[],
+          notes="The overlay step's card is validated and compiled into a widget tree right here, at save time, "
+                "not every time the scene runs. A name is 1-60 characters with no leading/trailing space.",
+          example={"path": "/api/scenes/movie-night", "body": {"steps": [
+              {"type": "setting", "category": "sound", "key": "aiSound", "value": "off", "context": {}},
+              {"type": "overlay", "card": {"title": "Movie night", "kind": "info", "seconds": 5}}]}}),
+    route("DELETE", "/api/scenes/{name}", "Scenes", "Remove a saved scene.", delete_scene,
+          returns='{"message": "Scene deleted"}', tv=[],
+          notes="404 if no scene has that name.", example={"path": "/api/scenes/movie-night"}),
+    route("POST", "/api/scenes/{name}/run", "Scenes",
+          "Run every step of a saved scene, in order, stopping at the first failure.", post_scene_run,
+          returns='{"messages": [one per completed step]}',
+          tv=["one dispatch call per remote/setting/overlay step, in order; a wait step sleeps here and makes no call"],
+          notes=TV_LOCK_NOTE + " Answers 409 while a processing job holds the TV, 404 if no scene has that name, "
+                               "and 502 (with the TV's message) at the step that failed; earlier steps already ran.",
+          example={"path": "/api/scenes/movie-night/run"}),
     route("GET", "/api/screenshot", "Status",
           "Capture the picture the TV shows from its HDMI input (without the TV's own menus) as an image.", get_screenshot,
           query={"width": "64-3840, even (default 1920); the height follows the 16:9 picture",
