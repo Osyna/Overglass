@@ -42,19 +42,18 @@ GRAMMAR = {verb: re.compile(pattern) for verb, pattern in {
     "process-image": r"process-image %s [0-9]{2,4} [0-9]{2,4}" % _PROFILE,
     "process-audio": r"process-audio %s [0-9]{1,2}" % _PROFILE,
     "idle-wait": r"idle-wait",
-    "install": r"install (?:%s) %s+={0,2}" % ("|".join(re.escape(name) for name in INSTALL_FILES), _B64),
-    "install-overlay": r"install-overlay %s+={0,2}" % _B64,
+    "install": r"install (?:%s)" % "|".join(re.escape(name) for name in INSTALL_FILES),
+    "install-overlay": r"install-overlay",
     "install-status": r"install-status",
     "uninstall-overlay": r"uninstall-overlay",
-    "install-vtcap": r"install-vtcap %s+={0,2}" % _B64,
+    "install-vtcap": r"install-vtcap",
     "uninstall-vtcap": r"uninstall-vtcap",
     "uninstall-all": r"uninstall-all",
     "app-list": r"app-list",
     "app-install": r"app-install %s{1,1000}={0,2}" % _B64,
     "app-uninstall": r"app-uninstall %s{1,200}={0,2}" % _B64,
-    "install-tree": r"install-tree (?=.{1,%d} )%s (?:%s) %s{1,%d}={0,2}"
-                    % (MAX_TREE_PATH, _TREE_PATH, "|".join(TREE_MODES), _B64, 120_000),
-    "install-hook": r"install-hook %s %s{1,120000}={0,2}" % (_HOOK, _B64),
+    "install-tree": r"install-tree (?=.{1,%d} )%s (?:%s)" % (MAX_TREE_PATH, _TREE_PATH, "|".join(TREE_MODES)),
+    "install-hook": r"install-hook %s" % _HOOK,
     "run-hook": r"run-hook %s (?:start|stop)" % _HOOK,
 }.items()}
 
@@ -153,26 +152,26 @@ def build_idle_wait() -> str:
     return "idle-wait"
 
 
-def build_install(name, b64) -> str:
+def build_install(name) -> str:
     if name not in INSTALL_FILES:
         raise ValidationError("Unknown TV file: %s" % (name,))
-    return _built("install", "install %s %s" % (name, _text(b64, "Payload")))
+    return _built("install", "install %s" % name)
 
 
 def build_install_status() -> str:
     return "install-status"
 
 
-def build_install_overlay(b64) -> str:
-    return _built("install-overlay", "install-overlay " + _text(b64, "Payload"))
+def build_install_overlay() -> str:
+    return _built("install-overlay", "install-overlay")
 
 
 def build_uninstall_overlay() -> str:
     return "uninstall-overlay"
 
 
-def build_install_vtcap(b64) -> str:
-    return _built("install-vtcap", "install-vtcap " + _text(b64, "Payload"))
+def build_install_vtcap() -> str:
+    return _built("install-vtcap", "install-vtcap")
 
 
 def build_uninstall_vtcap() -> str:
@@ -195,12 +194,12 @@ def build_app_uninstall(b64) -> str:
     return _built("app-uninstall", "app-uninstall " + _text(b64, "Payload"))
 
 
-def build_install_tree(path, mode, b64) -> str:
-    return _built("install-tree", "install-tree %s %s %s" % (_text(path, "Path"), _text(mode, "Mode"), _text(b64, "Payload")))
+def build_install_tree(path, mode) -> str:
+    return _built("install-tree", "install-tree %s %s" % (_text(path, "Path"), _text(mode, "Mode")))
 
 
-def build_install_hook(name, b64) -> str:
-    return _built("install-hook", "install-hook %s %s" % (_text(name, "Hook name"), _text(b64, "Payload")))
+def build_install_hook(name) -> str:
+    return _built("install-hook", "install-hook %s" % _text(name, "Hook name"))
 
 
 def build_run_hook(name, action="start") -> str:

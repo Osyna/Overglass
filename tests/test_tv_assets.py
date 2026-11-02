@@ -279,7 +279,7 @@ def test_process_upload_cap(rig):
 
 def test_install_files(rig):
     for name in INSTALL_FILES:
-        assert rig.run(f"install {name} {b64('payload ' + name)}").returncode == 0, name
+        assert rig.run(f"install {name}", stdin=("payload " + name).encode()).returncode == 0, name
         target = rig.tv / name
         assert target.read_text() == "payload " + name
         mode = stat.S_IMODE(target.stat().st_mode)
@@ -291,15 +291,15 @@ def test_install_files(rig):
 
 
 def test_install_overlay_and_vtcap_and_uninstall(rig):
-    rig.run(f"install status.sh {b64('x')}")
-    ok = rig.run(f"install-overlay {b64('IPKBYTES')}")
+    rig.run("install status.sh", stdin=b"x")
+    ok = rig.run("install-overlay", stdin=b"IPKBYTES")
     assert ok.returncode == 0 and b"Overlay installed" in ok.stdout
     assert any('"ipkUrl":"' + str(rig.tmp) in c for c in rig.calls())
     assert list(rig.tmp.iterdir()) == []  # ipk removed afterwards
     assert rig.run("uninstall-overlay").returncode == 0
     assert any("appInstallService/dev/remove" in c and "dev.webosfoundry.overlay" in c for c in rig.calls())
 
-    assert rig.run(f"install-vtcap {b64(b'ELF')}").returncode == 0
+    assert rig.run("install-vtcap", stdin=b"ELF").returncode == 0
     assert (rig.vt / "vtcap").read_bytes() == b"ELF" and os.access(rig.vt / "vtcap", os.X_OK)
     role = json.loads((rig.ls2 / "roles.d/dev.webosfoundry.vtcap.json").read_text())
     manifest = json.loads((rig.ls2 / "manifests.d/dev.webosfoundry.vtcap.json").read_text())
@@ -381,17 +381,16 @@ ATTACKS = {
     "audio substitution": "process-audio standard $(id)",
     "audio newline": "process-audio standard 3\nid",
     "idle-wait arg": "idle-wait now",
-    "install unknown file": f"install evil.sh {B}",
-    "install traversal": f"install ../../etc/passwd {B}",
-    "install traversal suffix": f"install status.sh/../x {B}",
-    "install absolute": f"install /etc/passwd {B}",
+    "install unknown file": "install evil.sh",
+    "install traversal": "install ../../etc/passwd",
+    "install traversal suffix": "install status.sh/../x",
+    "install absolute": "install /etc/passwd",
     "install substitution": "install status.sh $(id)",
-    "install newline": f"install status.sh {B}\nid",
-    "install missing payload": "install status.sh",
+    "install newline": "install status.sh\nid",
     "install-overlay substitution": "install-overlay $(id)",
-    "install-overlay newline": f"install-overlay {B}\nid",
+    "install-overlay newline": "install-overlay\nid",
     "install-vtcap backtick": "install-vtcap `id`",
-    "install-vtcap bad charset": "install-vtcap a-b",
+    "install-vtcap extra arg": "install-vtcap a-b",
     "install-status arg": "install-status x",
     "uninstall-all arg": "uninstall-all now",
     "uninstall-all substitution": "uninstall-all $(id)",
@@ -408,31 +407,28 @@ ATTACKS = {
     "app-uninstall too long": "app-uninstall " + "A" * 201,
     "app-uninstall substitution": "app-uninstall $(id)",
     "app-uninstall newline": f"app-uninstall {B}\nid",
-    "tree traversal": f"install-tree ../x/y put {B}",
-    "tree traversal middle": f"install-tree a/../../x put {B}",
-    "tree traversal tail": f"install-tree a/b/.. put {B}",
-    "tree absolute": f"install-tree /etc/passwd put {B}",
-    "tree absolute dir": f"install-tree /tmp/x/y put {B}",
-    "tree top-level file": f"install-tree dispatch.sh put {B}",
-    "tree dotfile": f"install-tree a/.profile put {B}",
-    "tree dot dir": f"install-tree .ssh/authorized_keys put {B}",
-    "tree double slash": f"install-tree a//b put {B}",
-    "tree trailing slash": f"install-tree a/b/ put {B}",
-    "tree too deep": "install-tree " + "/".join("d" * 9) + f" put {B}",
-    "tree too long": "install-tree " + "/".join(["d" * 40] * 6) + f" put {B}",
-    "tree long component": "install-tree a/" + "b" * 65 + f" put {B}",
-    "tree bad mode": f"install-tree a/b exec {B}",
-    "tree substitution": f"install-tree a/$(id) put {B}",
-    "tree semicolon": f"install-tree a/b;touch put {B}",
-    "tree newline": f"install-tree a/b put {B}\nid",
-    "tree payload charset": "install-tree a/b put a-b_c",
-    "tree no payload": "install-tree a/b put",
-    "tree payload too long": "install-tree a/b put " + "A" * 120001,
-    "hook bad name": f"install-hook rc.local {B}",
-    "hook name traversal": f"install-hook webos-foundry-../x {B}",
-    "hook uppercase": f"install-hook webos-foundry-Up {B}",
-    "hook extension": f"install-hook webos-foundry-a.sh {B}",
-    "hook no payload": "install-hook webos-foundry-x",
+    "tree traversal": "install-tree ../x/y put",
+    "tree traversal middle": "install-tree a/../../x put",
+    "tree traversal tail": "install-tree a/b/.. put",
+    "tree absolute": "install-tree /etc/passwd put",
+    "tree absolute dir": "install-tree /tmp/x/y put",
+    "tree top-level file": "install-tree dispatch.sh put",
+    "tree dotfile": "install-tree a/.profile put",
+    "tree dot dir": "install-tree .ssh/authorized_keys put",
+    "tree double slash": "install-tree a//b put",
+    "tree trailing slash": "install-tree a/b/ put",
+    "tree too deep": "install-tree " + "/".join("d" * 9) + " put",
+    "tree too long": "install-tree " + "/".join(["d" * 40] * 6) + " put",
+    "tree long component": "install-tree a/" + "b" * 65 + " put",
+    "tree bad mode": "install-tree a/b exec",
+    "tree substitution": "install-tree a/$(id) put",
+    "tree semicolon": "install-tree a/b;touch put",
+    "tree newline": "install-tree a/b put\nid",
+    "tree extra arg": "install-tree a/b put a-b_c",
+    "hook bad name": "install-hook rc.local",
+    "hook name traversal": "install-hook webos-foundry-../x",
+    "hook uppercase": "install-hook webos-foundry-Up",
+    "hook extension": "install-hook webos-foundry-a.sh",
     "run-hook foreign": "run-hook sh start",
     "run-hook traversal": "run-hook ../../bin/sh start",
     "run-hook bad action": "run-hook webos-foundry-x restart",
@@ -448,6 +444,24 @@ def test_rejects(rig, name):
     assert rig.calls() == []  # nothing reached luna-send/node/flock
     assert not (rig.root / "PWNED").exists() and not (Path.cwd() / "PWNED").exists()
     assert list(rig.tmp.iterdir()) == [] and list(rig.tv.iterdir()) == [rig.tv / "status.sh"]
+
+
+def test_install_with_no_stdin_payload_is_rejected(rig):
+    result = rig.run("install notify.js")
+    assert result.returncode == 1 and b"Upload must be 1-" in result.stderr
+    assert not (rig.tv / "notify.js").exists() and not (rig.tv / "notify.js.new").exists()
+
+
+def test_install_tree_with_no_stdin_payload_is_rejected(rig):
+    result = rig.run("install-tree a/b put")
+    assert result.returncode == 1 and b"Upload chunk must be 1-" in result.stderr
+    assert not (rig.tv / "a/b").exists() and not (rig.tv / "a/b.part").exists()
+
+
+def test_install_hook_with_no_stdin_payload_is_rejected(rig):
+    result = rig.run("install-hook webos-foundry-x")
+    assert result.returncode == 1 and b"Upload must be 1-" in result.stderr
+    assert not (rig.hooks / "webos-foundry-x").exists()
 
 
 def test_rejects_unset_variable(rig):
@@ -473,23 +487,23 @@ def snapshot(root):
 
 def test_install_tree_writes_nested_files_under_the_root(rig):
     for path, text in (("tv-server/server.js", "js"), ("tv-server/web/css/app.css", "css"), ("a_b/c-d/e.f.txt", "txt")):
-        assert rig.run(f"install-tree {path} put {b64(text)}").returncode == 0, path
+        assert rig.run(f"install-tree {path} put", stdin=text.encode()).returncode == 0, path
         assert (rig.tv / path).read_text() == text and not (rig.tv / (path + ".part")).exists()
         assert stat.S_IMODE((rig.tv / path).stat().st_mode) == 0o644
-    assert rig.run(f"install-tree tv-server/server.js put {b64('new')}").returncode == 0  # overwrite, atomically
+    assert rig.run("install-tree tv-server/server.js put", stdin=b"new").returncode == 0  # overwrite, atomically
     assert (rig.tv / "tv-server/server.js").read_text() == "new"
 
 
 def test_install_tree_chunks_append_and_only_the_last_publishes(rig):
-    assert rig.run(f"install-tree tv-server/big.bin begin {b64('AAA')}").returncode == 0
+    assert rig.run("install-tree tv-server/big.bin begin", stdin=b"AAA").returncode == 0
     assert not (rig.tv / "tv-server/big.bin").exists()  # nothing visible until the end chunk
-    assert rig.run(f"install-tree tv-server/big.bin more {b64('BBB')}").returncode == 0
-    assert rig.run(f"install-tree tv-server/big.bin end {b64('CC')}").returncode == 0
+    assert rig.run("install-tree tv-server/big.bin more", stdin=b"BBB").returncode == 0
+    assert rig.run("install-tree tv-server/big.bin end", stdin=b"CC").returncode == 0
     assert (rig.tv / "tv-server/big.bin").read_bytes() == b"AAABBBCC" and not (rig.tv / "tv-server/big.bin.part").exists()
-    assert rig.run(f"install-tree tv-server/x more {b64('a')}").returncode == 1  # no begin: refused, nothing written
-    assert rig.run(f"install-tree tv-server/x end {b64('a')}").returncode == 1
+    assert rig.run("install-tree tv-server/x more", stdin=b"a").returncode == 1  # no begin: refused, nothing written
+    assert rig.run("install-tree tv-server/x end", stdin=b"a").returncode == 1
     assert not (rig.tv / "tv-server/x").exists()
-    assert rig.run(f"install-tree tv-server put {b64('a')}").returncode == 64  # one component: not a file under a directory
+    assert rig.run("install-tree tv-server put", stdin=b"a").returncode == 64  # one component: not a file under a directory
 
 
 def test_install_tree_never_writes_outside_the_root_or_over_a_directory(rig):
@@ -498,14 +512,14 @@ def test_install_tree_never_writes_outside_the_root_or_over_a_directory(rig):
     escapes = ["../x/y", "a/../../escape", "a/b/..", "/etc/x/y", "/tmp/webos/y", "a/.x", ".ssh/key", "a//b", "a/b/",
                "dispatch.sh", "a/b;touch/c", "a/$(touch PWNED)/b", "a/b c/d", "a/\\..\\x"]
     for path in escapes:
-        result = rig.run(f"install-tree {path} put {B}")
+        result = rig.run(f"install-tree {path} put", stdin=b"x")
         assert result.returncode == 64, path
     assert snapshot(rig.root) == before  # not one file or directory created anywhere
     assert not (rig.root / "PWNED").exists()
-    clash = rig.run(f"install-tree tv-server put {B}")  # a path that is an existing directory is refused, not mv'd into
+    clash = rig.run("install-tree tv-server put", stdin=b"x")  # a path that is an existing directory is refused, not mv'd into
     assert clash.returncode == 64
     (rig.tv / "tv-server/web").mkdir()
-    assert rig.run(f"install-tree tv-server/web put {B}").returncode == 1
+    assert rig.run("install-tree tv-server/web put", stdin=b"x").returncode == 1
     assert snapshot(rig.root) == before + ["webos-foundry/tv-server/web"]
 
 
@@ -514,14 +528,13 @@ HOOK = "#!/bin/sh\necho \"hook $1\" >> \"$FAKE_LOG\"\necho \"hook says $1\"\nsle
 
 def test_hook_install_run_and_uninstall(rig):
     name = "webos-foundry-tv-server"
-    assert rig.run(f"install-hook {name} {b64(HOOK)}").returncode == 0
+    assert rig.run(f"install-hook {name}", stdin=HOOK.encode()).returncode == 0
     hook = rig.hooks / name
     assert hook.read_text() == HOOK and os.access(hook, os.X_OK) and not list(rig.hooks.glob(".*new"))
     started = rig.run(f"run-hook {name} start")  # must return even though the hook leaves a process on stdout
     assert started.returncode == 0 and b"hook says start" in started.stdout
     assert "hook start" in rig.calls() and list(rig.tmp.iterdir()) == []
     assert rig.run("run-hook webos-foundry-missing start").returncode == 1
-    assert rig.run(f"install-hook {name} {b64('')}").returncode in (1, 64)
     other = rig.hooks / "someone-elses-hook"
     other.write_text("#!/bin/sh\n")
     removed = rig.run("uninstall-all")
@@ -750,6 +763,6 @@ def test_python_directory_push_roundtrips_through_dispatch_sh(rig, tmp_path):
 def test_python_hook_push_roundtrips_through_dispatch_sh(rig):
     from webos_foundry import dispatcher, install
     transport = RigTransport(rig)
-    transport.run(dispatcher.build_install_hook(install.TV_SERVER_HOOK, b64(HOOK)))
+    transport.run(dispatcher.build_install_hook(install.TV_SERVER_HOOK), data=HOOK.encode())
     out = transport.run(dispatcher.build_run_hook(install.TV_SERVER_HOOK, "start"))
     assert out == b"hook says start\n" and (rig.hooks / install.TV_SERVER_HOOK).read_text() == HOOK

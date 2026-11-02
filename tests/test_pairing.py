@@ -57,7 +57,7 @@ def test_pair_sequence_and_root_key_never_leaks(env):
     # The restricted key then installs the assets (dispatch.sh last, then overlay); the root transport did not.
     count = len(dispatcher.INSTALL_FILES)
     assert [c.split()[1] for c in new.commands[:count]] == [n for n in dispatcher.INSTALL_FILES if n != "dispatch.sh"] + ["dispatch.sh"]
-    assert new.commands[count].startswith("install-overlay ")
+    assert new.commands[count] == "install-overlay"
 
     # The root key path/contents appear nowhere: config dir files, restricted calls, root-side data.
     secrets = [str(root_key), root_key.name, "secret-dir", "PRIVATE KEY BODY"]

@@ -1,5 +1,4 @@
 from pathlib import Path
-import base64
 import io
 import json
 import tarfile
@@ -27,7 +26,7 @@ def test_install_files_come_from_dispatcher():
 
 
 def decoded(call):
-    return base64.b64decode(call.command.split(" ")[-1])
+    return call.data
 
 
 def test_install_pushes_files_dispatcher_last_then_overlay(assets):
@@ -37,7 +36,7 @@ def test_install_pushes_files_dispatcher_last_then_overlay(assets):
     assert names == ["status.sh", "details.js", "notify.js", "settings.js", "remote.js", "process-image.js",
                      "process-audio.js", "apps.js", "dispatch.sh"]
     assert decoded(fake.calls[0]) == (assets / "status.sh").read_bytes()
-    assert fake.commands[-1].startswith("install-overlay ")
+    assert fake.commands[-1] == "install-overlay"
     assert result == {"files": names, "overlay": True, "vtcap": False}
     assert all(dispatcher.verb_of(c) for c in fake.commands)
 
@@ -50,7 +49,7 @@ def test_install_options(assets):
     make_assets(assets, vtcap=True)
     fake = tv()
     assert install.install(fake, overlay=False)["vtcap"] is True  # auto: binary built locally
-    assert decoded(fake.calls[-1]) == b"\x7fELF" and fake.commands[-1].startswith("install-vtcap ")
+    assert decoded(fake.calls[-1]) == b"\x7fELF" and fake.commands[-1] == "install-vtcap"
     fake = tv()
     assert install.install(fake, overlay=False, vtcap="no")["vtcap"] is False
     assert not any(c.startswith("install-vtcap") for c in fake.commands)
@@ -83,9 +82,9 @@ def test_transport_errors_propagate(assets):
 
 
 def test_oversize_payload_refused_before_sending(assets):
-    (assets / "details.js").write_bytes(b"x" * 100_000)
+    (assets / "details.js").write_bytes(b"x" * (install.FILE_MAX + 1))
     fake = tv()
-    with pytest.raises(ValidationError, match="too large"):
+    with pytest.raises(ValidationError, match="File must be"):
         install.update(fake)
     assert [c.split()[1] for c in fake.commands] == ["status.sh"]
 
@@ -183,14 +182,14 @@ def test_push_tree_skips_hidden_files_and_named_paths(tmp_path):
 
 
 def test_push_tree_chunks_large_files_without_padding_until_the_last(tmp_path):
-    data = bytes(range(256)) * 1000  # 256 000 bytes: three chunks
+    size = install.CHUNK * 2 + 777  # three chunks: two full, one partial
+    data = (bytes(range(256)) * (size // 256 + 1))[:size]
     local = tree(tmp_path / "t", {"big.bin": data, "small.txt": b"hi"})
     fake = tree_fake()
     install.push_tree(fake, local, "d")
     big = [c for c in fake.calls if c.command.split()[1] == "d/big.bin"]
     assert [c.command.split()[2] for c in big] == ["begin", "more", "end"]
-    assert all(len(c.command.split()[3]) <= install.MAX_PAYLOAD_B64 for c in big)
-    assert all("=" not in c.command.split()[3] for c in big[:-1])  # only the final chunk may carry padding
+    assert all(len(c.data) <= install.CHUNK for c in big)
     assert b"".join(decoded(c) for c in big) == data
     assert [c.command.split()[2] for c in fake.calls if "small.txt" in c.command] == ["put"]
 
@@ -261,7 +260,7 @@ def test_install_tv_server_pushes_tree_web_hook_and_starts(assets, tv_server):
                                 "tv-server/web/index.html"]  # not config.json (TV-owned), not the hook
     assert result["tv_server"] == {"files": tree_paths(fake), "hook": "webos-foundry-tv-server", "started": True,
                                    "output": "started"}
-    assert fake.commands[-2].startswith("install-hook webos-foundry-tv-server ")
+    assert fake.commands[-2] == "install-hook webos-foundry-tv-server"
     assert decoded(fake.calls[-2]) == b"#!/bin/sh\n"
     assert fake.commands[-1] == "run-hook webos-foundry-tv-server start"
     assert [c.split()[1] for c in fake.commands[:9]] == [n for n in dispatcher.INSTALL_FILES if n != "dispatch.sh"] + ["dispatch.sh"]

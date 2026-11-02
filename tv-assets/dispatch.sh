@@ -21,7 +21,8 @@ OVERLAY_ID=dev.webosfoundry.overlay
 VT_ID=dev.webosfoundry.vtcap
 INSTALLER=luna://com.webos.appInstallService/dev/
 BUSY="TV is busy with AI processing or another change; try again shortly."
-B64_FILE_MAX=1500000
+FILE_MAX=2097152  # raw bytes, one whole-file install/overlay/vtcap/hook upload (no base64 tax now: stdin, not argv)
+TREE_CHUNK_MAX=4194304  # raw bytes, one install-tree chunk
 
 deny() {
   echo "webos-foundry: $1" >&2
@@ -81,11 +82,17 @@ dec() { # strip leading zeros so $(( )) never reads octal
   echo "$n"
 }
 
-b64d() {
-  if command -v base64 >/dev/null 2>&1; then
-    base64 -d
-  else
-    node -e 'process.stdout.write(Buffer.from(require("fs").readFileSync(0, "utf8"), "base64"))'
+# Reads at most $1 bytes of this request's stdin into new file $2 (truncating); rejects (removes $2, denies)
+# an empty or oversized upload. Same bounded-read shape as do_process's media upload, reused here so every
+# file-push verb sends its payload as stdin, not as a command argument (dropbear chokes well under 1 KiB of
+# base64 margin once the whole SSH command crosses a few KiB; ARCHITECTURE.md records the measured cliff).
+read_upload() { # maxbytes dest
+  head -c $(($1 + 1)) >"$2"
+  n=$(wc -c <"$2")
+  if [ "$n" -gt "$1" ] || [ "$n" -eq 0 ]; then
+    rm -f "$2"
+    echo "Upload must be 1-$1 bytes" >&2
+    exit 1
   fi
 }
 
@@ -180,31 +187,39 @@ do_install_status() {
   echo "$out"
 }
 
-do_install() { # name base64
+do_install() { # name  (payload is this request's stdin)
   case $1 in
     dispatch.sh | status.sh) mode=755 ;;
     details.js | notify.js | settings.js | remote.js | process-image.js | process-audio.js | apps.js) mode=644 ;;
     *) deny "unknown file" ;;
   esac
   mkdir -p "$D" || exit 1
-  printf '%s' "$2" | b64d >"$D/$1.new" && [ -s "$D/$1.new" ] || { rm -f "$D/$1.new"; echo "Empty or undecodable upload" >&2; exit 1; }
+  read_upload "$FILE_MAX" "$D/$1.new"
   chmod "$mode" "$D/$1.new" && mv "$D/$1.new" "$D/$1"
 }
 
-do_install_tree() { # path put|begin|more|end base64: one file (or one chunk of it) under $D, atomically renamed on put/end
+do_install_tree() { # path put|begin|more|end  (chunk payload is this request's stdin): one file (or one chunk
+                     # of it) under $D, atomically renamed on put/end
   f=$D/$1
   [ ! -d "$f" ] && mkdir -p "${f%/*}" || { echo "Cannot write $1" >&2; exit 1; }
   case $2 in
     put | begin) : >"$f.part" || exit 1 ;;
     *) [ -f "$f.part" ] || { echo "No upload in progress for $1" >&2; exit 1; } ;;
   esac
-  printf '%s' "$3" | b64d >>"$f.part" || { rm -f "$f.part"; echo "Undecodable upload" >&2; exit 1; }
+  before=$(wc -c <"$f.part")
+  head -c $((TREE_CHUNK_MAX + 1)) >>"$f.part"
+  added=$(($(wc -c <"$f.part") - before))
+  if [ "$added" -gt "$TREE_CHUNK_MAX" ] || [ "$added" -eq 0 ]; then
+    rm -f "$f.part"
+    echo "Upload chunk must be 1-$TREE_CHUNK_MAX bytes" >&2
+    exit 1
+  fi
   case $2 in put | end) mv "$f.part" "$f" || exit 1 ;; esac
 }
 
-do_install_hook() { # name base64
+do_install_hook() { # name  (payload is this request's stdin)
   mkdir -p "$HOOKDIR" || exit 1
-  printf '%s' "$2" | b64d >"$HOOKDIR/.$1.new" && [ -s "$HOOKDIR/.$1.new" ] || { rm -f "$HOOKDIR/.$1.new"; echo "Empty or undecodable hook" >&2; exit 1; }
+  read_upload "$FILE_MAX" "$HOOKDIR/.$1.new"
   chmod 755 "$HOOKDIR/.$1.new" && mv "$HOOKDIR/.$1.new" "$HOOKDIR/$1"
 }
 
@@ -222,10 +237,12 @@ installer() { # install|remove json
   timeout 85 luna-send -w 84000 -i "$INSTALLER$1" "$2" </dev/null || true
 }
 
-do_install_overlay() {
+do_install_overlay() { # payload is this request's stdin
   ipk=$TMP/$OVERLAY_ID.ipk
   trap 'rm -f "$ipk"' EXIT
-  (umask 077 && printf '%s' "$1" | b64d >"$ipk") && [ -s "$ipk" ] || { echo "Empty or undecodable IPK" >&2; exit 1; }
+  (umask 077 && head -c $((FILE_MAX + 1)) >"$ipk")
+  n=$(wc -c <"$ipk")
+  [ "$n" -gt 0 ] && [ "$n" -le "$FILE_MAX" ] || { echo "Empty or oversized IPK" >&2; exit 1; }
   out=$(installer install '{"id":"com.ares.defaultName","ipkUrl":"'"$ipk"'","subscribe":true}')
   if printf '%s\n' "$out" | grep -Eq '"state"[[:space:]]*:[[:space:]]*"installed"'; then
     echo "Overlay installed"
@@ -244,9 +261,9 @@ do_uninstall_overlay() {
   remove_overlay && echo "Overlay removed" || { echo "Overlay removal did not complete" >&2; exit 1; }
 }
 
-do_install_vtcap() {
+do_install_vtcap() { # payload is this request's stdin
   mkdir -p "$VTDIR" "$LS2/roles.d" "$LS2/manifests.d" || exit 1
-  printf '%s' "$1" | b64d >"$VTDIR/vtcap.new" && [ -s "$VTDIR/vtcap.new" ] || { rm -f "$VTDIR/vtcap.new"; echo "Empty or undecodable binary" >&2; exit 1; }
+  read_upload "$FILE_MAX" "$VTDIR/vtcap.new"
   chmod 755 "$VTDIR/vtcap.new" && mv "$VTDIR/vtcap.new" "$VTDIR/vtcap" || exit 1
   # Names and rights: only what vtCapture_create needs (captureservice's own role minus its server names).
   printf '%s' '{"exeName":"'"$VTDIR"'/vtcap","type":"regular","allowedNames":["com.webos.service.capture.client*","com.webos.rm.client.*"],"permissions":[{"service":"com.webos.service.capture.client*","outbound":["*"]},{"service":"com.webos.rm.client.*","outbound":["com.webos.media"]}]}' >"$LS2/roles.d/$VT_ID.json" || exit 1
@@ -362,20 +379,20 @@ case $verb in
     do_install_status
     ;;
   install)
-    [ "$argc" -eq 3 ] && is_b64 "$3" "$B64_FILE_MAX" || deny "usage: install <file> <base64>"
-    do_install "$2" "$3"
+    [ "$argc" -eq 2 ] || deny "usage: install <file>"
+    do_install "$2"
     ;;
   install-overlay)
-    [ "$argc" -eq 2 ] && is_b64 "$2" "$B64_FILE_MAX" || deny "usage: install-overlay <base64>"
-    do_install_overlay "$2"
+    [ "$argc" -eq 1 ] || deny "usage: install-overlay"
+    do_install_overlay
     ;;
   uninstall-overlay)
     [ "$argc" -eq 1 ] || deny "usage: uninstall-overlay"
     do_uninstall_overlay
     ;;
   install-vtcap)
-    [ "$argc" -eq 2 ] && is_b64 "$2" "$B64_FILE_MAX" || deny "usage: install-vtcap <base64>"
-    do_install_vtcap "$2"
+    [ "$argc" -eq 1 ] || deny "usage: install-vtcap"
+    do_install_vtcap
     ;;
   uninstall-vtcap)
     [ "$argc" -eq 1 ] || deny "usage: uninstall-vtcap"
@@ -398,13 +415,13 @@ case $verb in
     exec node "$D/apps.js" uninstall "$2" </dev/null
     ;;
   install-tree)
-    [ "$argc" -eq 4 ] && is_tree_path "$2" && is_b64 "$4" 120000 || deny "usage: install-tree <dir/file> put|begin|more|end <base64>"
+    [ "$argc" -eq 3 ] && is_tree_path "$2" || deny "usage: install-tree <dir/file> put|begin|more|end"
     case $3 in put | begin | more | end) ;; *) deny "mode must be put, begin, more or end" ;; esac
-    do_install_tree "$2" "$3" "$4"
+    do_install_tree "$2" "$3"
     ;;
   install-hook)
-    [ "$argc" -eq 3 ] && is_hook "$2" && is_b64 "$3" 120000 || deny "usage: install-hook <webos-foundry-name> <base64>"
-    do_install_hook "$2" "$3"
+    [ "$argc" -eq 2 ] && is_hook "$2" || deny "usage: install-hook <webos-foundry-name>"
+    do_install_hook "$2"
     ;;
   run-hook)
     [ "$argc" -eq 3 ] && is_hook "$2" || deny "usage: run-hook <webos-foundry-name> start|stop"

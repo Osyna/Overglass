@@ -11,7 +11,6 @@ On-TV server layout (ARCHITECTURE.md §10.4), what `install(..., tv_server=True)
   tv-server/init.d-hook.sh -> /var/lib/webosbrew/init.d/webos-foundry-tv-server   (mode 755), then run with `start`
 The hook takes `start` (default; re-entrant) or `stop`; the TV's own config.json (token) is never overwritten.
 """
-import base64
 import io
 import json
 import os
@@ -31,9 +30,9 @@ TV_SERVER_HOOK_SOURCE = "init.d-hook.sh"
 TV_SERVER_HOOK = "webos-foundry-tv-server"
 TV_SERVER_KEEP_REMOTE = ("config.json",)  # TV-owned state: never pushed
 VTCAP_MODES = ("auto", "yes", "no")
-# The base64 payload is one SSH command argument; Linux caps a single argument at 128 KiB.
-MAX_PAYLOAD_B64 = 120_000
-CHUNK = MAX_PAYLOAD_B64 // 4 * 3  # raw bytes per tree-push command; a multiple of 3 so every chunk is unpadded base64
+# Payload is the SSH command's stdin, not a command argument; dispatch.sh enforces the same caps server-side.
+FILE_MAX = 2_097_152  # raw bytes, one whole-file install/overlay/vtcap/hook upload
+CHUNK = 4_194_304  # raw bytes per install-tree chunk
 AUTHORIZED_KEYS_HINT = ("The restricted key line in /home/root/.ssh/authorized_keys (the one starting with "
                         "command=\"sh /var/lib/webosbrew/webos-foundry/dispatch.sh\") is left in place; "
                         "delete it by hand to finish removing webOS Foundry.")
@@ -58,11 +57,11 @@ def web_dir() -> Path:
     return _repo_dir("web", WEB_ENV, "Web UI files")
 
 
-def _payload(data):
-    encoded = base64.b64encode(data).decode()
-    if len(encoded) > MAX_PAYLOAD_B64:
-        raise ValidationError("File is too large to send in one SSH command")
-    return encoded
+def _checked(data, cap=FILE_MAX):
+    """Fail fast, before the SSH round trip, on a file dispatch.sh would reject anyway."""
+    if not data or len(data) > cap:
+        raise ValidationError("File must be 1-%d bytes" % cap)
+    return data
 
 
 def _tar_gz(entries):
@@ -115,7 +114,7 @@ def _push_files(transport):
     # dispatch.sh last: the grammar only changes once every script it can run is in place.
     names = [n for n in INSTALL_FILES if n != "dispatch.sh"] + ["dispatch.sh"]
     for name in names:
-        transport.run(dispatcher.build_install(name, _payload((root / name).read_bytes())), timeout=60)
+        transport.run(dispatcher.build_install(name), data=_checked((root / name).read_bytes()), timeout=60)
     return list(names)
 
 
@@ -133,7 +132,7 @@ def push_tree(transport, local_dir, remote_prefix, *, skip=()) -> list:
         if path.is_symlink() or not path.is_file():
             raise ValidationError("Not a regular file: " + rel)
         if len(remote) > dispatcher.MAX_TREE_PATH or not dispatcher.GRAMMAR["install-tree"].fullmatch(
-                "install-tree %s put QQ==" % remote):
+                "install-tree %s put" % remote):
             raise ValidationError("Cannot push %s: name not allowed on the TV" % rel)
         data = path.read_bytes()
         if not data:
@@ -143,7 +142,7 @@ def push_tree(transport, local_dir, remote_prefix, *, skip=()) -> list:
         chunks = [data[i:i + CHUNK] for i in range(0, len(data), CHUNK)]
         for index, chunk in enumerate(chunks):
             mode = "put" if len(chunks) == 1 else "begin" if index == 0 else "end" if index == len(chunks) - 1 else "more"
-            transport.run(dispatcher.build_install_tree(remote, mode, _payload(chunk)), timeout=60)
+            transport.run(dispatcher.build_install_tree(remote, mode), data=chunk, timeout=60)
     return [remote for remote, _ in plan]
 
 
@@ -159,7 +158,7 @@ def _install_tv_server(transport):
     source, hook, web = _tv_server_sources()
     files = push_tree(transport, source, TV_SERVER_DIR, skip=TV_SERVER_KEEP_REMOTE + (TV_SERVER_HOOK_SOURCE,))
     files += push_tree(transport, web, TV_SERVER_DIR + "/web")
-    transport.run(dispatcher.build_install_hook(TV_SERVER_HOOK, _payload(hook.read_bytes())), timeout=60)
+    transport.run(dispatcher.build_install_hook(TV_SERVER_HOOK), data=_checked(hook.read_bytes()), timeout=60)
     output = transport.run(dispatcher.build_run_hook(TV_SERVER_HOOK, "start"), timeout=60)
     return {"files": files, "hook": TV_SERVER_HOOK, "started": True, "output": output.decode(errors="replace").strip()}
 
@@ -176,10 +175,10 @@ def install(transport, *, overlay=True, vtcap="auto", tv_server=False) -> dict:
         _tv_server_sources()
     result = {"files": _push_files(transport), "overlay": False, "vtcap": False}
     if overlay:
-        transport.run(dispatcher.build_install_overlay(_payload(package_overlay())), timeout=120)
+        transport.run(dispatcher.build_install_overlay(), data=_checked(package_overlay()), timeout=120)
         result["overlay"] = True
     if vtcap != "no" and binary.is_file():
-        transport.run(dispatcher.build_install_vtcap(_payload(binary.read_bytes())), timeout=120)
+        transport.run(dispatcher.build_install_vtcap(), data=_checked(binary.read_bytes()), timeout=120)
         result["vtcap"] = True
     if tv_server:
         result["tv_server"] = _install_tv_server(transport)
