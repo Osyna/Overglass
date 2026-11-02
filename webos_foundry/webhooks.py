@@ -61,7 +61,7 @@ def create(scene, label=None, config_dir_override=None) -> str:
     with LOCK:
         saved = load(config_dir_override)
         token = secrets.token_urlsafe(24)
-        while token in saved:
+        while token in saved or token.startswith("-"):  # a leading dash would read as a CLI option
             token = secrets.token_urlsafe(24)
         saved[token] = entry
         _save(saved, config_dir_override)

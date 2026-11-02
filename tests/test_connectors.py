@@ -56,25 +56,33 @@ def test_football_poll_builds_a_rich_scoreboard(api):
     assert notify.check_overlay_request(body) == body
     assert calls == [("https://api.openligadb.de/getmatchdata/bl1", 8)]
     children = body["root"]["children"]
-    header = children[0]["children"]
-    assert header[0]["text"] == "1. Fußball-Bundesliga" and header[1]["text"] == "8. Spieltag"
-    assert children[1] == {"type": "divider"}
-    match_row = children[2]
+    assert children[0]["text"] == "1. Fußball-Bundesliga"
+    facts = children[1]
+    assert facts["type"] == "meta" and [f["label"] for f in facts["items"]] == ["Matchday", "Matches", "Updated"]
+    assert facts["items"][0]["value"] == "8. Spieltag" and facts["items"][1]["value"] == "2"
+    board = children[2]["children"]
+    assert board[0] == {"type": "divider"}
+    match_row = board[1]
     assert _row_texts(match_row["children"][0]) == ["Bayern München"]
     assert match_row["children"][0]["children"][0]["type"] == "image"  # crest first (Bayern has a teamIconUrl)
     assert match_row["children"][1] == {"type": "badge", "text": "3 - 1", "tone": "info"}  # finished: no live inference
     assert _row_texts(match_row["children"][2]) == ["SC Freiburg"]
     assert match_row["children"][2]["children"][-1]["type"] == "text"  # no crest for Freiburg: text only, no image
-    goals = children[3]
-    assert goals == {"type": "list", "style": "plain", "items": [
-        "12' H. Kane — Bayern",
-        "55' V. Ginter (OG) — Freiburg",  # attributed to scoringTeamId as the API reports it, no own-goal flip
-        "78' L. Sané (pen.) — Bayern",
-    ]}
-    assert children[4] == {"type": "divider"}
-    second_row = children[5]
+    goals = board[2]["children"]
+    assert goals[0] == {"type": "section", "title": "Goals", "icon": "ball"}
+    assert goals[1:] == [
+        {"type": "event", "time": "12'", "text": "H. Kane — Bayern", "icon": "ball", "tone": "accent"},
+        # attributed to scoringTeamId as the API reports it, no own-goal flip
+        {"type": "event", "time": "55'", "text": "V. Ginter (OG) — Freiburg", "icon": "ball", "tone": "alert"},
+        {"type": "event", "time": "78'", "text": "L. Sané (pen.) — Bayern", "icon": "ball", "tone": "warning"},
+    ]
+    assert board[3] == {"type": "divider"}
+    second_row = board[4]
     assert second_row["children"][1]["text"] == "08 Nov 16:30 UTC"  # not started: kickoff time, no badge tone
     assert "tone" not in second_row["children"][1]
+    source = children[-1]
+    assert source["type"] == "status" and source["label"] == "OpenLigaDB" and source["state"] == "online"
+    assert source["detail"].endswith(" ms")  # the latency this poll measured, never a constant
 
 
 def test_football_infers_live_from_an_unfinished_started_match(api, monkeypatch):
@@ -82,7 +90,7 @@ def test_football_infers_live_from_an_unfinished_started_match(api, monkeypatch)
     data[1]["matchDateTimeUTC"] = "2000-01-01T00:00:00Z"  # long past kickoff
     data[1]["matchResults"] = [{"resultTypeID": 1, "resultOrderID": 1, "pointsTeam1": 1, "pointsTeam2": 0}]
     body = football.poll({})
-    second_row = body["root"]["children"][5]
+    second_row = body["root"]["children"][2]["children"][4]
     assert second_row["children"][1] == {"type": "badge", "text": "1 - 0", "tone": "success"}
 
 
@@ -91,15 +99,15 @@ def test_football_caps_matches_within_widget_limits(api):
     base = data[1]
     data.extend(copy.deepcopy(base) for _ in range(20))
     body = football.poll({})
-    children = body["root"]["children"]
-    assert children[-1]["text"] == "Showing 6 of 22 matches"
+    board = body["root"]["children"][2]["children"]
+    assert board[-1]["text"] == "Showing 6 of 22 matches"
 
 
 def test_football_empty_matchday_is_a_valid_card(api):
     data, _ = api
     data.clear()
     body = football.poll({})
-    assert body["root"]["children"][-1]["text"] == "No matches available"
+    assert body["root"]["children"][2]["children"][-1]["text"] == "No matches available"
 
 
 @pytest.mark.parametrize("error", [urllib.error.URLError("offline"), TimeoutError("timed out")])
@@ -145,7 +153,7 @@ def test_football_rejects_a_bad_crest_url(api):
     data, _ = api
     data[0]["team1"]["teamIconUrl"] = "javascript:alert(1)"
     body = football.poll({})  # an invalid crest is dropped, not a hard failure: the scoreboard still renders
-    match_row = body["root"]["children"][2]
+    match_row = body["root"]["children"][2]["children"][1]
     assert match_row["children"][0]["children"][0]["type"] == "text"  # no image widget for the bad URL
 
 

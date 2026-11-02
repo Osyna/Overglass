@@ -1,6 +1,7 @@
 """Current-matchday football scores and goal events from the public, key-free OpenLigaDB API."""
 import json
 import re
+import time
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone
@@ -94,7 +95,7 @@ def _match_row(match):
     return {"type": "row", "gap": 14, "align": "center", "children": row}
 
 
-def _goal_line(goal, team1, team2):
+def _goal_event(goal, team1, team2):
     if not isinstance(goal.get("matchMinute"), int) or not isinstance(goal.get("goalGetterName"), str):
         raise ValueError("goal must have matchMinute and goalGetterName")
     tags = []
@@ -104,17 +105,21 @@ def _goal_line(goal, team1, team2):
         tags.append("OG")
     team = team1 if goal.get("scoringTeamId") == team1["teamId"] else team2
     scorer = goal["goalGetterName"] + (" (" + ", ".join(tags) + ")" if tags else "")
-    return "%d' %s \u2014 %s" % (goal["matchMinute"], scorer, team.get("shortName") or team["teamName"])
+    tone = "alert" if goal.get("isOwnGoal") else "warning" if goal.get("isPenalty") else "accent"
+    return {"type": "event", "time": "%d'" % goal["matchMinute"], "icon": "ball", "tone": tone,
+            "text": "%s \u2014 %s" % (scorer, team.get("shortName") or team["teamName"])}
 
 
 def poll(params: dict) -> dict:
-    """Build a rich scoreboard: crests, status/score badges per match, goal events for the first match.
+    """Build a rich scoreboard: header facts, crests and status/score badges per match, the featured
+    match's goals as timed events, and a data-source row with the latency this poll actually measured.
     No TV or pairing configuration is needed to poll; only --show/the refresh thread needs one."""
     if not isinstance(params, dict):
         raise ValidationError("Football parameters must be an object")
     league = params.get("league", "bl1")
     if not isinstance(league, str) or not LEAGUE_RE.fullmatch(league):
         raise ValidationError("League must be a shortcut of 1-40 letters, numbers, underscores or hyphens")
+    started = time.monotonic()
     try:
         with urllib.request.urlopen(API_URL + league, timeout=TIMEOUT) as response:
             matches = json.load(response)
@@ -122,30 +127,37 @@ def poll(params: dict) -> dict:
         raise RuntimeError("Could not fetch OpenLigaDB football data: %s" % error) from None
     except ValueError:
         raise RuntimeError("OpenLigaDB returned malformed football data") from None
+    latency_ms = int((time.monotonic() - started) * 1000)
 
     try:
         if not isinstance(matches, list):
             raise ValueError("expected a list of matches")
         header = matches[0]["leagueName"] if matches else league.upper()
         group = matches[0].get("group", {}).get("groupName") if matches else None
-        head_children = [{"type": "text", "text": header, "size": "l", "weight": "strong"}]
-        if isinstance(group, str) and group:
-            head_children.append({"type": "text", "text": group, "size": "xs", "color": "fg-2"})
-        children = [{"type": "stack", "gap": 2, "children": head_children}]
+        facts = [{"label": "Matchday", "value": group}] if isinstance(group, str) and group else []
+        facts.append({"label": "Matches", "value": str(len(matches))})
+        facts.append({"label": "Updated", "value": _now_utc().strftime("%H:%M UTC"), "icon": "clock"})
+        board = []  # one stack for the matches, so the root stays well inside the 20-children cap
         for index, match in enumerate(matches[:MAX_MATCHES]):
-            children.append({"type": "divider"})
-            children.append(_match_row(match))
+            board.append({"type": "divider"})
+            board.append(_match_row(match))
             if index == 0:
                 goals = match.get("goals")
                 if isinstance(goals, list) and goals:
-                    lines = [_goal_line(goal, match["team1"], match["team2"]) for goal in goals[:MAX_GOALS_SHOWN]]
-                    children.append({"type": "list", "items": lines, "style": "plain"})
+                    events = [_goal_event(goal, match["team1"], match["team2"]) for goal in goals[:MAX_GOALS_SHOWN]]
+                    board.append({"type": "stack", "gap": 8, "children":
+                                  [{"type": "section", "title": "Goals", "icon": "ball"}] + events})
         if not matches:
-            children.append({"type": "divider"})
-            children.append({"type": "text", "text": "No matches available", "color": "fg-2"})
+            board.append({"type": "divider"})
+            board.append({"type": "text", "text": "No matches available", "color": "fg-2"})
         elif len(matches) > MAX_MATCHES:
-            children.append({"type": "text", "text": "Showing %d of %d matches" % (MAX_MATCHES, len(matches)),
-                             "size": "xs", "color": "fg-2"})
+            board.append({"type": "text", "text": "Showing %d of %d matches" % (MAX_MATCHES, len(matches)),
+                          "size": "xs", "color": "fg-2"})
+        children = [{"type": "text", "text": header, "size": "l", "weight": "strong"},
+                    {"type": "meta", "items": facts},
+                    {"type": "stack", "gap": 14, "children": board},
+                    {"type": "divider"},
+                    {"type": "status", "label": "OpenLigaDB", "state": "online", "detail": "%d ms" % latency_ms}]
         return notify.check_overlay_request({"size": "l", "root": {"type": "stack", "gap": 14,
                                                                     "children": children}})
     except (KeyError, TypeError, ValueError, AttributeError):
