@@ -36,7 +36,7 @@ GRAMMAR = {verb: re.compile(pattern) for verb, pattern in {
     "settings-set": r"settings-set %s %s %s{1,4000}={0,2}" % (_NAME, _NAME, _B64),
     "notify-toast": r"notify-toast %s{1,400}={0,2}" % _B64,
     "notify-say": r"notify-say %s{1,400}={0,2}(?: [0-9]{1,2})?" % _B64,
-    "notify-overlay": r"notify-overlay %s{1,8000}={0,2}" % _B64,
+    "notify-overlay": r"notify-overlay",
     "screenshot": r"screenshot [0-9]{2,4} [0-9]{2,4} (?:jpg|png)",
     "stream-start": r"stream-start [0-9]{2,4} [0-9]{2,4} [0-9]{1,3} [0-9]{1,4} [0-5]",
     "process-image": r"process-image %s [0-9]{2,4} [0-9]{2,4}" % _PROFILE,
@@ -126,8 +126,8 @@ def build_notify_say(b64, volume=None) -> str:
     return _built("notify-say", command)
 
 
-def build_notify_overlay(b64) -> str:
-    return _built("notify-overlay", "notify-overlay " + _text(b64, "Payload"))
+def build_notify_overlay() -> str:
+    return "notify-overlay"
 
 
 def build_screenshot(width, height, fmt) -> str:

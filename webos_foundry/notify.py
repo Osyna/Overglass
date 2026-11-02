@@ -2,16 +2,25 @@
 import base64
 import json
 import re
+from datetime import datetime
 
 from . import dispatcher
 from .errors import ValidationError
 
 MAX_CHARS = 200
 MAX_B64_TEXT = 400  # the dispatcher grammar's limit for toast/say payloads
-MAX_B64_CARD = 6000  # notify.js refuses more, although the grammar admits 8000
+MAX_TREE_BYTES = 32768  # pre-flight check (dispatch.sh's CARD_MAX, the hard stdin ceiling, is more generous at 65536)
 KINDS = ("info", "success", "warning", "alert")
 POSITIONS = ("top-left", "top-right", "bottom-left", "bottom-right", "center")
-CARD_FIELDS = ("title", "body", "lines", "image", "kind", "position", "seconds", "hide")
+SIZES = ("xs", "s", "m", "l", "xl", "full")
+TEXT_SIZES = ("xs", "s", "m", "l", "xl")
+WEIGHTS = ("normal", "strong")
+COLORS = ("fg", "fg-2", "info", "success", "warning", "alert")
+LIST_STYLES = ("bullet", "number", "plain")
+WIDGET_TYPES = ("stack", "row", "text", "image", "badge", "dot", "progress", "countdown", "list", "divider")
+MAX_TREE_DEPTH = 4
+MAX_TREE_NODES = 40
+SHORTHAND_FIELDS = ("title", "body", "lines", "image", "kind")
 _CONTROL = re.compile("[\x00-\x1f\x7f]")
 _URL = re.compile(r"https?://[^\s\"'<>]+")
 
@@ -48,17 +57,95 @@ def _clean(value, maximum, what):
     return value.strip()
 
 
-def check_card(card) -> dict:
-    """Validate and normalise an overlay card exactly as notify.js card() does; returns the cleaned card."""
-    if not isinstance(card, dict):
-        raise ValidationError("The card must be a JSON object")
-    extra = [key for key in card if key not in CARD_FIELDS]
-    if extra:
-        raise ValidationError("Unknown overlay field: " + ", ".join(map(str, extra)))
-    if "hide" in card:
-        if card["hide"] is not True or len(card) != 1:
-            raise ValidationError('Use {"hide": true} alone to hide the overlay')
-        return {"hide": True}
+def _check_enum(value, choices, what):
+    if value not in choices:
+        raise ValidationError("%s must be one of %s" % (what, ", ".join(choices)))
+    return value
+
+
+def _check_int(value, lo, hi, what):
+    if type(value) is not int or not lo <= value <= hi:
+        raise ValidationError("%s must be an integer %d-%d" % (what, lo, hi))
+    return value
+
+
+def _check_node(node, depth, counter) -> dict:
+    """Validate and normalise one widget tree node (ARCHITECTURE.md §3a), recursively. counter[0]
+    tracks the total node count across the whole call so the cap applies to the tree, not one level."""
+    counter[0] += 1
+    if counter[0] > MAX_TREE_NODES:
+        raise ValidationError("A card may have at most %d widgets" % MAX_TREE_NODES)
+    if depth > MAX_TREE_DEPTH:
+        raise ValidationError("A card may nest at most %d levels deep" % MAX_TREE_DEPTH)
+    if not isinstance(node, dict):
+        raise ValidationError("Each widget must be a JSON object")
+    kind = node.get("type")
+    if kind not in WIDGET_TYPES:
+        raise ValidationError("Unknown widget type: %r" % (kind,))
+    out = {"type": kind}
+    if kind in ("stack", "row"):
+        children = node.get("children")
+        limit = 20 if kind == "stack" else 10
+        if not isinstance(children, list) or not 1 <= len(children) <= limit:
+            raise ValidationError("%s needs 1-%d children" % (kind, limit))
+        if "gap" in node:
+            out["gap"] = _check_int(node["gap"], 0, 48, "gap")
+        if "align" in node:
+            out["align"] = _check_enum(node["align"], ("start", "center", "end"), "align")
+        out["children"] = [_check_node(child, depth + 1, counter) for child in children]
+    elif kind == "text":
+        out["text"] = _clean(node.get("text"), 400, "text")
+        if "size" in node:
+            out["size"] = _check_enum(node["size"], TEXT_SIZES, "size")
+        if "weight" in node:
+            out["weight"] = _check_enum(node["weight"], WEIGHTS, "weight")
+        if "color" in node:
+            out["color"] = _check_enum(node["color"], COLORS, "color")
+    elif kind == "image":
+        src = node.get("src")
+        if not isinstance(src, str) or len(src) > 500 or not _URL.fullmatch(src):
+            raise ValidationError("image src must be an http(s) URL of at most 500 characters")
+        out["src"] = src
+    elif kind == "badge":
+        out["text"] = _clean(node.get("text"), 24, "badge text")
+        if "tone" in node:
+            out["tone"] = _check_enum(node["tone"], KINDS, "tone")
+    elif kind == "dot":
+        if "tone" in node:
+            out["tone"] = _check_enum(node["tone"], KINDS, "tone")
+    elif kind == "progress":
+        value = node.get("value")
+        if type(value) not in (int, float) or isinstance(value, bool) or not 0 <= value <= 1:
+            raise ValidationError("progress value must be a number 0-1")
+        out["value"] = float(value)
+        if "label" in node:
+            out["label"] = _clean(node["label"], 40, "label")
+        if "tone" in node:
+            out["tone"] = _check_enum(node["tone"], KINDS, "tone")
+    elif kind == "countdown":
+        target = node.get("target")
+        if not isinstance(target, str):
+            raise ValidationError("countdown target must be an ISO 8601 datetime string")
+        try:
+            datetime.fromisoformat(target.replace("Z", "+00:00"))
+        except ValueError:
+            raise ValidationError("countdown target must be an ISO 8601 datetime string") from None
+        out["target"] = target
+        if "label" in node:
+            out["label"] = _clean(node["label"], 40, "label")
+    elif kind == "list":
+        items = node.get("items")
+        if not isinstance(items, list) or not 1 <= len(items) <= 10:
+            raise ValidationError("list needs 1-10 items")
+        out["items"] = [_clean(item, 120, "Each item") for item in items]
+        if "style" in node:
+            out["style"] = _check_enum(node["style"], LIST_STYLES, "style")
+    # divider has no fields
+    return out
+
+
+def _clean_shorthand(card) -> dict:
+    """The original five flat card fields, validated exactly as the pre-tree check_card() did."""
     out = {}
     if "title" in card:
         out["title"] = _clean(card["title"], 80, "title")
@@ -74,18 +161,66 @@ def check_card(card) -> dict:
         if not isinstance(image, str) or len(image) > 500 or not _URL.fullmatch(image):
             raise ValidationError("image must be an http(s) URL of at most 500 characters")
         out["image"] = image
-    for key, values in (("kind", KINDS), ("position", POSITIONS)):
-        if key in card:
-            if card[key] not in values:
-                raise ValidationError("%s must be one of %s" % (key, ", ".join(values)))
-            out[key] = card[key]
-    if "seconds" in card:
-        seconds = card["seconds"]
-        if type(seconds) is not int or not 0 <= seconds <= 300:
-            raise ValidationError("seconds must be an integer 0-300")
-        out["seconds"] = seconds
+    if "kind" in card:
+        out["kind"] = _check_enum(card["kind"], KINDS, "kind")
     if not out.get("title") and not out.get("body") and not out.get("lines") and not out.get("image"):
-        raise ValidationError("An overlay card needs a title, body, lines or image")
+        raise ValidationError("An overlay card needs a title, body, lines, image or a root widget tree")
+    return out
+
+
+def _compile_card(card) -> dict:
+    """The flat shorthand fields -> an equivalent widget tree, so every existing caller (the web UI's
+    basic card form, the Home Assistant overlay_show service, wof overlay) keeps working unchanged;
+    the TV-side renderer only ever sees a tree, never the flat shape."""
+    head = []
+    if card.get("title") or "kind" in card:
+        row = [{"type": "dot", "tone": card.get("kind", "info")}]
+        if card.get("title"):
+            row.append({"type": "text", "text": card["title"], "size": "l", "weight": "strong"})
+        head.append({"type": "row", "gap": 14, "align": "center", "children": row})
+    body = []
+    if card.get("body"):
+        body.append({"type": "text", "text": card["body"], "color": "fg-2"})
+    if card.get("lines"):
+        body.append({"type": "list", "items": card["lines"]})
+    if card.get("image"):
+        body.append({"type": "image", "src": card["image"]})
+    return {"type": "stack", "gap": 12, "children": head + body}
+
+
+def check_overlay_request(body) -> dict:
+    """Validate a POST /api/overlay body. Either {"hide": true} alone, or a card: {"position"?,
+    "size"?, "seconds"?, "root": <widget tree>} for the general case, or the shorthand {"title"?,
+    "body"?, "lines"?, "image"?, "kind"?, "position"?, "size"?, "seconds"?} which is compiled into an
+    equivalent tree right here (see _compile_card) -- the dispatcher and the TV only ever see a tree."""
+    if not isinstance(body, dict):
+        raise ValidationError("The card must be a JSON object")
+    if body.get("hide") is True:
+        if len(body) != 1:
+            raise ValidationError('Use {"hide": true} alone to hide the overlay')
+        return {"hide": True}
+    out = {}
+    if "position" in body:
+        out["position"] = _check_enum(body["position"], POSITIONS, "position")
+    if "size" in body:
+        out["size"] = _check_enum(body["size"], SIZES, "size")
+    if "seconds" in body:
+        out["seconds"] = _check_int(body["seconds"], 0, 300, "seconds")
+    extras = ("position", "size", "seconds")
+    if "root" in body:
+        unknown = [key for key in body if key not in extras + ("root",)]
+        if unknown:
+            raise ValidationError("Unknown overlay field: " + ", ".join(map(str, unknown)))
+        out["root"] = _check_node(body["root"], 0, [0])
+    else:
+        unknown = [key for key in body if key not in extras + SHORTHAND_FIELDS]
+        if unknown:
+            raise ValidationError("Unknown overlay field: " + ", ".join(map(str, unknown)))
+        card = {key: body[key] for key in SHORTHAND_FIELDS if key in body}
+        out["root"] = _check_node(_compile_card(_clean_shorthand(card)), 0, [0])
+    encoded = json.dumps(out, ensure_ascii=False, separators=(",", ":")).encode()
+    if len(encoded) > MAX_TREE_BYTES:
+        raise ValidationError("Card is too large (at most %d bytes of JSON)" % MAX_TREE_BYTES)
     return out
 
 
@@ -117,17 +252,15 @@ def say(transport, text, volume=15) -> str:
 
 
 def _send_card(transport, card):
-    encoded = _b64(json.dumps(card, ensure_ascii=False, separators=(",", ":")))
-    if len(encoded) > MAX_B64_CARD:
-        raise ValidationError("The card is too large")
-    reply = _reply(transport.run(dispatcher.build_notify_overlay(encoded), timeout=30))
+    payload = json.dumps(card, ensure_ascii=False, separators=(",", ":")).encode()
+    reply = _reply(transport.run(dispatcher.build_notify_overlay(), data=payload, timeout=30))
     return "Overlay card " + str(reply.get("overlay"))
 
 
-def overlay_show(transport, card) -> str:
-    """Show a card on the TV ({"hide": true} hides it). The TV script validates every field again and
-    refuses a TV that is not on."""
-    return _send_card(transport, check_card(card))
+def overlay_show(transport, body) -> str:
+    """Show a card on the TV; see check_overlay_request for the accepted shapes. The TV script
+    validates the tree again and refuses a TV that is not on."""
+    return _send_card(transport, check_overlay_request(body))
 
 
 def overlay_hide(transport) -> str:

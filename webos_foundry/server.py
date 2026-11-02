@@ -48,7 +48,8 @@ PUBLIC = ("/api", "/api/health")  # no bearer token, ever
 LOCAL = PUBLIC + ("/api/config/auth", "/api/pair")  # answered from this server's own state; no TV or pairing needed
 NOT_PAIRED = "Not paired; run: wof pair --host <ip>"
 CSP = ("default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' blob:; "
-       "font-src 'self'; media-src 'self' blob:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
+       "font-src 'self'; media-src 'self' blob:; manifest-src 'self'; base-uri 'none'; form-action 'none'; "
+       "frame-ancestors 'none'")
 MAX_JSON = 64 * 1024
 MAX_UPLOAD = 16 * 1024 * 1024
 MAX_IPK = 128 * 1024 * 1024
@@ -370,8 +371,6 @@ def get_screenshot(request, _):
 def post_overlay(request, _):
     card = request.json_body()
     reserved()
-    if card == {"hide": True}:
-        return {"message": notify.overlay_hide(request.transport)}
     return {"message": notify.overlay_show(request.transport, card)}
 
 
@@ -654,14 +653,18 @@ ROUTES = (
                                "volume is on the TV's 0-100 scale.",
           example={"path": "/api/notify/say", "body": {"message": "Dinner is ready", "volume": 10}}),
     route("POST", "/api/overlay", "Notify",
-          "Show a custom card on the TV (title, text, lines, optional image, colour kind, position, duration), or hide it.",
+          "Show a custom card on the TV, built from your own JSON layout of widgets, or hide it.",
           post_overlay,
-          body='A card: {"title"?: ≤80 chars, "body"?: ≤400, "lines"?: ≤10 texts of ≤120, "image"?: http(s) URL ≤500, '
-               '"kind"?: info|success|warning|alert, "position"?: top-left|top-right|bottom-left|bottom-right|center, '
-               '"seconds"?: integer 0-300 (0 = stays until hidden, default 8)} with at least a title, body, lines or image, '
-               'or exactly {"hide": true}. Unknown fields are refused.',
+          body='Either {"hide": true} alone, or {"position"?, "size"?, "seconds"?, "root": <widget tree>}, or the '
+               'shorthand {"title"?, "body"?, "lines"?, "image"?, "kind"?, "position"?, "size"?, "seconds"?} compiled '
+               'into an equivalent tree. position: top-left|top-right|bottom-left|bottom-right|center (default '
+               'top-right). size: xs|s|m|l|xl|full (default m). seconds: 0-300, 0 = stays until hidden (default 8). '
+               'A widget node is {"type": stack|row|text|image|badge|dot|progress|countdown|list|divider, '
+               '...fields, "children"?: [...] for stack/row}; depth ≤ 4, ≤ 40 widgets total, ≤ 32768 bytes of JSON. '
+               'Full per-type field list: ARCHITECTURE.md section 3a.',
           returns='{"message": "Overlay card shown|hidden"}',
-          tv=["dispatch verb notify-overlay → node notify.js overlay BASE64: checks the TV is on and validates the card, then "
+          tv=["dispatch verb notify-overlay → node notify.js overlay: reads the tree from stdin (not inline — a "
+              "rich tree can exceed dropbear's inline-command limit), checks the TV is on, re-validates the tree, then "
               'luna://com.webos.applicationManager/launch {"id": "dev.webosfoundry.overlay", "params": card} '
               "(app installed by wof install, source tv-assets/overlay/)"],
           notes="The foreground app does not change (HDMI 1 stays in front). The first card after a cold start takes "

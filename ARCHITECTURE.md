@@ -107,18 +107,25 @@ is written once by `wof pair` (§6).
 | `settings-set` | `settings-set [A-Za-z][A-Za-z0-9_]* [A-Za-z][A-Za-z0-9_]* [A-Za-z0-9+/]{1,4000}={0,2}` (category, key, base64 of `{value, context}`) | `node .../settings.js set <category> <key> <b64>` |
 | `notify-toast` | `notify-toast [A-Za-z0-9+/]{1,400}={0,2}` | `node .../notify.js toast <b64>` |
 | `notify-say` | `notify-say [A-Za-z0-9+/]{1,400}={0,2}( [0-9]{1,2})?` | `flock -w 10 -E 75 <lock> node .../notify.js say <b64> [volume]` |
-| `notify-overlay` | `notify-overlay [A-Za-z0-9+/]{1,8000}={0,2}` | `node .../notify.js overlay <b64>` |
+| `notify-overlay` | `notify-overlay` (raw JSON widget tree via stdin, not inline — see §3a) | `node .../notify.js overlay` (reads stdin) |
 | `screenshot` | `screenshot [0-9]{2,4} [0-9]{2,4} (jpg\|png)` | capture one-shot, cat, rm (see `capture.py`) |
 | `stream-start` | `stream-start [0-9]{2,4} [0-9]{2,4} [0-9]{1,3} [0-9]{1,4} [0-5]` (width height fps seconds dump) | `exec .../vtcap/vtcap -w .. -h .. -f .. -t .. -d ..` (binary frames go straight to the SSH channel's stdout; the command itself is `exec`'d so the process IS the SSH session, making SIGTERM on the client side the only way to stop it) |
 | `process-image` | `process-image [A-Za-z][A-Za-z0-9_-]* [0-9]{2,4} [0-9]{2,4}` (profile, width, height; the MP4 payload is piped as stdin via the Transport's `data=` argument, not inline in the command) | `flock -n <lock> node .../process-image.js <profile> <width> <height>` (reads the video from stdin) |
 | `process-audio` | `process-audio [A-Za-z][A-Za-z0-9_-]* [0-9]{1,2}` (profile, seconds; WAV payload via stdin) | `flock -n <lock> node .../process-audio.js <profile> <seconds>` |
 | `idle-wait` | `idle-wait` | `flock -w 25 <lock> true` — blocks until no processing job holds the TV lock |
-| `install` | `install (status.sh\|details.js\|notify.js\|settings.js\|remote.js\|process-image.js\|process-audio.js\|dispatch.sh) [A-Za-z0-9+/]+={0,2}` | writes the named file under `/var/lib/webosbrew/webos-foundry/`, `chmod 644` (`755` for `dispatch.sh`/`*.sh`), atomically (`.new` then `mv`) |
-| `install-overlay` | `install-overlay [A-Za-z0-9+/]+={0,2}` | base64 of the packaged overlay IPK; installs via `luna-send .../appInstallService/dev/install` the same way `pairing.py`/`install.py` already proved on this project (see the existing `c5_overlay.py` for the exact IPK byte layout to reuse) |
+| `install-status` | `install-status` | reports which TV files/overlay app/vtcap are currently installed, as JSON |
+| `install` | `install (status.sh\|details.js\|notify.js\|settings.js\|remote.js\|process-image.js\|process-audio.js\|apps.js\|dispatch.sh)` (file payload via stdin, not inline — dropbear hangs past ~8-10 KB of inline command, so every file-push verb below sends its payload as this request's stdin, read with a bounded `head -c`) | writes the named file under `/var/lib/webosbrew/webos-foundry/`, `chmod 644` (`755` for `dispatch.sh`/`*.sh`), atomically (`.new` then `mv`) |
+| `install-overlay` | `install-overlay` (IPK payload via stdin) | installs the packaged overlay IPK via `luna-send .../appInstallService/dev/install` |
 | `uninstall-overlay` | `uninstall-overlay` | `luna-send .../appInstallService/dev/remove {"id":"dev.webosfoundry.overlay",...}` |
-| `install-vtcap` | `install-vtcap [A-Za-z0-9+/]+={0,2}` | writes the native binary + registers the dev-mode role/manifest under `/var/luna-service2-dev/` exactly as the existing `c5_capture.install_role()` does, generified to `dev.webosfoundry.vtcap` naming, then `ls-control scan-volatile-dirs` |
+| `install-vtcap` | `install-vtcap` (binary payload via stdin) | writes the native binary + registers the dev-mode role/manifest under `/var/luna-service2-dev/`, then `ls-control scan-volatile-dirs` |
 | `uninstall-vtcap` | `uninstall-vtcap` | removes only the files `install-vtcap` created |
-| `uninstall-all` | `uninstall-all` | removes every file under `/var/lib/webosbrew/webos-foundry/`, the overlay app, the vtcap role, and finally itself; does **not** remove the authorized_keys line (that is printed for the user to delete by hand, since dispatch.sh cannot edit the file sshd is currently reading its own forced-command from without a race) |
+| `uninstall-all` | `uninstall-all` | removes every file under `/var/lib/webosbrew/webos-foundry/`, the overlay app, the vtcap role, every `webos-foundry-*` boot hook, and finally itself; does **not** remove the authorized_keys line (that is printed for the user to delete by hand, since dispatch.sh cannot edit the file sshd is currently reading its own forced-command from without a race) |
+| `app-list` | `app-list` | `node .../apps.js list` — installed Homebrew/sideloaded apps |
+| `app-install` | `app-install [A-Za-z0-9+/]{1,1000}={0,2}` (base64 of `{"url"} or {"sha256"}`) | `node .../apps.js install <b64>` |
+| `app-uninstall` | `app-uninstall [A-Za-z0-9+/]{1,200}={0,2}` (base64 app id) | `node .../apps.js uninstall <b64>` |
+| `install-tree` | `install-tree <2-8 path components, ≤200 chars total> (put\|begin\|more\|end)` (one file, or one chunk of it, via stdin) | writes/appends under `/var/lib/webosbrew/webos-foundry/`; `put`/`end` atomically rename into place |
+| `install-hook` | `install-hook webos-foundry-[a-z0-9-]{1,48}` (script payload via stdin) | writes a root-context boot hook under `/var/lib/webosbrew/init.d/`, `chmod 755` |
+| `run-hook` | `run-hook webos-foundry-[a-z0-9-]{1,48} (start\|stop)` | runs the named hook with that argument, output captured |
 
 `LOCK` is `/tmp/webos-foundry.lock` (TV-side, tmpfs). `settings.js`/`remote.js`/`notify.js` are
 direct ports of the already-proven logic in this session's `c5_tv.py` NODE block and
@@ -129,6 +136,55 @@ layout and app id change. `process-image.js`/`process-audio.js` port `tv-ai-imag
 **Consumers:** `dispatcher.py` (builds these strings), `tv.py`, `notify.py`, `capture.py`,
 `process.py`, `install.py`, `pairing.py`; `tests/` assert the regexes with known-good/known-bad
 strings without ever opening a socket.
+
+### 3a. Overlay widget tree (`POST /api/overlay`)
+
+The overlay card started as five fixed fields (title, body, lines, image, kind). It is now a small,
+bounded layout language so a user can design their own card in JSON alone, with the same rendering
+engine behind both a one-line "show a toast" call and a multi-widget dashboard.
+
+**Request body** is either `{"hide": true}` or a card:
+
+```
+{"position"?: top-left|top-right|bottom-left|bottom-right|center (default top-right),
+ "size"?: xs|s|m|l|xl|full (default m, a width band: 320/420/560/760/960/1760px),
+ "seconds"?: 0-300 (default 8, 0 = stays until hidden),
+ "root": <node>}
+```
+
+or, as a shorthand that is compiled into a `root` tree server-side (`notify._compile_card`, the only
+place that knows both shapes — the TV never sees anything but a tree): `{"title"?, "body"?, "lines"?,
+"image"?, "kind"?}`, the original fields, unchanged for every existing caller (web UI's basic card
+form, the Home Assistant `overlay_show` service, `wof overlay`).
+
+**Node** is `{"type": one of the 10 below, ...type fields, "children"?: [node, ...]}`. Depth ≤ 4,
+total nodes ≤ 40, serialised JSON ≤ 32768 bytes raw (no more base64 tax — see below; dispatch.sh's stdin
+upload itself allows up to 65536 bytes, a more generous hard ceiling behind this pre-flight check).
+
+| Type | Fields | Renders as |
+| --- | --- | --- |
+| `stack` | `gap`? 0-48, `align`? start\|center\|end, `children` 1-20 | vertical flex box |
+| `row` | `gap`? 0-48, `align`? start\|center\|end, `children` 1-10 | horizontal flex box |
+| `text` | `text` ≤400, `size`? xs\|s\|m\|l\|xl, `weight`? normal\|strong, `color`? fg\|fg-2\|info\|success\|warning\|alert | a line of text |
+| `image` | `src` http(s) URL ≤500 | fetched by the TV, same constraint as before |
+| `badge` | `text` ≤24, `tone`? info\|success\|warning\|alert | a small filled pill |
+| `dot` | `tone`? info\|success\|warning\|alert | a plain coloured circle (what the old `kind` dot was) |
+| `progress` | `value` 0-1, `label`? ≤40, `tone`? | a filled bar |
+| `countdown` | `target` ISO 8601 datetime, `label`? ≤40 | a live clock ticking down to `target`, drawn client-side in the overlay app — no server polling |
+| `list` | `items` 1-10 of ≤120, `style`? bullet\|number\|plain | the old `lines` |
+| `divider` | — | a thin rule |
+
+**Three independent validators**, defence in depth exactly like every other verb: `notify.py`
+(`check_overlay_request`/`_check_node`, before the server ever contacts the TV), `notify.js` (`tree()`/
+`checkNode()`, before it launches the overlay app — any local app on the TV could launch
+`dev.webosfoundry.overlay` directly, bypassing the Python side entirely), and `overlay.js` itself
+(`checkNode()`, since any local app can also launch it with launch params `notify.js` never produced).
+All three enforce the same caps from the same table above; none trusts the layer before it.
+
+**Transport.** `notify-overlay` takes no inline argument any more — the JSON goes as this request's
+stdin, the same `read_upload`-bounded pattern as the install verbs (§3), because a sufficiently large
+widget tree would otherwise cross dropbear's inline-command hang threshold. This also drops the
+base64 tax: raw JSON over stdin, not base64 in the command line.
 
 ## 4. Python module signatures
 

@@ -43,9 +43,18 @@ const SETTINGS = [
 ];
 const DETAIL_TYPES = {lux: 'number', panel_hours: 'number', panel_temperature_c: 'number', pixel_refresher: 'object',
   power_on_reason: 'string', power_history: 'array', signal: 'object', sleep_timer: 'string', usage_today: 'array'};
-const CARD_FIELDS = ['title', 'body', 'lines', 'image', 'kind', 'position', 'seconds', 'hide'];
+const MAX_TREE_BYTES = 32768; // pre-flight check (dispatch.sh's CARD_MAX, the hard stdin ceiling, is more generous at 65536)
 const CARD_KINDS = ['info', 'success', 'warning', 'alert'];
 const CARD_POSITIONS = ['top-left', 'top-right', 'bottom-left', 'bottom-right', 'center'];
+const CARD_SIZES = ['xs', 's', 'm', 'l', 'xl', 'full'];
+const TEXT_SIZES = ['xs', 's', 'm', 'l', 'xl'];
+const TEXT_WEIGHTS = ['normal', 'strong'];
+const TEXT_COLORS = ['fg', 'fg-2', 'info', 'success', 'warning', 'alert'];
+const LIST_STYLES = ['bullet', 'number', 'plain'];
+const WIDGET_TYPES = ['stack', 'row', 'text', 'image', 'badge', 'dot', 'progress', 'countdown', 'list', 'divider'];
+const MAX_TREE_DEPTH = 4;
+const MAX_TREE_NODES = 40;
+const SHORTHAND_FIELDS = ['title', 'body', 'lines', 'image', 'kind'];
 const TYPES = {
   '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
   '.mjs': 'text/javascript; charset=utf-8', '.json': 'application/json', '.webmanifest': 'application/manifest+json',
@@ -138,13 +147,13 @@ function dispatchError(code, stderr, killed, fallback) {
   return new ApiError(502, text || fallback);
 }
 
-function dispatch(command, timeoutMs) { // resolves stdout (Buffer)
+function dispatch(command, timeoutMs, payload) { // resolves stdout (Buffer); payload, if given, is this request's stdin
   return new Promise((resolve, reject) => {
     const child = execFile('sh', [DISPATCH_PATH], {
       env: Object.assign({}, process.env, {SSH_ORIGINAL_COMMAND: command}),
       timeout: timeoutMs, maxBuffer: MAX_OUTPUT, encoding: 'buffer',
     }, (error, stdout, stderr) => (error ? reject(dispatchError(error.code, stderr, error.killed, error.message)) : resolve(stdout)));
-    child.stdin.end();
+    if (payload) child.stdin.end(payload); else child.stdin.end();
   });
 }
 
@@ -276,14 +285,72 @@ function clean(value, max, what) {
   return value.trim();
 }
 
-function checkCard(card) {
-  if (!isObject(card)) throw bad('The card must be a JSON object');
-  const extra = Object.keys(card).filter((k) => !CARD_FIELDS.includes(k));
-  if (extra.length) throw bad('Unknown overlay field: ' + extra.join(', '));
-  if ('hide' in card) {
-    if (card.hide !== true || Object.keys(card).length !== 1) throw bad('Use {"hide": true} alone to hide the overlay');
-    return {hide: true};
-  }
+function checkEnum(value, choices, what) {
+  if (!choices.includes(value)) throw bad(what + ' must be one of ' + choices.join(', '));
+  return value;
+}
+
+function checkInt(value, lo, hi, what) {
+  if (!Number.isInteger(value) || value < lo || value > hi) throw bad(what + ' must be an integer ' + lo + '-' + hi);
+  return value;
+}
+
+function checkNode(node, depth, counter) {
+  // Validates and normalises one widget tree node (ARCHITECTURE.md section 3a), recursively.
+  // counter is a {n} box so the total-node cap applies across the whole tree, not one level.
+  counter.n += 1;
+  if (counter.n > MAX_TREE_NODES) throw bad('A card may have at most ' + MAX_TREE_NODES + ' widgets');
+  if (depth > MAX_TREE_DEPTH) throw bad('A card may nest at most ' + MAX_TREE_DEPTH + ' levels deep');
+  if (!isObject(node)) throw bad('Each widget must be a JSON object');
+  const kind = node.type;
+  if (!WIDGET_TYPES.includes(kind)) throw bad('Unknown widget type: ' + JSON.stringify(kind));
+  const out = {type: kind};
+  if (kind === 'stack' || kind === 'row') {
+    const limit = kind === 'stack' ? 20 : 10;
+    if (!Array.isArray(node.children) || node.children.length < 1 || node.children.length > limit) {
+      throw bad(kind + ' needs 1-' + limit + ' children');
+    }
+    if ('gap' in node) out.gap = checkInt(node.gap, 0, 48, 'gap');
+    if ('align' in node) out.align = checkEnum(node.align, ['start', 'center', 'end'], 'align');
+    out.children = node.children.map((child) => checkNode(child, depth + 1, counter));
+  } else if (kind === 'text') {
+    out.text = clean(node.text, 400, 'text');
+    if ('size' in node) out.size = checkEnum(node.size, TEXT_SIZES, 'size');
+    if ('weight' in node) out.weight = checkEnum(node.weight, TEXT_WEIGHTS, 'weight');
+    if ('color' in node) out.color = checkEnum(node.color, TEXT_COLORS, 'color');
+  } else if (kind === 'image') {
+    if (typeof node.src !== 'string' || node.src.length > 500 || !/^https?:\/\/[^\s"'<>]+$/.test(node.src)) {
+      throw bad('image src must be an http(s) URL of at most 500 characters');
+    }
+    out.src = node.src;
+  } else if (kind === 'badge') {
+    out.text = clean(node.text, 24, 'badge text');
+    if ('tone' in node) out.tone = checkEnum(node.tone, CARD_KINDS, 'tone');
+  } else if (kind === 'dot') {
+    if ('tone' in node) out.tone = checkEnum(node.tone, CARD_KINDS, 'tone');
+  } else if (kind === 'progress') {
+    if (typeof node.value !== 'number' || Number.isNaN(node.value) || node.value < 0 || node.value > 1) {
+      throw bad('progress value must be a number 0-1');
+    }
+    out.value = node.value;
+    if ('label' in node) out.label = clean(node.label, 40, 'label');
+    if ('tone' in node) out.tone = checkEnum(node.tone, CARD_KINDS, 'tone');
+  } else if (kind === 'countdown') {
+    if (typeof node.target !== 'string' || Number.isNaN(Date.parse(node.target))) {
+      throw bad('countdown target must be an ISO 8601 datetime string');
+    }
+    out.target = node.target;
+    if ('label' in node) out.label = clean(node.label, 40, 'label');
+  } else if (kind === 'list') {
+    if (!Array.isArray(node.items) || node.items.length < 1 || node.items.length > 10) throw bad('list needs 1-10 items');
+    out.items = node.items.map((item) => clean(item, 120, 'Each item'));
+    if ('style' in node) out.style = checkEnum(node.style, LIST_STYLES, 'style');
+  } // divider has no fields
+  return out;
+}
+
+function cleanShorthand(card) {
+  // The original five flat card fields, validated exactly as the pre-tree checkCard() did.
   const out = {};
   if ('title' in card) out.title = clean(card.title, 80, 'title');
   if ('body' in card) out.body = clean(card.body, 400, 'body');
@@ -297,26 +364,67 @@ function checkCard(card) {
     }
     out.image = card.image;
   }
-  [['kind', CARD_KINDS], ['position', CARD_POSITIONS]].forEach(([key, values]) => {
-    if (key in card) {
-      if (!values.includes(card[key])) throw bad(key + ' must be one of ' + values.join(', '));
-      out[key] = card[key];
-    }
-  });
-  if ('seconds' in card) {
-    if (!Number.isInteger(card.seconds) || card.seconds < 0 || card.seconds > 300) throw bad('seconds must be an integer 0-300');
-    out.seconds = card.seconds;
+  if ('kind' in card) out.kind = checkEnum(card.kind, CARD_KINDS, 'kind');
+  if (!out.title && !out.body && !(out.lines && out.lines.length) && !out.image) {
+    throw bad('An overlay card needs a title, body, lines, image or a root widget tree');
   }
-  if (!out.title && !out.body && !(out.lines && out.lines.length) && !out.image) throw bad('An overlay card needs a title, body, lines or image');
+  return out;
+}
+
+function compileCard(card) {
+  // The flat shorthand fields -> an equivalent widget tree, so every existing caller (the web UI's
+  // basic card form, the Home Assistant overlay_show service, wof overlay) keeps working unchanged;
+  // the TV-side renderer only ever sees a tree, never the flat shape.
+  const head = [];
+  if (card.title || 'kind' in card) {
+    const row = [{type: 'dot', tone: card.kind || 'info'}];
+    if (card.title) row.push({type: 'text', text: card.title, size: 'l', weight: 'strong'});
+    head.push({type: 'row', gap: 14, align: 'center', children: row});
+  }
+  const body = [];
+  if (card.body) body.push({type: 'text', text: card.body, color: 'fg-2'});
+  if (card.lines && card.lines.length) body.push({type: 'list', items: card.lines});
+  if (card.image) body.push({type: 'image', src: card.image});
+  return {type: 'stack', gap: 12, children: head.concat(body)};
+}
+
+function checkOverlayRequest(body) {
+  // Validate a POST /api/overlay body. Either {"hide": true} alone, or a card: {"position"?,
+  // "size"?, "seconds"?, "root": <widget tree>} for the general case, or the shorthand {"title"?,
+  // "body"?, "lines"?, "image"?, "kind"?, "position"?, "size"?, "seconds"?} compiled into an
+  // equivalent tree here -- the dispatcher and the TV only ever see a tree.
+  if (!isObject(body)) throw bad('The card must be a JSON object');
+  if (body.hide === true) {
+    if (Object.keys(body).length !== 1) throw bad('Use {"hide": true} alone to hide the overlay');
+    return {hide: true};
+  }
+  const out = {};
+  if ('position' in body) out.position = checkEnum(body.position, CARD_POSITIONS, 'position');
+  if ('size' in body) out.size = checkEnum(body.size, CARD_SIZES, 'size');
+  if ('seconds' in body) out.seconds = checkInt(body.seconds, 0, 300, 'seconds');
+  const extras = ['position', 'size', 'seconds'];
+  if ('root' in body) {
+    const unknown = Object.keys(body).filter((k) => !extras.includes(k) && k !== 'root');
+    if (unknown.length) throw bad('Unknown overlay field: ' + unknown.join(', '));
+    out.root = checkNode(body.root, 0, {n: 0});
+  } else {
+    const unknown = Object.keys(body).filter((k) => !extras.includes(k) && !SHORTHAND_FIELDS.includes(k));
+    if (unknown.length) throw bad('Unknown overlay field: ' + unknown.join(', '));
+    const card = {};
+    SHORTHAND_FIELDS.forEach((key) => { if (key in body) card[key] = body[key]; });
+    out.root = checkNode(compileCard(cleanShorthand(card)), 0, {n: 0});
+  }
+  const encoded = Buffer.from(JSON.stringify(out), 'utf8');
+  if (encoded.length > MAX_TREE_BYTES) throw bad('Card is too large (at most ' + MAX_TREE_BYTES + ' bytes of JSON)');
   return out;
 }
 
 async function sendCard(card) {
-  const encoded = b64(JSON.stringify(card));
-  if (encoded.length > 6000) throw bad('The card is too large');
-  const reply = lastJsonLine(await dispatch('notify-overlay ' + encoded, 30000));
+  const payload = Buffer.from(JSON.stringify(card), 'utf8');
+  const reply = lastJsonLine(await dispatch('notify-overlay', 30000, payload));
   return 'Overlay card ' + reply.overlay;
 }
+
 
 // ---- screenshot / stream arguments
 
@@ -422,9 +530,8 @@ async function postSay(ctx) {
 }
 
 async function postOverlay(ctx) {
-  const card = await ctx.jsonBody(true);
-  const hide = Object.keys(card).length === 1 && card.hide === true;
-  return {message: await sendCard(hide ? {hide: true} : checkCard(card))};
+  const body = await ctx.jsonBody(true);
+  return {message: await sendCard(checkOverlayRequest(body))};
 }
 
 async function getScreenshot(ctx) {
@@ -607,13 +714,15 @@ const ROUTES = [
       'luna://com.webos.service.tts/speak, then restores all three and reads them back'],
     notes: TV_LOCK_NOTE + ' It needs TV-speaker output and the TV on; volume is on the TV\'s 0-100 scale.',
     example: {path: '/api/notify/say', body: {message: 'Dinner is ready', volume: 10}}}),
-  route('POST', '/api/overlay', 'Notify', 'Show a custom card on the TV (title, text, lines, optional image, colour kind, position, duration), or hide it.', postOverlay, {
-    body: 'A card: {"title"?: \u226480 chars, "body"?: \u2264400, "lines"?: \u226410 texts of \u2264120, "image"?: http(s) URL \u2264500, ' +
-      '"kind"?: info|success|warning|alert, "position"?: top-left|top-right|bottom-left|bottom-right|center, ' +
-      '"seconds"?: integer 0-300 (0 = stays until hidden, default 8)} with at least a title, body, lines or image, ' +
-      'or exactly {"hide": true}. Unknown fields are refused.',
+  route('POST', '/api/overlay', 'Notify', 'Show a custom card on the TV, built from your own JSON layout of widgets, or hide it.', postOverlay, {
+    body: 'Either {"hide": true} alone, or {"position"?, "size"?, "seconds"?, "root": <widget tree>}, or the shorthand ' +
+      '{"title"?, "body"?, "lines"?, "image"?, "kind"?, "position"?, "size"?, "seconds"?} compiled into an equivalent ' +
+      'tree. position: top-left|top-right|bottom-left|bottom-right|center (default top-right). size: xs|s|m|l|xl|full ' +
+      '(default m). seconds: 0-300, 0 = stays until hidden (default 8). A widget node is {"type": stack|row|text|' +
+      'image|badge|dot|progress|countdown|list|divider, ...fields, "children"?: [...] for stack/row}; depth \u2264 4, ' +
+      '\u2264 40 widgets total, \u2264 32768 bytes of JSON. Full per-type field list: ARCHITECTURE.md section 3a.',
     returns: '{"message": "Overlay card shown|hidden"}',
-    tv: ['dispatch verb notify-overlay \u2192 node notify.js overlay BASE64: launches dev.webosfoundry.overlay with the card as params'],
+    tv: ['dispatch verb notify-overlay \u2192 node notify.js overlay: reads the tree from stdin, launches dev.webosfoundry.overlay with it as params'],
     notes: 'The foreground app does not change. The TV must be on; an invalid card or a TV in standby answers 502 with the TV script\'s message. ' +
       'The image URL is fetched by the TV, so it must be reachable from the TV.',
     example: {path: '/api/overlay', body: {title: 'Dinner', body: 'It is ready.', kind: 'success', position: 'top-right', seconds: 10}}}),

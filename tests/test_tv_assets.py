@@ -187,7 +187,6 @@ GOOD = [
     (f"notify-toast {B}", f"notify.js toast {B}"),
     (f"notify-say {B}", f"notify.js say {B}"),
     (f"notify-say {B} 20", f"notify.js say {B} 20"),
-    (f"notify-overlay {b64('{}')}", f"notify.js overlay {b64('{}')}"),
     ("idle-wait", "flock -w 25 -E 75"),
     ("screenshot 1920 1080 jpg", "capture/executeOneShot"),
     ("screenshot 960 540 png", '"format":"PNG","width":960,"height":540'),
@@ -290,6 +289,20 @@ def test_install_files(rig):
     assert status["vtcap"] is False
 
 
+def test_notify_overlay_reads_the_card_from_stdin_and_cleans_up(rig):
+    card = b'{"root": {"type": "text", "text": "hi"}}'
+    result = rig.run("notify-overlay", stdin=card)
+    assert result.returncode == 0
+    assert any(c.startswith("node {D}/notify.js overlay ".format(D=rig.tv)) for c in rig.calls())
+    assert list(rig.tmp.iterdir()) == []  # the temp card file is removed afterward
+
+
+def test_notify_overlay_with_no_stdin_payload_is_rejected(rig):
+    result = rig.run("notify-overlay", stdin=b"")
+    assert result.returncode != 0 and b"Upload must be" in result.stderr
+    assert list(rig.tmp.iterdir()) == []
+
+
 def test_install_overlay_and_vtcap_and_uninstall(rig):
     rig.run("install status.sh", stdin=b"x")
     ok = rig.run("install-overlay", stdin=b"IPKBYTES")
@@ -358,8 +371,8 @@ ATTACKS = {
     "say volume letters": f"notify-say {B} 1a",
     "say volume substitution": f"notify-say {B} $(id)",
     "say extra arg": f"notify-say {B} 10 20",
-    "overlay too long": "notify-overlay " + "A" * 8001,
-    "overlay newline": f"notify-overlay {B}\nid",
+    "overlay with inline payload": "notify-overlay " + "A" * 100,
+    "overlay trailing newline": "notify-overlay\nid",
     "screenshot bad format": "screenshot 1920 1080 gif",
     "screenshot traversal fmt": "screenshot 1920 1080 ../../x",
     "screenshot short number": "screenshot 9 1080 jpg",

@@ -109,8 +109,12 @@ def test_notify_and_overlay(fake, capsys):
     assert wof("notify", "toast", "hi") == 0 and wof("notify", "say", "yo", "--volume", "10") == 0
     assert fake.commands[1].endswith(" 10")
     assert wof("overlay", "show", "--title", "T", "--line", "a", "--line", "b", "--seconds", "0") == 0
-    sent = json.loads(__import__("base64").b64decode(fake.commands[2].split()[1]))
-    assert sent == {"title": "T", "lines": ["a", "b"], "seconds": 0}
+    sent = json.loads(fake.calls[2].data)
+    assert sent == {"seconds": 0, "root": {"type": "stack", "gap": 12, "children": [
+        {"type": "row", "gap": 14, "align": "center", "children": [
+            {"type": "dot", "tone": "info"}, {"type": "text", "text": "T", "size": "l", "weight": "strong"}]},
+        {"type": "list", "items": ["a", "b"]},
+    ]}}
     assert wof("overlay", "hide") == 0
     assert wof("overlay", "show") == 1 and "needs a title" in capsys.readouterr().err
     assert wof("notify", "say", "yo", "--volume", "99") == 1

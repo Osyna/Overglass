@@ -13,7 +13,7 @@ from .api import WebosFoundryApi, WebosFoundryApiError
 from .const import DOMAIN
 
 ENTRY = {vol.Optional("config_entry_id"): cv.string}
-CARD_FIELDS = ("title", "body", "lines", "image")
+CARD_FIELDS = ("title", "body", "lines", "image", "root")
 
 TOAST = vol.Schema({**ENTRY, vol.Required("message"): cv.string})
 SAY = vol.Schema({**ENTRY, vol.Required("message"): cv.string, vol.Optional("volume"): vol.All(vol.Coerce(int), vol.Range(min=1, max=40))})
@@ -27,7 +27,9 @@ OVERLAY_SHOW = vol.All(
             vol.Optional("image"): cv.string,
             vol.Optional("kind"): vol.In(["info", "success", "warning", "alert"]),
             vol.Optional("position"): vol.In(["top-left", "top-right", "bottom-left", "bottom-right", "center"]),
+            vol.Optional("size"): vol.In(["xs", "s", "m", "l", "xl", "full"]),
             vol.Optional("seconds"): vol.All(vol.Coerce(int), vol.Range(min=0, max=300)),
+            vol.Optional("root"): dict,
         }
     ),
     cv.has_at_least_one_key(*CARD_FIELDS),

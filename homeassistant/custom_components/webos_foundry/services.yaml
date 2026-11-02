@@ -41,7 +41,10 @@ say:
 
 overlay_show:
   name: Show overlay card
-  description: Show a card on the TV (needs at least one of title, body, lines or image).
+  description: >-
+    Show a card on the TV: either title/body/lines/image/kind (needs at least one), or a full
+    JSON widget tree under root for a custom layout (see ARCHITECTURE.md section 3a in the
+    webOS Foundry repo for the widget types).
   fields:
     title:
       name: Title
@@ -82,6 +85,13 @@ overlay_show:
       selector:
         select:
           options: [top-left, top-right, bottom-left, bottom-right, center]
+    size:
+      name: Size
+      description: Card width band.
+      required: false
+      selector:
+        select:
+          options: [xs, s, m, l, xl, full]
     seconds:
       name: Seconds
       description: How long the card stays; 0 keeps it until hidden (server default 8).
@@ -90,6 +100,14 @@ overlay_show:
         number:
           min: 0
           max: 300
+    root:
+      name: Custom layout (advanced)
+      description: >-
+        A widget tree instead of title/body/lines/image/kind, for a fully custom card design.
+        Mutually exclusive with title/body/lines/image/kind: pass one or the other, not both.
+      required: false
+      selector:
+        object:
     config_entry_id: *entry
 
 overlay_hide:

@@ -303,7 +303,6 @@ def test_handlers_pass_the_transport_and_arguments(serve, monkeypatch):
     monkeypatch.setattr(server.tv, "remote", lambda t, action, value=None: seen.append((t, action, value)) or "ok")
     monkeypatch.setattr(server.tv, "set_setting", lambda t, c, k, v, ctx: seen.append((t, c, k, v, ctx)) or "set")
     monkeypatch.setattr(server.notify, "say", lambda t, text, volume=15: seen.append((t, text, volume)) or "said")
-    monkeypatch.setattr(server.notify, "overlay_hide", lambda t: seen.append((t, "hide")) or "hidden")
     monkeypatch.setattr(server.notify, "overlay_show", lambda t, card: seen.append((t, card)) or "shown")
     app = serve(transport=marker)
     assert app.json("POST", "/api/remote/hdmi", {"value": 2}) == (200, {"action": "hdmi", "message": "ok"})
@@ -311,10 +310,10 @@ def test_handlers_pass_the_transport_and_arguments(serve, monkeypatch):
     assert app.json("POST", "/api/remote/bogus")[0] == 404
     assert app.json("PUT", "/api/settings/sound/aiSound", {"value": "on", "context": {}}) == (200, {"message": "set"})
     assert app.json("POST", "/api/notify/say", {"message": "hi", "volume": 9}) == (200, {"message": "said"})
-    assert app.json("POST", "/api/overlay", {"hide": True}) == (200, {"message": "hidden"})
+    assert app.json("POST", "/api/overlay", {"hide": True}) == (200, {"message": "shown"})
     assert app.json("POST", "/api/overlay", {"title": "t"}) == (200, {"message": "shown"})
     assert seen == [(marker, "hdmi", 2), (marker, "home", None), (marker, "sound", "aiSound", "on", {}),
-                    (marker, "hi", 9), (marker, "hide"), (marker, {"title": "t"})]
+                    (marker, "hi", 9), (marker, {"hide": True}), (marker, {"title": "t"})]
 
 
 def test_screenshot_route(serve, monkeypatch):

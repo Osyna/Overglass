@@ -56,7 +56,7 @@ case $1 in
   settings-set) echo '"on (persists)"' ;;
   notify-toast) echo '{"returnValue":true}' ;;
   notify-say) echo 'log line'; echo '{"returnValue":true,"spoke":11,"volume":15}' ;;
-  notify-overlay) echo '{"returnValue":true,"overlay":"shown"}' ;;
+  notify-overlay) cat > "$FAKE_DIR/overlay-stdin.json"; echo '{"returnValue":true,"overlay":"shown"}' ;;
   screenshot)
     case $4 in png) printf '\211PNG\r\n\032\nIMG' ;; *) printf '\377\330\377IMG' ;; esac ;;
   stream-start)
@@ -346,10 +346,15 @@ def test_toast_say_overlay(tv):
         assert tv.json("POST", "/api/notify/say", {"message": "hi", "volume": volume})[0] == 400, volume
     card = {"title": " Door ", "lines": ["a"], "kind": "alert", "seconds": 0}
     assert tv.json("POST", "/api/overlay", card) == (200, {"message": "Overlay card shown"})
-    verb, payload = tv.calls()[-1].split(" ")
-    assert verb == "notify-overlay" and json.loads(base64.b64decode(payload)) == {"title": "Door", "lines": ["a"], "kind": "alert", "seconds": 0}
+    assert tv.calls()[-1] == "notify-overlay"
+    sent = json.loads((tv.fake_dir / "overlay-stdin.json").read_text())
+    assert sent == {"seconds": 0, "root": {"type": "stack", "gap": 12, "children": [
+        {"type": "row", "gap": 14, "align": "center", "children": [
+            {"type": "dot", "tone": "alert"}, {"type": "text", "text": "Door", "size": "l", "weight": "strong"}]},
+        {"type": "list", "items": ["a"]},
+    ]}}
     assert tv.json("POST", "/api/overlay", {"hide": True})[0] == 200
-    assert json.loads(base64.b64decode(tv.calls()[-1].split(" ")[1])) == {"hide": True}
+    assert json.loads((tv.fake_dir / "overlay-stdin.json").read_text()) == {"hide": True}
     n = len(tv.calls())
     for bad in ({}, {"title": "x", "extra": 1}, {"title": "x" * 81}, {"title": "x", "kind": "red"}, {"title": "x", "seconds": 1.5},
                 {"image": "ftp://x"}, {"hide": True, "title": "x"}, {"lines": "no"}, {"title": "x", "seconds": 301}):

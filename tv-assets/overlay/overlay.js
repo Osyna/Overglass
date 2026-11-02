@@ -1,18 +1,24 @@
 'use strict';
-// Draws one card from the launch params, over whatever is on screen. notify.js validates the params;
-// shapes are re-checked here because any local app can launch this one.
+// Draws a widget tree from the launch params, over whatever is on screen (ARCHITECTURE.md section 3a).
+// notify.js already validated the shape; re-checked here because any local app on the TV could launch
+// this one directly with luna-send, bypassing notify.js and the SSH dispatcher entirely.
 (function () {
   var card = document.getElementById('card');
-  var head = card.querySelector('.card-head');
-  var title = document.getElementById('title');
-  var body = document.getElementById('body');
-  var lines = document.getElementById('lines');
-  var media = document.getElementById('media');
+  var root = document.getElementById('root');
   var time = document.getElementById('time');
-  var KINDS = ['info', 'success', 'warning', 'alert'];
   var POSITIONS = ['top-left', 'top-right', 'bottom-left', 'bottom-right', 'center'];
+  var SIZES = ['xs', 's', 'm', 'l', 'xl', 'full'];
+  var TEXT_SIZES = ['xs', 's', 'm', 'l', 'xl'];
+  var TEXT_WEIGHTS = ['normal', 'strong'];
+  var TEXT_COLORS = ['fg', 'fg-2', 'info', 'success', 'warning', 'alert'];
+  var TONES = ['info', 'success', 'warning', 'alert'];
+  var LIST_STYLES = ['bullet', 'number', 'plain'];
+  var WIDGET_TYPES = ['stack', 'row', 'text', 'image', 'badge', 'dot', 'progress', 'countdown', 'list', 'divider'];
+  var MAX_TREE_DEPTH = 4;
+  var MAX_TREE_NODES = 40;
   var hideTimer = null;
   var closeTimer = null;
+  var countdownTimers = [];
 
   function text(value, max) {
     return typeof value === 'string' ? value.slice(0, max) : '';
@@ -29,6 +35,174 @@
     return p && typeof p === 'object' ? p : {};
   }
 
+  // --- defence-in-depth widget tree validator: same rules as notify.js's tree(), independently applied ---
+
+  function oneOf(value, choices) {
+    return choices.indexOf(value) >= 0 ? value : undefined;
+  }
+
+  function checkNode(node, depth, counter) {
+    counter.n += 1;
+    if (counter.n > MAX_TREE_NODES || depth > MAX_TREE_DEPTH) return null;
+    if (!node || typeof node !== 'object') return null;
+    var kind = WIDGET_TYPES.indexOf(node.type) >= 0 ? node.type : null;
+    if (!kind) return null;
+    var out = {type: kind};
+    if (kind === 'stack' || kind === 'row') {
+      var limit = kind === 'stack' ? 20 : 10;
+      if (!Array.isArray(node.children) || node.children.length < 1 || node.children.length > limit) return null;
+      out.gap = typeof node.gap === 'number' && node.gap >= 0 && node.gap <= 48 ? node.gap : undefined;
+      out.align = oneOf(node.align, ['start', 'center', 'end']);
+      out.children = [];
+      for (var i = 0; i < node.children.length; i++) {
+        var child = checkNode(node.children[i], depth + 1, counter);
+        if (child) out.children.push(child);
+      }
+      if (!out.children.length) return null;
+    } else if (kind === 'text') {
+      out.text = text(node.text, 400);
+      if (!out.text) return null;
+      out.size = oneOf(node.size, TEXT_SIZES);
+      out.weight = oneOf(node.weight, TEXT_WEIGHTS);
+      out.color = oneOf(node.color, TEXT_COLORS);
+    } else if (kind === 'image') {
+      var src = text(node.src, 500);
+      if (!/^https?:\/\//.test(src)) return null;
+      out.src = src;
+    } else if (kind === 'badge') {
+      out.text = text(node.text, 24);
+      if (!out.text) return null;
+      out.tone = oneOf(node.tone, TONES);
+    } else if (kind === 'dot') {
+      out.tone = oneOf(node.tone, TONES);
+    } else if (kind === 'progress') {
+      if (typeof node.value !== 'number' || isNaN(node.value)) return null;
+      out.value = Math.max(0, Math.min(1, node.value));
+      out.label = text(node.label, 40) || undefined;
+      out.tone = oneOf(node.tone, TONES);
+    } else if (kind === 'countdown') {
+      if (typeof node.target !== 'string' || isNaN(Date.parse(node.target))) return null;
+      out.target = node.target;
+      out.label = text(node.label, 40) || undefined;
+    } else if (kind === 'list') {
+      if (!Array.isArray(node.items) || node.items.length < 1 || node.items.length > 10) return null;
+      out.items = node.items.map(function (item) { return text(item, 120); }).filter(Boolean);
+      if (!out.items.length) return null;
+      out.style = oneOf(node.style, LIST_STYLES);
+    } // divider has no fields
+    return out;
+  }
+
+  // --- rendering ---
+
+  function el(tag, className) {
+    var e = document.createElement(tag);
+    if (className) e.className = className;
+    return e;
+  }
+
+  function clearCountdowns() {
+    for (var i = 0; i < countdownTimers.length; i++) clearInterval(countdownTimers[i]);
+    countdownTimers = [];
+  }
+
+  function pad2(n) {
+    return (n < 10 ? '0' : '') + n;
+  }
+
+  function formatCountdown(ms) {
+    if (ms <= 0) return '0:00';
+    var totalSeconds = Math.floor(ms / 1000);
+    var days = Math.floor(totalSeconds / 86400);
+    var hours = Math.floor((totalSeconds % 86400) / 3600);
+    var minutes = Math.floor((totalSeconds % 3600) / 60);
+    var seconds = totalSeconds % 60;
+    if (days > 0) return days + 'd ' + pad2(hours) + ':' + pad2(minutes) + ':' + pad2(seconds);
+    if (hours > 0) return hours + ':' + pad2(minutes) + ':' + pad2(seconds);
+    return minutes + ':' + pad2(seconds);
+  }
+
+  function startCountdown(clock, targetIso) {
+    var target = new Date(targetIso).getTime();
+    var tick = function () { clock.textContent = formatCountdown(target - Date.now()); };
+    tick();
+    countdownTimers.push(setInterval(tick, 1000));
+  }
+
+  function renderNode(node) {
+    var e;
+    switch (node.type) {
+      case 'stack':
+      case 'row':
+        e = el('div', node.type === 'stack' ? 'w-stack' : 'w-row');
+        if (node.gap !== undefined) e.style.gap = node.gap + 'px';
+        if (node.align) e.dataset.align = node.align;
+        node.children.forEach(function (child) { e.appendChild(renderNode(child)); });
+        return e;
+      case 'text':
+        e = el('p', 'w-text');
+        e.textContent = node.text;
+        e.dataset.size = node.size || 'm';
+        e.dataset.weight = node.weight || 'normal';
+        e.dataset.color = node.color || 'fg';
+        return e;
+      case 'image':
+        e = el('img', 'w-image');
+        e.alt = '';
+        e.addEventListener('error', function () { e.remove(); });
+        e.src = node.src;
+        return e;
+      case 'badge':
+        e = el('span', 'w-badge');
+        e.textContent = node.text;
+        e.dataset.tone = node.tone || 'info';
+        return e;
+      case 'dot':
+        e = el('span', 'w-dot');
+        e.dataset.tone = node.tone || 'info';
+        return e;
+      case 'progress': {
+        e = el('div', 'w-progress');
+        e.dataset.tone = node.tone || 'info';
+        var track = el('div', 'w-progress-track');
+        var fill = el('div', 'w-progress-fill');
+        fill.style.width = (node.value * 100) + '%';
+        track.appendChild(fill);
+        e.appendChild(track);
+        if (node.label) {
+          var plabel = el('span', 'w-progress-label');
+          plabel.textContent = node.label;
+          e.appendChild(plabel);
+        }
+        return e;
+      }
+      case 'countdown': {
+        e = el('div', 'w-countdown');
+        var clock = el('span', 'w-countdown-clock');
+        e.appendChild(clock);
+        if (node.label) {
+          var clabel = el('span', 'w-countdown-label');
+          clabel.textContent = node.label;
+          e.appendChild(clabel);
+        }
+        startCountdown(clock, node.target);
+        return e;
+      }
+      case 'list':
+        e = el('ul', 'w-list');
+        e.dataset.style = node.style || 'bullet';
+        node.items.forEach(function (item) {
+          var li = document.createElement('li');
+          li.textContent = item;
+          e.appendChild(li);
+        });
+        return e;
+      case 'divider':
+      default:
+        return el('hr', 'w-divider');
+    }
+  }
+
   // Keep the remote and pointer on the app underneath: no input region, no focus.
   function passThrough() {
     try { window.PalmSystem.setInputRegion([{x: 0, y: 0, width: 1, height: 1}]); } catch (e) {}
@@ -41,35 +215,23 @@
     clearTimeout(closeTimer);
     closeTimer = setTimeout(function () {
       card.hidden = true;
+      clearCountdowns();
+      root.textContent = '';
       try { window.close(); } catch (e) {}
     }, 200);
   }
 
   function render(p) {
     if (p.hide === true) return close();
+    var tree = checkNode(p.root, 0, {n: 0});
+    if (!tree) return; // malformed launch params from outside notify.js: draw nothing rather than guess
     clearTimeout(hideTimer);
     clearTimeout(closeTimer);
-    title.textContent = text(p.title, 80);
-    head.hidden = !title.textContent;
-    body.textContent = text(p.body, 400);
-    lines.textContent = '';
-    (Array.isArray(p.lines) ? p.lines : []).slice(0, 10).forEach(function (line) {
-      var item = document.createElement('li');
-      item.textContent = text(line, 120);
-      lines.appendChild(item);
-    });
-    media.textContent = '';
-    var src = text(p.image, 500);
-    if (/^https?:\/\//.test(src)) {
-      var img = document.createElement('img');
-      img.className = 'image';
-      img.alt = '';
-      img.addEventListener('error', function () { img.remove(); });
-      img.src = src;
-      media.appendChild(img);
-    }
-    card.dataset.kind = KINDS.indexOf(p.kind) >= 0 ? p.kind : 'info';
-    card.dataset.pos = POSITIONS.indexOf(p.position) >= 0 ? p.position : 'top-right';
+    clearCountdowns();
+    card.dataset.pos = oneOf(p.position, POSITIONS) || 'top-right';
+    card.dataset.size = oneOf(p.size, SIZES) || 'm';
+    root.textContent = '';
+    root.appendChild(renderNode(tree));
     var seconds = typeof p.seconds === 'number' && p.seconds >= 0 && p.seconds <= 300 ? p.seconds : 8;
     card.dataset.pinned = String(seconds === 0);
     card.hidden = false;

@@ -23,6 +23,7 @@ INSTALLER=luna://com.webos.appInstallService/dev/
 BUSY="TV is busy with AI processing or another change; try again shortly."
 FILE_MAX=2097152  # raw bytes, one whole-file install/overlay/vtcap/hook upload (no base64 tax now: stdin, not argv)
 TREE_CHUNK_MAX=4194304  # raw bytes, one install-tree chunk
+CARD_MAX=65536  # raw bytes, one notify-overlay widget-tree JSON upload
 
 deny() {
   echo "webos-foundry: $1" >&2
@@ -132,6 +133,13 @@ do_screenshot() { # width height jpg|png
   esac
   echo "Capture failed: $r" >&2
   exit 3
+}
+
+do_notify_overlay() { # payload is this request's stdin
+  p=$TMP/webos-foundry-card-$$.json
+  trap 'rm -f "$p"' EXIT
+  read_upload "$CARD_MAX" "$p"
+  node "$D/notify.js" overlay "$p" </dev/null
 }
 
 do_process() { # image|audio profile arg...   (the media upload is this session's stdin)
@@ -348,8 +356,8 @@ case $verb in
     locked 10 node "$D/notify.js" say "$2" ${3+"$3"}
     ;;
   notify-overlay)
-    [ "$argc" -eq 2 ] && is_b64 "$2" 8000 || deny "usage: notify-overlay <base64>"
-    exec node "$D/notify.js" overlay "$2" </dev/null
+    [ "$argc" -eq 1 ] || deny "usage: notify-overlay"
+    do_notify_overlay
     ;;
   screenshot)
     [ "$argc" -eq 4 ] && is_int "$2" 2 4 && is_int "$3" 2 4 || deny "usage: screenshot <width> <height> jpg|png"
