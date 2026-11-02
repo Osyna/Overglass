@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+dist/
+build/
+.venv/
+*.key
+*.key.pub
+id_ed25519*
+known_hosts
+config.json
+.ruff_cache/
+node_modules/
+tv-assets/vtcap/vtcap
