@@ -106,7 +106,14 @@ await vm.runInContext(`(async () => {
   assert.equal(inputs[1].min, 15);
   assert.equal(inputs[1].max, 3600);
   assert.equal(inputs[1].value, 90);
-  for (const control of form.querySelectorAll('input, select')) assert.equal(control.parent.tag, 'label');
+  for (const control of form.querySelectorAll('input, select')) assert.ok(control.parent.tag === 'label' || control['aria-label'], 'every extension control is labelled');
+  const selects = form.querySelectorAll('select');
+  assert.equal(selects[1].value, 'top-right', 'placement defaults to the TV default position');
+  assert.equal(selects[2].value, 'm');
+  assert.equal(selects[1].children.length, 9, 'all nine positions including edge bars and panels');
+  const colours = inputs.filter(input => input.type === 'color');
+  assert.equal(colours.length, 2, 'compact look: accent and background');
+  assert.equal(inputs.filter(input => input.type === 'range').length, 1, 'compact look: opacity');
   select.value = 'b'; inputs[0].value = 'Current caption'; inputs[1].value = '30';
   await button(card, 'Preview on TV').listeners.click();
   let request = requests.pop();
@@ -119,9 +126,19 @@ await vm.runInContext(`(async () => {
   assert.equal(request[0], 'addons');
   assert.equal(request[2], 'PUT');
   assert.equal(request[3], '/api/addons/synthetic%2Fid');
-  assert.equal(JSON.stringify(request[4]), JSON.stringify({ params: { choice: 'b', caption: 'Current caption' }, interval_seconds: 30, enabled: true }));
+  assert.equal(JSON.stringify(request[4]), JSON.stringify({ params: { choice: 'b', caption: 'Current caption' }, interval_seconds: 30, enabled: true,
+    position: 'top-right', size: 'm' }));  // an untouched Look sends no theme at all
+  selects[1].value = 'right'; selects[2].value = 's';
+  colours[0].value = '#e8c35a'; colours[0].listeners.input();
+  const opacity = inputs.find(input => input.type === 'range');
+  opacity.value = '0.8'; opacity.listeners.input();
+  await form.listeners.submit({ preventDefault() {} });
+  request = requests.pop();
+  assert.equal(JSON.stringify(request[4]), JSON.stringify({ params: { choice: 'b', caption: 'Current caption' }, interval_seconds: 30, enabled: true,
+    position: 'right', size: 's', theme: { accent: '#e8c35a', opacity: 0.8 } }));
 
-  const installed = { params: { choice: 'b', caption: 'Saved caption' }, interval_seconds: 120, enabled: true, position: 'bottom-left', size: 's' };
+  const installed = { params: { choice: 'b', caption: 'Saved caption' }, interval_seconds: 120, enabled: true, position: 'bottom-left', size: 's',
+    theme: { accent: '#ff8800', opacity: 0.6 } };
   automationData.addons.installed[addon.id] = installed;
   renderAutomation('addons');
   const enabledCard = $('addons-list').children[0].children[0];
@@ -129,6 +146,11 @@ await vm.runInContext(`(async () => {
   assert(button(enabledCard, 'Update'));
   assert.equal(enabledCard.querySelector('select').value, 'b');
   assert.equal(enabledCard.querySelectorAll('input')[1].value, 120);
+  assert.equal(enabledCard.querySelectorAll('select')[1].value, 'bottom-left', 'saved position is shown');
+  assert.equal(enabledCard.querySelectorAll('select')[2].value, 's', 'saved size is shown');
+  assert.equal(enabledCard.querySelectorAll('input').find(input => input.type === 'color').value, '#ff8800', 'saved accent is shown');
+  assert.equal(enabledCard.querySelectorAll('input').find(input => input.type === 'range').value, 0.6, 'saved opacity is shown');
+  assert.equal(enabledCard.querySelector('details').open, '', 'a saved look opens the Look group');
   await button(enabledCard, 'Disable').listeners.click();
   request = requests.pop();
   assert.equal(request[2], 'PUT');
@@ -150,6 +172,84 @@ await vm.runInContext(`(async () => {
   automationData.addons = { catalog: [], installed: {} };
   renderAddons();
   assert.match($('addons-list').children[0].textContent, /No extensions/);
+
+  // Saved designs (Show view): list, load, show, delete.
+  automationData.designs = {};
+  renderAutomation('designs');
+  assert.match($('designs-list').children[0].textContent, /No saved designs/);
+  assert.equal($('design-names').children.length, 0);
+  const dot = { type: 'dot' };
+  const hud = { seconds: 0, theme: { accent: '#e8c35a' }, regions: [{ position: 'top', size: 'full', root: dot }, { position: 'right', size: 's', root: { type: 'stack', children: [dot, dot] } }] };
+  automationData.designs = { '<match day>': hud, toast: { position: 'top-right', root: dot } };
+  renderAutomation('designs');
+  assert.equal($('design-names').children.length, 2);
+  assert.equal($('design-names').children[0].value, '<match day>');
+  const designRow = $('designs-list').children[0].children[0];
+  assert.equal(designRow.children[0].children[0].textContent, '<match day>', 'design names stay plain text');
+  assert.equal(designRow.children[0].children[1].textContent, '2 regions · Top bar, Right panel · 4 widgets · stays until hidden');
+  assert.equal($('designs-list').children[0].children[1].children[0].children[1].textContent, 'Single card · Top right · 1 widget · 8 s');
+  assert(button(designRow, 'Load'));
+  assert(button(designRow, 'Show on TV'));
+  const deleteButton = walk(designRow).find(el => el.tag === 'button' && el['aria-label'] === 'Delete <match day>');
+  assert(deleteButton);
+  await button(designRow, 'Show on TV').listeners.click();
+  request = requests.pop();
+  assert.equal(request[0], 'designs');
+  assert.equal(request[2], 'POST');
+  assert.equal(request[3], '/api/designs/%3Cmatch%20day%3E/show');
+  assert.equal(request[4], undefined);
+  // Load replaces the studio draft; a dirty draft asks first.
+  const studioCalls = [];
+  setOverlayCard = card => studioCalls.push(card);
+  overlayLoaded = JSON.stringify(overlayBody());
+  button(designRow, 'Load').listeners.click();
+  assert.equal(studioCalls.length, 1, 'a clean draft loads at once');
+  assert.equal(JSON.stringify(studioCalls[0]), JSON.stringify(hud));
+  assert.notEqual(studioCalls[0], hud, 'the studio gets a copy, not the cached entry');
+  assert.equal($('design-name').value, '<match day>');
+  overlayCard.seconds = 42;
+  button(designRow, 'Load').listeners.click();
+  assert.equal(studioCalls.length, 1, 'a dirty draft asks first');
+  const ask = designRow.querySelector('.app-confirm');
+  assert.match(ask.children[0].textContent, /Replace your draft/);
+  assert.equal(button(ask, 'Keep it').focused, true);
+  button(ask, 'Keep it').listeners.click();
+  assert.equal(designRow.querySelector('.app-confirm'), undefined);
+  assert.equal(studioCalls.length, 1);
+  button(designRow, 'Load').listeners.click();
+  button(designRow.querySelector('.app-confirm'), 'Replace').listeners.click();
+  assert.equal(studioCalls.length, 2);
+  deleteButton.listeners.click();
+  assert.equal(requests.length, 0, 'delete first asks in place');
+  assert.match(designRow.querySelector('.app-confirm').children[0].textContent, /Delete <match day>\\?.*Scenes/);
+  await designRow.querySelector('.app-confirm').children[2].listeners.click();
+  request = requests.pop();
+  assert.equal(request[2], 'DELETE');
+  assert.equal(request[3], '/api/designs/%3Cmatch%20day%3E');
+  // Save: overwriting an existing name asks first; the body is the studio draft.
+  overlayCard = { position: 'center', seconds: 5, theme: {}, root: dot };
+  overlayError = ''; overlayJsonDirty = false;
+  $('design-name').value = 'toast';
+  await saveDesign();
+  assert.equal(requests.length, 0, 'saving over an existing design asks first');
+  assert.match($('design-form').querySelector('.app-confirm').children[0].textContent, /Replace the saved design toast/);
+  await button($('design-form').querySelector('.app-confirm'), 'Replace').listeners.click();
+  request = requests.pop();
+  assert.equal(request[2], 'PUT');
+  assert.equal(request[3], '/api/designs/toast');
+  assert.equal(JSON.stringify(request[4]), JSON.stringify({ position: 'center', seconds: 5, root: dot }), 'the empty Look object is left out');
+  $('design-name').value = 'fresh name';
+  await saveDesign();
+  assert.equal(requests.pop()[3], '/api/designs/fresh%20name');
+  $('design-name').value = '  ';
+  await saveDesign();
+  assert.equal(requests.length, 0);
+  assert.equal($('designs-msg').dataset.tone, 'error');
+  overlayJsonDirty = true;
+  $('design-name').value = 'x';
+  await saveDesign();
+  assert.equal(requests.length, 0, 'unapplied JSON blocks saving');
+  overlayJsonDirty = false;
 
   // Exercise the shared request guard with real addon loading and mutations.
   changeAutomation = realChangeAutomation;
@@ -187,4 +287,4 @@ await vm.runInContext(`(async () => {
   assert.match($('addons-msg').textContent, /paired TV/);
   assert.equal(automationBusy.has('addons'), false);
 })()`, context);
-console.log('check-automate: ok (scene suggestions, empty state, safe text, schedule toggles, private copy-only URLs, extension catalog/forms/install/preview/toggles/uninstall, busy guards and errors)');
+console.log('check-automate: ok (scene suggestions, empty state, safe text, schedule toggles, private copy-only URLs, extension catalog/forms/install/preview/toggles/uninstall with placement and look, saved designs list/load/show/delete/save, busy guards and errors)');

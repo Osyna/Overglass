@@ -61,6 +61,27 @@
   --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
   --dur-fast: 120ms;
   --dur-base: 180ms;
+
+  /* TV stage: the overlay renderer's own dark palette (tv-assets/overlay/overlay.css), identical in both page themes */
+  --tv-bg: rgb(12 14 18);
+  --tv-surface: rgb(25 28 34 / 0.94);
+  --tv-line: rgb(255 255 255 / 0.14);
+  --tv-track: rgb(255 255 255 / 0.14);
+  --tv-track-soft: rgb(255 255 255 / 0.08);
+  --tv-track-neutral: rgb(255 255 255 / 0.28);
+  --tv-track-neg: rgb(255 255 255 / 0.22);
+  --tv-fg: rgb(240 242 245);
+  --tv-fg-2: rgb(196 201 210);
+  --tv-info: rgb(132 181 236);
+  --tv-success: rgb(120 214 150);
+  --tv-warning: rgb(240 190 90);
+  --tv-alert: rgb(240 120 105);
+  --tv-accent: rgb(132 181 236);
+  --tv-badge-ink: rgb(10 20 35);
+  --tv-badge-success-ink: rgb(8 30 16);
+  --tv-badge-warning-ink: rgb(40 25 0);
+  --tv-badge-alert-ink: rgb(40 10 6);
+  --tv-shadow: 0 12px 40px rgb(0 0 0 / 0.45);
 }
 
 @media (prefers-color-scheme: dark) {

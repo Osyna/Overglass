@@ -369,7 +369,7 @@
             <div class="field">
               <label for="scene-json">Steps as JSON</label>
               <textarea id="scene-json" class="automation-json" rows="8" required spellcheck="false" aria-describedby="scene-json-hint">{"steps":[{"type":"wait","seconds":0}]}</textarea>
-              <p class="hint" id="scene-json-hint">Use 1–20 remote, setting, overlay or wait steps. Waits are 0–10 seconds. Overlay steps take the same card JSON as Show. The server checks each step when you save.</p>
+              <p class="hint" id="scene-json-hint">Use 1–20 remote, setting, overlay or wait steps. Waits are 0–10 seconds. An overlay step is {"type":"overlay","card":{…}} with the card JSON from the Show studio, or {"type":"overlay","design":"name"} to show a saved design. The server checks each step when you save.</p>
             </div>
             <div class="row"><button class="btn primary" id="scene-save" type="submit">Save scene</button><button class="btn quiet" id="scene-new" type="button" hidden>Cancel editing</button></div>
           </form>
@@ -503,39 +503,6 @@
             </div>
             <p class="result-msg" id="overlay-msg" role="status" hidden></p>
           </form>
-          <details class="overlay-designer" id="ov-advanced">
-            <summary>Advanced · Build your own card</summary>
-            <div class="overlay-workspace">
-              <p class="lede">Preview below; send it to see it on the TV. This is a local preview, not a TV screenshot. Position and seconds above apply to both cards.</p>
-              <div class="field">
-                <label for="ov-size">Card width</label>
-                <select id="ov-size">
-                  <option value="xs">Extra small</option><option value="s">Small</option>
-                  <option value="m" selected>Medium</option><option value="l">Large</option>
-                  <option value="xl">Extra large</option><option value="full">Full width</option>
-                </select>
-              </div>
-              <p class="hint">Add widgets in order. Vertical and side-by-side groups hold other widgets. Use up to 5 levels, 60 widgets and 32 KB of JSON.</p>
-              <div id="ov-builder"></div>
-              <p class="result-msg" id="ov-builder-msg" role="status" hidden></p>
-              <figure class="overlay-preview">
-                <figcaption>Live preview <span class="hint">Approximate proportions · page colours</span></figcaption>
-                <div class="overlay-preview-card" id="ov-preview" aria-label="Card preview"></div>
-                <p class="hint">Images from other sites appear as placeholders here; the TV loads the actual image.</p>
-              </figure>
-              <details class="overlay-json">
-                <summary>Edit raw JSON</summary>
-                <label for="ov-json">Card as JSON <span class="sub">the whole card widget, without request settings</span></label>
-                <p class="hint" id="ov-json-help">The builder is the saved draft. Apply JSON to replace it; builder edits replace this text. Unapplied JSON is not sent.</p>
-                <textarea id="ov-json" rows="12" spellcheck="false" aria-describedby="ov-json-help"></textarea>
-                <div class="row">
-                  <button class="btn" type="button" id="ov-json-apply">Apply JSON</button>
-                  <button class="btn quiet" type="button" id="ov-json-reset">Discard JSON edits</button>
-                </div>
-              </details>
-              <button class="btn primary" type="button" id="ov-send" disabled>Send to TV</button>
-            </div>
-          </details>
         </section>
       </div>
 
@@ -585,6 +552,77 @@
         </section>
       </div>
     </div>
+    <section class="panel studio" data-needs-group="Notify" aria-labelledby="h-studio">
+      <header class="panel-head"><h2 id="h-studio">Card studio</h2><span class="hint" id="ov-unsaved" hidden>Unsaved changes</span></header>
+      <p class="lede">Build any card the TV can draw: a single floating card, or up to four regions such as a top bar plus a side panel. Start from a template, change the look and the widgets, then send it to the TV or save it as a design.</p>
+      <div class="studio-grid">
+        <div class="studio-controls">
+          <div class="field">
+            <span class="field-label" id="ov-templates-label">Start from a template</span>
+            <div class="overlay-templates" id="ov-templates" role="group" aria-labelledby="ov-templates-label"></div>
+          </div>
+          <div class="pair">
+            <div class="field">
+              <label for="ov-layout">Layout</label>
+              <select id="ov-layout">
+                <option value="single" selected>Single card</option>
+                <option value="regions">Several regions (up to 4)</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="ov-card-seconds">Seconds <span class="sub">0 = stays until hidden</span></label>
+              <input type="number" id="ov-card-seconds" min="0" max="300" step="1" value="8" inputmode="numeric">
+            </div>
+          </div>
+          <details class="overlay-look" id="ov-look">
+            <summary>Look · colours, corners, zoom and font</summary>
+            <p class="hint">Colours you leave unset keep the TV defaults and stay out of the JSON.</p>
+            <div id="ov-look-form"></div>
+          </details>
+          <p class="hint">Add widgets in order. Vertical and side-by-side groups hold other widgets. Use up to 5 levels, 80 widgets across all regions and 48 KB of JSON.</p>
+          <div id="ov-builder"></div>
+          <p class="result-msg" id="ov-builder-msg" role="status" hidden></p>
+          <details class="overlay-json">
+            <summary>Edit raw JSON</summary>
+            <label for="ov-json">Card as JSON <span class="sub">the whole request body: look, seconds, layout and widgets</span></label>
+            <p class="hint" id="ov-json-help">Exactly what Send to TV and Save design send (POST /api/overlay and PUT /api/designs/{name}). Apply JSON to replace the draft; studio edits replace this text. Unapplied JSON is not sent.</p>
+            <textarea id="ov-json" rows="12" spellcheck="false" aria-describedby="ov-json-help"></textarea>
+            <div class="row">
+              <button class="btn" type="button" id="ov-json-apply">Apply JSON</button>
+              <button class="btn quiet" type="button" id="ov-json-reset">Discard JSON edits</button>
+            </div>
+          </details>
+        </div>
+        <figure class="overlay-preview">
+          <figcaption>TV preview <span class="hint">Approximate proportions · the card’s own colours on a 16:9 stage</span></figcaption>
+          <div class="tv-stage" id="ov-preview" aria-label="Card preview as it lands on the TV"></div>
+          <p class="hint">Images from other sites appear as placeholders here; the TV loads the actual image.</p>
+          <button class="btn primary" type="button" id="ov-send" disabled>Send to TV</button>
+        </figure>
+      </div>
+    </section>
+    <section class="panel designs" data-needs-group="Designs" aria-labelledby="h-designs">
+      <header class="panel-head">
+        <h2 id="h-designs">My designs</h2>
+        <button class="btn quiet" type="button" id="designs-refresh"><svg><use href="#i-refresh"/></svg><span>Reload</span></button>
+      </header>
+      <p class="lede">Saved designs live on this server. Load one into the studio, show it on the TV, or use it in a scene step. Export and import move a design as a JSON file.</p>
+      <form id="design-form" class="design-form">
+        <div class="field">
+          <label for="design-name">Design name</label>
+          <input type="text" id="design-name" maxlength="60" autocomplete="off" list="design-names" placeholder="Match day sidebar">
+        </div>
+        <div class="row">
+          <button class="btn primary" type="submit" id="design-save">Save design</button>
+          <button class="btn" type="button" id="design-export">Export JSON</button>
+          <button class="btn" type="button" id="design-import">Import JSON…</button>
+          <input type="file" id="design-import-file" accept=".json,application/json" hidden>
+        </div>
+      </form>
+      <div id="designs-list" aria-live="polite"><p class="empty">Loading designs…</p></div>
+      <p class="result-msg" id="designs-msg" role="status" hidden></p>
+      <datalist id="design-names"></datalist>
+    </section>
   </main>
 
   <!-- ============ Tune: picture & sound, process a file ============ -->

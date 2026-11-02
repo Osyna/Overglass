@@ -34,6 +34,7 @@ Green means on or done, red means remove or failed. Nothing else carries colour 
 | `--ok`, `--err`, `--warn-ink` + tints | green 160, red 25, amber 85 | lifted for dark | state only |
 | `--line-strong` | 0.60 .022 70 | 0.58 .018 60 | control borders (≥3:1 on `--surface`) |
 | `--tone-1…5` | five pastel tints | muted | letter tiles for apps with no usable icon |
+| `--tv-*` | sRGB, same in both | same | the TV overlay renderer's own dark palette, used only inside the Card studio's TV stage (`tv-assets/overlay/overlay.css`) |
 
 Contrast was computed, not eyeballed: body text on `--bg` 14.7:1 light / 15.7:1 dark; `--fg-3` ≥5.0:1; accent ink on accent
 5.0:1 light / 8.2:1 dark; status text on its tint ≥5.6:1.
@@ -83,19 +84,32 @@ and tighten tab padding so the navigation never collides with status or Settings
 | Home | first-run pairing help, TV status and power, shortcuts, TV details |
 | Remote | power, input, direction pad, volume |
 | Apps | add an app (file or link, with install progress), installed apps with uninstall |
-| Automate | saved scenes with JSON creation/editing and run results; local-time schedules with day selection and enable/disable; private webhook links to copy or revoke; catalog-driven Extensions with settings, refresh intervals, install/update, enable/disable, preview and uninstall |
-| Show | message and read-aloud, on-screen card with a collapsed Advanced builder (all twelve widget types, nested stacks/rows, live local preview, Send to TV), live view and screenshot (both open a full-screen zoom/pan lightbox) |
+| Automate | saved scenes with JSON creation/editing and run results (an overlay step is a card or a saved design name); local-time schedules with day selection and enable/disable; private webhook links to copy or revoke; catalog-driven Extensions with settings, refresh intervals, position, size and a compact Look (accent, background, opacity), install/update, enable/disable, preview and uninstall |
+| Show | message and read-aloud, the simple on-screen card, live view and screenshot (both open a full-screen zoom/pan lightbox); below them the full-width Card studio (templates, layout, Look, widgets, raw JSON, TV stage, Send to TV) and My designs (save, load, show, delete, export/import JSON) |
 | Tune | picture & sound settings, process a file |
 | Settings (gear) | appearance, who can use this page (token or login off), this device's token, link to developer tools |
 | Developer (`#api`) | request log, API reference |
 
-The Advanced card builder owns the draft tree. Its raw-JSON disclosure shows that exact root node; Apply JSON
-validates and replaces the draft, while builder edits refresh the JSON. Unapplied JSON blocks sending and can be
-discarded without changing the draft. The preview uses the TV renderer's widget proportions with Lamplight tokens,
-not screenshot capture (the floating overlay is invisible to both TV capture paths). External images are labelled
-placeholders to preserve the same-origin CSP; Send to TV uses the existing overlay route for final by-eye confirmation.
-Comparison bars have 2–4 editable segments; small bar charts take 3–24 numbers separated by commas or spaces.
-Images can be square or circular. Cards allow up to 5 nested levels and 60 widgets, within 32 KB of JSON.
+The Card studio owns one draft: the whole request body (`seconds`, `theme`, and either `position`/`size`/`root` or
+`regions`), exactly what `POST /api/overlay` and `PUT /api/designs/{name}` accept. The raw-JSON disclosure shows that
+body; Apply JSON validates and replaces the draft, studio edits refresh the JSON, unapplied JSON blocks sending and
+saving. Layout is a single card (nine positions: four corners, centre, top/bottom bars, left/right panels; six sizes)
+or 1–4 regions with unique positions, each with its own widget tree. Look is colours (unset = TV default, left out of
+the JSON), background opacity, corner radius, zoom and font. Eighteen widget types with plain-word names; groups nest
+to 5 levels; 80 widgets across all regions; 49152 bytes of JSON. Per-widget Move up / Move down / Duplicate / Remove;
+comparison bars have 2–4 segments, key facts 1–4 facts, small bar charts 3–24 numbers plus optional top/middle/bottom
+axis labels; icon pickers draw the TV glyph beside the name. Six templates use placeholder text only ("Home team",
+"Source A"); loading one, a saved design or an imported file over an edited draft confirms in place.
+
+The TV stage is a 16:9 box holding a 1920×1080 screen scaled to the box, styled with the TV renderer's own pixel values
+and palette (`--tv-*` tokens) rather than page colours, so regions land where they land on the TV (side panels start
+below a top bar and end above a bottom bar, like the TV); the card's theme becomes the stage's custom properties. The
+caption keeps the approximate-proportions caveat: the floating overlay is invisible to both TV capture paths. External
+images are labelled placeholders to preserve the same-origin CSP. Countdown and clock widgets tick in the preview.
+
+My designs is gated on the `Designs` group and reuses the Automate loader and busy guard. Saving over an existing name,
+deleting, and replacing an edited draft confirm in place. Export downloads the draft as JSON; Import validates a file
+before it replaces the draft.
 
 Automate keeps Scenes in the left column and Scheduler / Webhook links stacked on the right, with Extensions below
 both columns (all stacked on phones). Extension cards and their setting fields come from the server's catalog.
@@ -128,9 +142,10 @@ a group name.
 ## Files
 
 `index.html` markup and icon sprite · `tokens.css` generated tokens · `app.css` components and layout · `theme.js` theme
-switch (runs in `<head>`) · `app.js` API client, status, remote, notify, card, live, screenshot, zoom lightbox, pairing,
+switch (runs in `<head>`) · `app.js` API client, status, remote, notify, card, card studio (schema v4 validation, TV stage,
+templates, Look form, saved designs), live, screenshot, zoom lightbox, pairing,
 settings, scenes, scheduler, webhooks, extensions, jobs, API reference · `apps.js` apps, login setting, auth wiring, service-worker registration and the install banner ·
 `favicon.svg` · `manifest.json`, `sw.js`, `icons/` installable app (the worker caches only the static shell, never `/api/`;
 bump `CACHE` in `sw.js` to drop old copies) · `check-ui.mjs` offline markup/capability regression gate · `check-overlay.mjs`
-widget-schema and builder checks · `check-automate.mjs` scene suggestions, schedule and extension toggles, catalog forms and copy-only webhook checks
-(`node web/check-{ui,overlay,automate}.mjs`, no browser or TV).
+v4 widget/theme/regions schema, caps, templates, builder, Look form, TV stage and preview checks · `check-automate.mjs` scene suggestions, schedule and extension toggles, catalog forms
+with placement and look, saved designs, and copy-only webhook checks (`node web/check-{ui,overlay,automate}.mjs`, no browser or TV).
