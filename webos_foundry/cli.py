@@ -59,8 +59,13 @@ def cmd_pair(args):
 
 
 def cmd_install(args):
-    result = install_module.install(_transport(args), overlay=not args.no_overlay, vtcap=args.vtcap)
+    result = install_module.install(_transport(args), overlay=not args.no_overlay, vtcap=args.vtcap,
+                                    tv_server=args.tv_server)
     print("Installed %d files; overlay: %s; vtcap: %s" % (len(result["files"]), result["overlay"], result["vtcap"]))
+    if args.tv_server:
+        print("On-TV server installed (%d files) and started. Its token is generated on first start and printed to "
+              "/tmp/webos-foundry-tv-server.log; reach it at http://<tv-address>:8766/ (see docs/TV-SERVER.md)."
+              % len(result["tv_server"]["files"]))
 
 
 def cmd_update(args):
@@ -286,6 +291,8 @@ def build_parser():
     command = add("install", cmd_install, "install the TV-side files")
     command.add_argument("--no-overlay", action="store_true")
     command.add_argument("--vtcap", choices=("auto", "yes", "no"), default="auto")
+    command.add_argument("--tv-server", action="store_true",
+                         help="also install and start the web server that runs on the TV itself (port 8766)")
     add("update", cmd_update, "re-push the TV-side scripts")
     command = add("uninstall", cmd_uninstall, "remove everything webOS Foundry put on the TV")
     command.add_argument("--yes", action="store_true")

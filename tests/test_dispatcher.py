@@ -46,6 +46,33 @@ CASES = {
     "install-vtcap": (["install-vtcap " + B64], ["install-vtcap", "install-vtcap a b"]),
     "uninstall-vtcap": (["uninstall-vtcap"], ["uninstall-vtcap x"]),
     "uninstall-all": (["uninstall-all"], ["uninstall-all x"]),
+    "app-list": (["app-list"], ["app-list x", "app-list "]),
+    "app-install": (["app-install " + B64, "app-install " + "A" * 1000, "app-install QQ=="],
+                    ["app-install", "app-install " + "A" * 1001, "app-install QQ===", "app-install QQ==; id",
+                     "app-install $(id)", "app-install a-b", "app-install " + B64 + "\n", "app-install a b"]),
+    "app-uninstall": (["app-uninstall " + B64, "app-uninstall " + "A" * 200],
+                      ["app-uninstall", "app-uninstall " + "A" * 201, "app-uninstall `id`", "app-uninstall QQ=== "]),
+    "install-tree": (["install-tree tv-server/server.js put " + B64, "install-tree tv-server/web/a-b_c.1/app.js begin QQ==",
+                      "install-tree a/b more " + B64, "install-tree a/b end " + B64,
+                      "install-tree " + "/".join(["d"] * 8) + " put " + B64],
+                     ["install-tree server.js put " + B64,  # top-level files (dispatch.sh, the scripts) are never writable
+                      "install-tree ../x/y put " + B64, "install-tree a/../b put " + B64, "install-tree a/.. put " + B64,
+                      "install-tree a/./b put " + B64, "install-tree /etc/passwd put " + B64,
+                      "install-tree /a/b put " + B64, "install-tree a/b/ put " + B64, "install-tree a//b put " + B64,
+                      "install-tree a/.hidden put " + B64, "install-tree .a/b put " + B64,
+                      "install-tree a/b;id put " + B64, "install-tree a/$(id) put " + B64,
+                      "install-tree " + "/".join(["d"] * 9) + " put " + B64,  # too deep
+                      "install-tree a/" + "b" * 65 + " put " + B64, "install-tree " + "/".join(["d" * 40] * 6) + " put " + B64,
+                      "install-tree a/b exec " + B64, "install-tree a/b put", "install-tree a/b put !!",
+                      "install-tree a/b put " + "A" * 120_001, "install-tree a/b put " + B64 + "\n"]),
+    "install-hook": (["install-hook webos-foundry-tv-server " + B64, "install-hook webos-foundry-x QQ=="],
+                     ["install-hook tv-server " + B64, "install-hook webos-foundry- " + B64,
+                      "install-hook webos-foundry-../x " + B64, "install-hook webos-foundry-Up " + B64,
+                      "install-hook webos-foundry-a.sh " + B64, "install-hook ../init.d/x " + B64,
+                      "install-hook webos-foundry-" + "a" * 49 + " " + B64, "install-hook webos-foundry-x"]),
+    "run-hook": (["run-hook webos-foundry-tv-server start", "run-hook webos-foundry-tv-server stop"],
+                 ["run-hook webos-foundry-tv-server", "run-hook webos-foundry-tv-server restart", "run-hook sh start",
+                  "run-hook webos-foundry-x;id start", "run-hook ../../bin/sh start", "run-hook webos-foundry-x start x"]),
 }
 
 
@@ -77,6 +104,9 @@ def test_builders_produce_accepted_commands():
         d.build_process_image("standard", 960, 540), d.build_process_audio("ai-sound", 3), d.build_idle_wait(),
         d.build_install_status(), d.build_install("notify.js", B64), d.build_install_overlay(B64),
         d.build_uninstall_overlay(), d.build_install_vtcap(B64), d.build_uninstall_vtcap(), d.build_uninstall_all(),
+        d.build_app_list(), d.build_app_install(B64), d.build_app_uninstall(B64),
+        d.build_install_tree("tv-server/server.js", "put", B64), d.build_install_hook("webos-foundry-tv-server", B64),
+        d.build_run_hook("webos-foundry-tv-server"), d.build_run_hook("webos-foundry-tv-server", "stop"),
     ]
     assert all(d.verb_of(command) for command in built)
     assert d.build_remote("hdmi", 3) == "remote hdmi 3"
@@ -100,6 +130,10 @@ def test_builders_produce_accepted_commands():
     lambda: d.build_process_audio("ai-sound", 100), lambda: d.build_process_audio("a b", 3),
     lambda: d.build_install("evil.sh", B64), lambda: d.build_install("dispatch.sh", ""),
     lambda: d.build_install_overlay(""), lambda: d.build_install_vtcap("a b"),
+    lambda: d.build_app_install(""), lambda: d.build_app_install("A" * 1001), lambda: d.build_app_uninstall("a;id"),
+    lambda: d.build_install_tree("../x/y", "put", B64), lambda: d.build_install_tree("/etc/passwd", "put", B64),
+    lambda: d.build_install_tree("a/b", "exec", B64), lambda: d.build_install_tree(None, "put", B64),
+    lambda: d.build_install_hook("rc.local", B64), lambda: d.build_run_hook("webos-foundry-x", "restart"),
 ])
 def test_builders_reject_bad_arguments(call):
     with pytest.raises(ValidationError):
@@ -108,5 +142,5 @@ def test_builders_reject_bad_arguments(call):
 
 def test_whitelists():
     assert d.INSTALL_FILES == ("status.sh", "details.js", "notify.js", "settings.js", "remote.js",
-                               "process-image.js", "process-audio.js", "dispatch.sh")
+                               "process-image.js", "process-audio.js", "apps.js", "dispatch.sh")
     assert "hdmi" in d.REMOTE_ACTIONS and "wake" in d.REMOTE_ACTIONS and len(set(d.REMOTE_ACTIONS)) == 14

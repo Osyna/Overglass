@@ -15,6 +15,8 @@ TMP=/tmp
 VTDIR=/media/developer/webos-foundry-vtcap
 LS2=/var/luna-service2-dev
 LSCTL=/usr/sbin/ls-control
+# Root-context boot hooks (the webosbrew init.d mechanism); only webos-foundry-* names are ever written or run.
+HOOKDIR=/var/lib/webosbrew/init.d
 OVERLAY_ID=dev.webosfoundry.overlay
 VT_ID=dev.webosfoundry.vtcap
 INSTALLER=luna://com.webos.appInstallService/dev/
@@ -28,12 +30,11 @@ deny() {
 
 # --- argument validators (each mirrors one token of the section 3 grammar) -----------------------------
 
-is_b64() { # value maxlen  ==  [A-Za-z0-9+/]{1,maxlen}={0,2}
+is_b64() { # value maxlen  ==  [A-Za-z0-9+/]{1,maxlen}={0,2}   (no ${v#"$b"}: quadratic on a 120 KB value in some shells)
   b=${1%%=*}
-  p=${1#"$b"}
   case $b in '' | *[!A-Za-z0-9+/]*) return 1 ;; esac
-  case $p in '' | = | ==) ;; *) return 1 ;; esac
-  [ "${#b}" -le "$2" ]
+  case $1 in *=*[!=]*) return 1 ;; esac
+  [ $((${#1} - ${#b})) -le 2 ] && [ "${#b}" -le "$2" ]
 }
 
 is_int() { # value mindigits maxdigits  ==  [0-9]{min,max}
@@ -44,6 +45,27 @@ is_int() { # value mindigits maxdigits  ==  [0-9]{min,max}
 is_ident() { # [A-Za-z][A-Za-z0-9_]*
   case $1 in [A-Za-z]*) ;; *) return 1 ;; esac
   case $1 in *[!A-Za-z0-9_]*) return 1 ;; esac
+}
+
+is_tree_path() { # 2-8 components of [A-Za-z0-9_-][A-Za-z0-9._-]{0,63}, whole path <= 200: never "..", dotfiles, "/x" or "a//b"
+  [ "${#1}" -le 200 ] || return 1
+  rest=$1
+  n=0
+  while :; do
+    part=${rest%%/*}
+    case $part in '' | [!A-Za-z0-9_-]* | *[!A-Za-z0-9._-]*) return 1 ;; esac
+    [ "${#part}" -le 64 ] || return 1
+    n=$((n + 1))
+    case $rest in */*) rest=${rest#*/} ;; *) break ;; esac
+  done
+  [ "$n" -ge 2 ] && [ "$n" -le 8 ]
+}
+
+is_hook() { # webos-foundry-[a-z0-9-]{1,48}
+  case $1 in webos-foundry-*) ;; *) return 1 ;; esac
+  rest=${1#webos-foundry-}
+  case $rest in '' | *[!a-z0-9-]*) return 1 ;; esac
+  [ "${#rest}" -le 48 ]
 }
 
 is_profile() { # [A-Za-z][A-Za-z0-9_-]*
@@ -148,7 +170,7 @@ do_process() { # image|audio profile arg...   (the media upload is this session'
 
 do_install_status() {
   out='{"files":{'
-  for f in status.sh details.js notify.js settings.js remote.js process-image.js process-audio.js dispatch.sh; do
+  for f in status.sh details.js notify.js settings.js remote.js process-image.js process-audio.js apps.js dispatch.sh; do
     [ -f "$D/$f" ] && v=true || v=false
     out=$out'"'$f'":'$v,
   done
@@ -161,12 +183,39 @@ do_install_status() {
 do_install() { # name base64
   case $1 in
     dispatch.sh | status.sh) mode=755 ;;
-    details.js | notify.js | settings.js | remote.js | process-image.js | process-audio.js) mode=644 ;;
+    details.js | notify.js | settings.js | remote.js | process-image.js | process-audio.js | apps.js) mode=644 ;;
     *) deny "unknown file" ;;
   esac
   mkdir -p "$D" || exit 1
   printf '%s' "$2" | b64d >"$D/$1.new" && [ -s "$D/$1.new" ] || { rm -f "$D/$1.new"; echo "Empty or undecodable upload" >&2; exit 1; }
   chmod "$mode" "$D/$1.new" && mv "$D/$1.new" "$D/$1"
+}
+
+do_install_tree() { # path put|begin|more|end base64: one file (or one chunk of it) under $D, atomically renamed on put/end
+  f=$D/$1
+  [ ! -d "$f" ] && mkdir -p "${f%/*}" || { echo "Cannot write $1" >&2; exit 1; }
+  case $2 in
+    put | begin) : >"$f.part" || exit 1 ;;
+    *) [ -f "$f.part" ] || { echo "No upload in progress for $1" >&2; exit 1; } ;;
+  esac
+  printf '%s' "$3" | b64d >>"$f.part" || { rm -f "$f.part"; echo "Undecodable upload" >&2; exit 1; }
+  case $2 in put | end) mv "$f.part" "$f" || exit 1 ;; esac
+}
+
+do_install_hook() { # name base64
+  mkdir -p "$HOOKDIR" || exit 1
+  printf '%s' "$2" | b64d >"$HOOKDIR/.$1.new" && [ -s "$HOOKDIR/.$1.new" ] || { rm -f "$HOOKDIR/.$1.new"; echo "Empty or undecodable hook" >&2; exit 1; }
+  chmod 755 "$HOOKDIR/.$1.new" && mv "$HOOKDIR/.$1.new" "$HOOKDIR/$1"
+}
+
+do_run_hook() { # name start|stop; output is captured so a daemon the hook starts cannot hold this SSH session open
+  [ -x "$HOOKDIR/$1" ] || { echo "No such hook: $1" >&2; exit 1; }
+  out=$(umask 077 && mktemp "$TMP/webos-foundry-hook.XXXXXXXX") || exit 1
+  sh "$HOOKDIR/$1" "$2" </dev/null >"$out" 2>&1
+  rc=$?
+  cat "$out"
+  rm -f "$out"
+  return "$rc"
 }
 
 installer() { # install|remove json
@@ -215,8 +264,15 @@ remove_vtcap() {
 do_uninstall_all() {
   remove_overlay
   remove_vtcap
+  set +f
+  for h in "$HOOKDIR"/webos-foundry-*; do
+    [ -f "$h" ] || continue
+    sh "$h" stop </dev/null >/dev/null 2>&1
+    rm -f "$h"
+  done
+  set -f
   rm -rf "$D"
-  echo "webOS Foundry removed from the TV (scripts, overlay app, vtcap role)."
+  echo "webOS Foundry removed from the TV (scripts, overlay app, vtcap role, boot hooks)."
   echo "Delete the line containing webos-foundry/dispatch.sh from /home/root/.ssh/authorized_keys by hand."
   exit 0
 }
@@ -328,6 +384,32 @@ case $verb in
   uninstall-all)
     [ "$argc" -eq 1 ] || deny "usage: uninstall-all"
     do_uninstall_all
+    ;;
+  app-list)
+    [ "$argc" -eq 1 ] || deny "usage: app-list"
+    exec node "$D/apps.js" list </dev/null
+    ;;
+  app-install)
+    [ "$argc" -eq 2 ] && is_b64 "$2" 1000 || deny "usage: app-install <base64>"
+    exec node "$D/apps.js" install "$2" </dev/null
+    ;;
+  app-uninstall)
+    [ "$argc" -eq 2 ] && is_b64 "$2" 200 || deny "usage: app-uninstall <base64>"
+    exec node "$D/apps.js" uninstall "$2" </dev/null
+    ;;
+  install-tree)
+    [ "$argc" -eq 4 ] && is_tree_path "$2" && is_b64 "$4" 120000 || deny "usage: install-tree <dir/file> put|begin|more|end <base64>"
+    case $3 in put | begin | more | end) ;; *) deny "mode must be put, begin, more or end" ;; esac
+    do_install_tree "$2" "$3" "$4"
+    ;;
+  install-hook)
+    [ "$argc" -eq 3 ] && is_hook "$2" && is_b64 "$3" 120000 || deny "usage: install-hook <webos-foundry-name> <base64>"
+    do_install_hook "$2" "$3"
+    ;;
+  run-hook)
+    [ "$argc" -eq 3 ] && is_hook "$2" || deny "usage: run-hook <webos-foundry-name> start|stop"
+    case $3 in start | stop) ;; *) deny "action must be start or stop" ;; esac
+    do_run_hook "$2" "$3"
     ;;
   *) deny "unknown request" ;;
 esac

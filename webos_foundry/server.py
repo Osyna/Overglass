@@ -6,9 +6,11 @@ access goes through one SSHTransport built from the saved config (webos_foundry.
 file processing runs in a worker thread per job.
 
 Auth: bound to a loopback address a bearer token is optional (but must be right when sent); bound anywhere else
-it is required. GET /api, GET /api/health and the static UI files never need one.
+it is required. GET /api, GET /api/health and the static UI files never need one. With auth_mode "disabled" in
+the config (PATCH /api/config/auth) no route ever needs one, on any bind: GET /api/config/auth reports it.
 """
 import argparse
+import hashlib
 import hmac
 import ipaddress
 import json
@@ -25,25 +27,30 @@ import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from socket import AF_INET6
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, unquote, urlsplit
 
-from webos_foundry import capture, notify, process, tv
-from webos_foundry.config import Config
+from webos_foundry import apps, capture, notify, process, tv
+from webos_foundry.config import AUTH_MODES, Config
 from webos_foundry.errors import ConfigError, NotPairedError, TransportError, TvBusyError, WebosFoundryError
 from webos_foundry.transport import SSHTransport
 
 WEB = Path(__file__).resolve().parent.parent / "web"
-STATIC = {
-    "/": ("index.html", "text/html; charset=utf-8"),
-    "/app.css": ("app.css", "text/css; charset=utf-8"),
-    "/app.js": ("app.js", "text/javascript; charset=utf-8"),
+TYPES = {  # extension -> content type of the files served from web/
+    ".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8", ".js": "text/javascript; charset=utf-8",
+    ".mjs": "text/javascript; charset=utf-8", ".json": "application/json", ".webmanifest": "application/manifest+json",
+    ".svg": "image/svg+xml", ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif",
+    ".webp": "image/webp", ".ico": "image/x-icon", ".woff": "font/woff", ".woff2": "font/woff2", ".ttf": "font/ttf",
+    ".txt": "text/plain; charset=utf-8",
 }
+UPLOAD_RE = re.compile(r"/uploads/([0-9a-f]{32})\.ipk")  # unguessable id = the capability the TV fetches an upload by
 PUBLIC = ("/api", "/api/health")  # no bearer token, ever
+LOCAL = PUBLIC + ("/api/config/auth",)  # answered from this server's own state; no TV or pairing needed
 NOT_PAIRED = "Not paired; run: wof pair --host <ip>"
 CSP = ("default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' blob:; "
-       "media-src 'self' blob:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
+       "font-src 'self'; media-src 'self' blob:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
 MAX_JSON = 64 * 1024
 MAX_UPLOAD = 16 * 1024 * 1024
+MAX_IPK = 128 * 1024 * 1024
 KEEP_JOBS = 20  # finished jobs whose files stay downloadable until the server stops
 ACTIVE = ("running", "cancelling", "restoring", "release_unconfirmed")
 PROFILE_LABELS = {
@@ -168,9 +175,24 @@ def bearer(header):
     return value.strip() if scheme.lower() == "bearer" and value.strip() else None
 
 
-def auth_error(path, header, token, loopback):
-    """Bearer-token check. Public paths pass; on loopback a missing token passes but a wrong one does not."""
-    if path in PUBLIC or path in STATIC:
+def is_static(path):
+    return path != "/api" and not path.startswith("/api/")
+
+
+def static_file(path):
+    """The regular file under web/ that `path` names, or None. Never outside web/ (.. and escaping symlinks)."""
+    rel = unquote(path).lstrip("/") or "index.html"
+    root = WEB.resolve()
+    target = (root / rel).resolve() if "\0" not in rel and not rel.endswith("/") else None
+    if target is None or target.suffix.lower() not in TYPES or root not in target.parents or not target.is_file():
+        return None
+    return target
+
+
+def auth_error(path, header, token, loopback, auth_mode="token"):
+    """Bearer-token check. Public paths pass; on loopback a missing token passes but a wrong one does not.
+    auth_mode "disabled" (explicit opt-in, any bind) passes everything."""
+    if auth_mode == "disabled" or path in PUBLIC or is_static(path):
         return None
     presented = bearer(header)
     if loopback and not token:
@@ -272,7 +294,8 @@ def api_index(request, _):
         "tv": {"address": paired_host()},
         "base": "http://%s" % (request.headers.get("Host") or "%s:%d" % request.server.server_address[:2]),
         "auth": "Authorization: Bearer <server_token> on every route except GET /api and GET /api/health; "
-                "optional on a loopback bind, required otherwise.",
+                "optional on a loopback bind, required otherwise, and never required when GET /api/config/auth says "
+                "mode is \"disabled\".",
         "errors": "Every non-2xx response is {\"error\": \"message\"}. 401 means the bearer token is missing or wrong; "
                   "409 means the TV is reserved by a processing job or busy with another change; 502 means the TV "
                   "refused or did not answer; 503 means this install is not paired with a TV.",
@@ -411,7 +434,6 @@ def get_jobs(_request, _):
 
 
 def post_job(request, _):
-    global ROOT
     data = request.raw_body(MAX_UPLOAD)
     kind, ext = sniff(data)
     profiles = KINDS[kind]["profiles"]
@@ -423,9 +445,8 @@ def post_job(request, _):
     job = Job(kind, profile, safe_stem(request.query.get("name", "upload")))
     with TV_LOCK, LOCK:  # TV_LOCK: never start while a remote/settings command is still running
         reserved()
-        if ROOT is None:
-            ROOT = Path(tempfile.mkdtemp(prefix="wof-web-"))
-        job.dir = Path(tempfile.mkdtemp(prefix=job.id + "-", dir=ROOT))
+        root = work_root()
+        job.dir = Path(tempfile.mkdtemp(prefix=job.id + "-", dir=root))
         source = job.dir / ("input" + ext)
         source.write_bytes(data)
         job.output = job.dir / ("result" + KINDS[kind]["ext"])
@@ -468,6 +489,77 @@ def get_result(request, params):
         raise ApiError(409, "No result: the job is " + state.replace("_", " "))
     request.send_bytes(200, job.output.read_bytes(), KINDS[job.kind]["type"],
                        "%s-%s%s" % (job.name, job.profile, KINDS[job.kind]["ext"]))
+
+
+def work_root():
+    """Private temporary directory for uploads and results, created on first use, removed on exit."""
+    global ROOT
+    with LOCK:
+        if ROOT is None:
+            ROOT = Path(tempfile.mkdtemp(prefix="wof-web-"))
+        return ROOT
+
+
+def get_apps(request, _):
+    return apps.list_apps(request.transport)
+
+
+def post_app(request, _):
+    if request.headers.get("Content-Type", "").split(";")[0].strip() == "application/json":
+        body = request.json_body()
+        return {"message": apps.install_app(request.transport, body.get("url"), body.get("sha256") or None)}
+    data = request.raw_body(MAX_IPK)
+    host = request.headers.get("Host") or ""
+    try:
+        hostname = urlsplit("//" + host).hostname
+    except ValueError:
+        hostname = None
+    if not hostname or is_loopback(hostname):
+        raise ApiError(400, "The TV fetches the upload from this server: open the UI by the computer's LAN address, "
+                            "not localhost")
+    name = safe_stem(request.query.get("name", "app"))
+    uploads = work_root() / "uploads"
+    uploads.mkdir(exist_ok=True)
+    stored = uploads / (secrets.token_hex(16) + ".ipk")
+    stored.write_bytes(data)
+    try:
+        apps.install_app(request.transport, "http://%s/uploads/%s" % (host, stored.name), hashlib.sha256(data).hexdigest())
+    finally:
+        stored.unlink(missing_ok=True)
+    return {"message": "Installed " + name}
+
+
+def delete_app(request, params):
+    return {"message": apps.uninstall_app(request.transport, params["id"])}
+
+
+AUTH_NOTES = {"token": "", "disabled": "Login is off: anyone who can reach this server can control the TV."}
+
+
+def auth_state(mode):
+    return {"mode": mode, "note": AUTH_NOTES[mode]}
+
+
+def get_auth(request, _):
+    return auth_state(request.server.auth_mode)
+
+
+def patch_auth(request, _):
+    body = request.json_body()
+    if body.get("confirm") is not True:
+        raise ApiError(400, 'Send "confirm": true to change the login mode')
+    mode = body.get("mode")
+    if mode not in AUTH_MODES:
+        raise ApiError(400, "mode must be one of: " + ", ".join(AUTH_MODES))
+    if mode == "token" and not request.server.token and not request.server.loopback:
+        raise ApiError(400, "Set server_token in the config (or start with --token) before turning login back on")
+    config = Config.load()  # ConfigError (no saved config) answers 503
+    config.auth_mode = mode
+    config.save()
+    request.server.auth_mode = mode
+    print("Login mode is now %s%s" % (mode, " (anyone who can reach this server controls the TV)" if mode == "disabled" else ""),
+          flush=True)
+    return auth_state(mode)
 
 
 def route(method, path, group, summary, handler, **doc):
@@ -628,17 +720,53 @@ ROUTES = (
     route("GET", "/api/jobs/{id}/result", "Processing", "Download the processed file of a done job.", get_result,
           returns="image/png (3840×2160) or audio/wav (32-bit) as an attachment", tv=[],
           example={"path": "/api/jobs/JOB_ID/result"}),
+    route("GET", "/api/apps", "Apps", "Apps installed on the TV that can be removed (Homebrew and sideloaded apps).",
+          get_apps,
+          returns='[{"id", "title", "icon", "version", "removable": true}]',
+          tv=["dispatch verb app-list → node apps.js list: luna://com.webos.applicationManager/listApps, "
+              "filtered to removable apps (system apps are not removable; there is no dedicated Homebrew-app list call)"],
+          notes="Read-only; takes no TV lock.", example={"path": "/api/apps"}),
+    route("POST", "/api/apps", "Apps",
+          "Install an app (IPK): from a URL the TV downloads itself, or from an IPK uploaded as the request body.",
+          post_app,
+          body='Content-Type: application/json {"url": http(s) URL ≤500 chars, "sha256"?: 64 lowercase hex chars}; or any '
+               "other content type with the raw IPK bytes (at most 128 MiB) as the body",
+          query={"name": "upload only: original file name, used in the reply"},
+          returns='{"message": "App installed" | "Installed NAME"}',
+          tv=["dispatch verb app-install → node apps.js install: downloads the URL with curl to a private TV-side "
+              'temp file, sha256-checks it if given, then luna://com.webos.appInstallService/dev/install '
+              '{"id": "com.ares.defaultName", "ipkUrl": <local path>, "subscribe": true}, streamed until '
+              '"state":"installed" (at most 90 s)'],
+          notes="Without sha256 the download is not verified. An upload is served "
+                "to the TV once at /uploads/<random id>.ipk (no token: the unguessable id is the capability) and deleted "
+                "afterwards; its URL uses the Host you called, so use the computer's LAN address, not localhost. "
+                "Answers when the install has finished or failed, up to 90 s.",
+          example={"path": "/api/apps", "body": {"url": "https://example.com/app.ipk", "sha256": "0" * 64}}),
+    route("DELETE", "/api/apps/{id}", "Apps", "Uninstall an app by its id.", delete_app,
+          returns='{"message": "App removed"}',
+          tv=['dispatch verb app-uninstall → node apps.js uninstall: luna://com.webos.appInstallService/dev/remove '
+              '{"id", "subscribe": true}, streamed until "state":"removed"'],
+          notes="Any id GET /api/apps lists.", example={"path": "/api/apps/com.example.app"}),
+    route("GET", "/api/config/auth", "Settings", "Whether this server asks for a login token.", get_auth,
+          returns='{"mode": "token" | "disabled", "note": str}', tv=[],
+          notes="Reads this server's own state; never contacts the TV. \"disabled\" means no route needs a token on any "
+                "bind: show a persistent warning.", example={"path": "/api/config/auth"}),
+    route("PATCH", "/api/config/auth", "Settings", "Turn the login token requirement off or back on (saved in the config).",
+          patch_auth, body='{"mode": "token" | "disabled", "confirm": true}', returns='{"mode": ..., "note": str}', tv=[],
+          notes="confirm must be literally true. Turning login off lets anyone on the network control the TV.",
+          example={"path": "/api/config/auth", "body": {"mode": "disabled", "confirm": True}}),
 )
 
 
 class FoundryServer(ThreadingHTTPServer):
     daemon_threads = True
 
-    def __init__(self, address, token=None, transport=None):
+    def __init__(self, address, token=None, transport=None, auth_mode="token"):
         if ":" in address[0]:
             self.address_family = AF_INET6
         super().__init__(address, Handler)
         self.token = token or None
+        self.auth_mode = auth_mode
         self.loopback = is_loopback(address[0])
         self.hosts = allowed_hosts(address[0], self.server_address[1])
         self.transport = transport  # None until paired; get_transport() builds it from the saved config on demand
@@ -666,14 +794,14 @@ class Handler(BaseHTTPRequestHandler):
                                    self.headers.get("Sec-Fetch-Site"), self.server.hosts)
             if refused:
                 raise ApiError(*refused)
-            if self.command == "GET" and url.path in STATIC:
-                name, kind = STATIC[url.path]
-                return self.send_bytes(200, (WEB / name).read_bytes(), kind)
-            denied = auth_error(url.path, self.headers.get("Authorization"), self.server.token, self.server.loopback)
+            if self.command == "GET" and is_static(url.path):
+                return self.send_static(url.path)
+            denied = auth_error(url.path, self.headers.get("Authorization"), self.server.token, self.server.loopback,
+                                self.server.auth_mode)
             if denied:
                 raise ApiError(*denied)
             handler, params = self.resolve(url.path)
-            if url.path not in PUBLIC:
+            if url.path not in LOCAL:
                 try:
                     self.transport = self.server.get_transport()
                 except NotPairedError:
@@ -748,6 +876,13 @@ class Handler(BaseHTTPRequestHandler):
     def send_json(self, status, body, headers=None):
         self.send_bytes(status, json.dumps(body).encode(), "application/json", headers=headers)
 
+    def send_static(self, path):
+        match = UPLOAD_RE.fullmatch(path)
+        target = (ROOT / "uploads" / (match.group(1) + ".ipk") if ROOT is not None else None) if match else static_file(path)
+        if target is None or not target.is_file():
+            raise ApiError(404, "Not found")
+        self.send_bytes(200, target.read_bytes(), "application/octet-stream" if match else TYPES[target.suffix.lower()])
+
     def send_bytes(self, status, data, kind, filename=None, headers=None):
         self.send_response(status)
         self.send_header("Content-Type", kind)
@@ -802,18 +937,18 @@ def main(argv=None):
     if args.generate_token:
         print(secrets.token_urlsafe(32))
         return 0
-    token = args.token
-    if not token:
-        try:
-            token = Config.load().server_token
-        except (ConfigError, NotPairedError):
-            token = None
-    if not is_loopback(args.host) and not token:
+    token, auth_mode = args.token, "token"
+    try:
+        config = Config.load()
+        token, auth_mode = token or config.server_token, config.auth_mode
+    except (ConfigError, NotPairedError):
+        pass
+    if not is_loopback(args.host) and not token and auth_mode == "token":
         print("Refusing to listen on %s without a token: set server_token in the config or pass --token "
               "(wof serve --generate-token makes one)." % args.host, file=sys.stderr)
         return 2
     global ROOT
-    server = FoundryServer((args.host, args.port), token=token)
+    server = FoundryServer((args.host, args.port), token=token, auth_mode=auth_mode)
 
     def interrupt(*_):
         raise KeyboardInterrupt
@@ -821,9 +956,10 @@ def main(argv=None):
     signal.signal(signal.SIGTERM, interrupt)
     if paired_host() is None:
         print(NOT_PAIRED, flush=True)
+    login = ("OFF - anyone who can reach this address controls the TV" if auth_mode == "disabled"
+             else "required" if not server.loopback else "optional" if token else "off")
     print("webOS Foundry: http://%s:%d/  (token %s; Ctrl-C stops; a running job is cancelled and the TV restored first)"
-          % (args.host, server.server_address[1], "required" if not server.loopback else "optional" if token else "off"),
-          flush=True)
+          % (args.host, server.server_address[1], login), flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

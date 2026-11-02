@@ -68,3 +68,22 @@ def test_require_malformed_stays_config_error(tmp_path):
     (tmp_path / "config.json").write_text("{")
     with pytest.raises(ConfigError):
         Config.require(tmp_path)
+
+
+def test_auth_mode_defaults_to_token_and_roundtrips(tmp_path):
+    assert Config.for_dir(tmp_path).auth_mode == "token"
+    Config.for_dir(tmp_path, tv_host="h", auth_mode="disabled").save(tmp_path)
+    assert json.loads((tmp_path / "config.json").read_text())["auth_mode"] == "disabled"
+    assert Config.load(tmp_path).auth_mode == "disabled"
+
+
+def test_config_written_before_auth_mode_existed_loads_as_token(tmp_path):
+    (tmp_path / "config.json").write_text('{"tv_host": "h", "ssh_port": 22}')
+    assert Config.load(tmp_path).auth_mode == "token"
+
+
+@pytest.mark.parametrize("value", ['"off"', '"Disabled"', '""', '"none"', "null", "true", "1", '["token"]'])
+def test_invalid_auth_mode_is_rejected(tmp_path, value):
+    (tmp_path / "config.json").write_text('{"tv_host": "h", "auth_mode": %s}' % value)
+    with pytest.raises(ConfigError, match="auth_mode"):
+        Config.load(tmp_path)

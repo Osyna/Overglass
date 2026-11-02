@@ -5,6 +5,7 @@ dispatch.sh really executes here (under the local `sh`), but every TV-facing bin
 output, and its install paths are rewritten to temp dirs. Nothing here touches a TV or a network.
 """
 import base64
+import hashlib
 import json
 import os
 import re
@@ -20,7 +21,7 @@ SHELL = shutil.which("sh")
 NODE = shutil.which("node")
 
 INSTALL_FILES = ("status.sh", "details.js", "notify.js", "settings.js", "remote.js",
-                 "process-image.js", "process-audio.js", "dispatch.sh")
+                 "process-image.js", "process-audio.js", "apps.js", "dispatch.sh")
 JS_FILES = sorted(p.name for p in ASSETS.glob("*.js")) + ["overlay/overlay.js"]
 
 
@@ -135,6 +136,7 @@ class Rig:
         self.tmp = root / "tmp"
         self.vt = root / "vtcap"
         self.ls2 = root / "ls2"
+        self.hooks = root / "init.d"
         self.log = root / "calls.log"
         bin_dir = root / "bin"
         for d in (self.tv, self.tmp, self.vt.parent, bin_dir):
@@ -145,7 +147,7 @@ class Rig:
         # Retarget the path constants; everything else is the shipped script, byte for byte.
         text = (ASSETS / "dispatch.sh").read_text()
         for key, value in (("D", self.tv), ("LOCK", root / "lock"), ("TMP", self.tmp), ("VTDIR", self.vt),
-                           ("LS2", self.ls2), ("LSCTL", bin_dir / "ls-control")):
+                           ("LS2", self.ls2), ("LSCTL", bin_dir / "ls-control"), ("HOOKDIR", self.hooks)):
             text, n = re.subn(rf"^{key}=.*$", f"{key}={value}", text, count=1, flags=re.M)
             assert n == 1, key
         self.script = root / "dispatch.sh"
@@ -189,6 +191,9 @@ GOOD = [
     ("idle-wait", "flock -w 25 -E 75"),
     ("screenshot 1920 1080 jpg", "capture/executeOneShot"),
     ("screenshot 960 540 png", '"format":"PNG","width":960,"height":540'),
+    ("app-list", "node {D}/apps.js list"),
+    (f"app-install {B}", f"apps.js install {B}"),
+    (f"app-uninstall {B}", f"apps.js uninstall {B}"),
 ]
 
 
@@ -391,6 +396,47 @@ ATTACKS = {
     "uninstall-all arg": "uninstall-all now",
     "uninstall-all substitution": "uninstall-all $(id)",
     "uninstall-vtcap newline": "uninstall-vtcap\nid",
+    "app-list arg": "app-list now",
+    "app-install substitution": "app-install $(id)",
+    "app-install semicolon": f"app-install {B}; touch PWNED",
+    "app-install backtick": "app-install `id`",
+    "app-install newline": f"app-install {B}\nid",
+    "app-install too long": "app-install " + "A" * 1001,
+    "app-install bad padding": "app-install QQ===",
+    "app-install extra arg": f"app-install {B} {B}",
+    "app-install missing": "app-install",
+    "app-uninstall too long": "app-uninstall " + "A" * 201,
+    "app-uninstall substitution": "app-uninstall $(id)",
+    "app-uninstall newline": f"app-uninstall {B}\nid",
+    "tree traversal": f"install-tree ../x/y put {B}",
+    "tree traversal middle": f"install-tree a/../../x put {B}",
+    "tree traversal tail": f"install-tree a/b/.. put {B}",
+    "tree absolute": f"install-tree /etc/passwd put {B}",
+    "tree absolute dir": f"install-tree /tmp/x/y put {B}",
+    "tree top-level file": f"install-tree dispatch.sh put {B}",
+    "tree dotfile": f"install-tree a/.profile put {B}",
+    "tree dot dir": f"install-tree .ssh/authorized_keys put {B}",
+    "tree double slash": f"install-tree a//b put {B}",
+    "tree trailing slash": f"install-tree a/b/ put {B}",
+    "tree too deep": "install-tree " + "/".join("d" * 9) + f" put {B}",
+    "tree too long": "install-tree " + "/".join(["d" * 40] * 6) + f" put {B}",
+    "tree long component": "install-tree a/" + "b" * 65 + f" put {B}",
+    "tree bad mode": f"install-tree a/b exec {B}",
+    "tree substitution": f"install-tree a/$(id) put {B}",
+    "tree semicolon": f"install-tree a/b;touch put {B}",
+    "tree newline": f"install-tree a/b put {B}\nid",
+    "tree payload charset": "install-tree a/b put a-b_c",
+    "tree no payload": "install-tree a/b put",
+    "tree payload too long": "install-tree a/b put " + "A" * 120001,
+    "hook bad name": f"install-hook rc.local {B}",
+    "hook name traversal": f"install-hook webos-foundry-../x {B}",
+    "hook uppercase": f"install-hook webos-foundry-Up {B}",
+    "hook extension": f"install-hook webos-foundry-a.sh {B}",
+    "hook no payload": "install-hook webos-foundry-x",
+    "run-hook foreign": "run-hook sh start",
+    "run-hook traversal": "run-hook ../../bin/sh start",
+    "run-hook bad action": "run-hook webos-foundry-x restart",
+    "run-hook substitution": "run-hook webos-foundry-x $(id)",
 }
 
 
@@ -412,7 +458,298 @@ def test_rejects_unset_variable(rig):
 def test_every_verb_in_the_contract_has_a_branch():
     verbs = ("status details remote settings-list settings-set notify-toast notify-say notify-overlay screenshot "
              "stream-start process-image process-audio idle-wait install install-overlay uninstall-overlay "
-             "install-vtcap uninstall-vtcap uninstall-all install-status").split()
+             "install-vtcap uninstall-vtcap uninstall-all install-status app-list app-install app-uninstall "
+             "install-tree install-hook run-hook").split()
     script = (ASSETS / "dispatch.sh").read_text()
     for verb in verbs:
         assert re.search(rf"^  {re.escape(verb)}\)$", script, re.M), verb
+
+
+# ---------------------------------------------------------------- directory push and boot hooks
+
+def snapshot(root):
+    return sorted(p.relative_to(root).as_posix() for p in root.rglob("*"))
+
+
+def test_install_tree_writes_nested_files_under_the_root(rig):
+    for path, text in (("tv-server/server.js", "js"), ("tv-server/web/css/app.css", "css"), ("a_b/c-d/e.f.txt", "txt")):
+        assert rig.run(f"install-tree {path} put {b64(text)}").returncode == 0, path
+        assert (rig.tv / path).read_text() == text and not (rig.tv / (path + ".part")).exists()
+        assert stat.S_IMODE((rig.tv / path).stat().st_mode) == 0o644
+    assert rig.run(f"install-tree tv-server/server.js put {b64('new')}").returncode == 0  # overwrite, atomically
+    assert (rig.tv / "tv-server/server.js").read_text() == "new"
+
+
+def test_install_tree_chunks_append_and_only_the_last_publishes(rig):
+    assert rig.run(f"install-tree tv-server/big.bin begin {b64('AAA')}").returncode == 0
+    assert not (rig.tv / "tv-server/big.bin").exists()  # nothing visible until the end chunk
+    assert rig.run(f"install-tree tv-server/big.bin more {b64('BBB')}").returncode == 0
+    assert rig.run(f"install-tree tv-server/big.bin end {b64('CC')}").returncode == 0
+    assert (rig.tv / "tv-server/big.bin").read_bytes() == b"AAABBBCC" and not (rig.tv / "tv-server/big.bin.part").exists()
+    assert rig.run(f"install-tree tv-server/x more {b64('a')}").returncode == 1  # no begin: refused, nothing written
+    assert rig.run(f"install-tree tv-server/x end {b64('a')}").returncode == 1
+    assert not (rig.tv / "tv-server/x").exists()
+    assert rig.run(f"install-tree tv-server put {b64('a')}").returncode == 64  # one component: not a file under a directory
+
+
+def test_install_tree_never_writes_outside_the_root_or_over_a_directory(rig):
+    (rig.tv / "tv-server").mkdir()
+    before = snapshot(rig.root)
+    escapes = ["../x/y", "a/../../escape", "a/b/..", "/etc/x/y", "/tmp/webos/y", "a/.x", ".ssh/key", "a//b", "a/b/",
+               "dispatch.sh", "a/b;touch/c", "a/$(touch PWNED)/b", "a/b c/d", "a/\\..\\x"]
+    for path in escapes:
+        result = rig.run(f"install-tree {path} put {B}")
+        assert result.returncode == 64, path
+    assert snapshot(rig.root) == before  # not one file or directory created anywhere
+    assert not (rig.root / "PWNED").exists()
+    clash = rig.run(f"install-tree tv-server put {B}")  # a path that is an existing directory is refused, not mv'd into
+    assert clash.returncode == 64
+    (rig.tv / "tv-server/web").mkdir()
+    assert rig.run(f"install-tree tv-server/web put {B}").returncode == 1
+    assert snapshot(rig.root) == before + ["webos-foundry/tv-server/web"]
+
+
+HOOK = "#!/bin/sh\necho \"hook $1\" >> \"$FAKE_LOG\"\necho \"hook says $1\"\nsleep 30 &\n"  # sleep: a daemon holding stdout
+
+
+def test_hook_install_run_and_uninstall(rig):
+    name = "webos-foundry-tv-server"
+    assert rig.run(f"install-hook {name} {b64(HOOK)}").returncode == 0
+    hook = rig.hooks / name
+    assert hook.read_text() == HOOK and os.access(hook, os.X_OK) and not list(rig.hooks.glob(".*new"))
+    started = rig.run(f"run-hook {name} start")  # must return even though the hook leaves a process on stdout
+    assert started.returncode == 0 and b"hook says start" in started.stdout
+    assert "hook start" in rig.calls() and list(rig.tmp.iterdir()) == []
+    assert rig.run("run-hook webos-foundry-missing start").returncode == 1
+    assert rig.run(f"install-hook {name} {b64('')}").returncode in (1, 64)
+    other = rig.hooks / "someone-elses-hook"
+    other.write_text("#!/bin/sh\n")
+    removed = rig.run("uninstall-all")
+    assert removed.returncode == 0 and not hook.exists() and other.exists()  # only webos-foundry-* hooks are touched
+    assert "hook stop" in rig.calls()
+
+
+# ---------------------------------------------------------------- apps.js against fake curl + luna-send
+
+FAKE_CURL = r"""#!/bin/sh
+# args: --fail --location --silent --show-error --max-time N --output DEST -- URL
+echo "curl $*" >> "$FAKE_LOG"
+dest=""; prev=""
+for a in "$@"; do [ "$prev" = "--output" ] && dest="$a"; prev="$a"; done
+case $FAKE_SCENARIO in
+  download-fail) echo "curl: (22) The requested URL returned error" >&2; exit 22 ;;
+  empty) : > "$dest" ;;
+  *) printf '%s' "$FAKE_IPK_BYTES" > "$dest" ;;
+esac
+"""
+
+FAKE_LUNA = r"""#!/bin/sh
+# args: [-n 1] -w MS [-i] URI JSON ; scenario from FAKE_SCENARIO
+echo "luna-send $*" >> "$FAKE_LOG"
+case $FAKE_SCENARIO in
+  ok)
+    echo '{"returnValue":true,"state":"downloading","progress":10}'
+    echo '{"returnValue":true,"state":"installing"}'
+    echo '{"returnValue":true,"state":"installed"}'
+    exec sleep 30 ;;
+  refused)
+    echo '{"returnValue":true,"state":"downloading","progress":10}'
+    echo '{"returnValue":false,"errorText":"Install refused"}'
+    exec sleep 30 ;;
+  hang)
+    echo '{"returnValue":true,"state":"downloading","progress":10}'
+    exec sleep 30 ;;
+  dies)
+    echo '{"returnValue":true,"state":"downloading","progress":10}' ;;
+  plain)
+    echo '{"returnValue":true,"state":"removed"}'
+    exec sleep 30 ;;
+  list)
+    echo '{"returnValue":true,"apps":[{"id":"com.webos.app.home","title":"Home","removable":false},{"id":"com.example.game","title":"Game","icon":"/i.png","version":"1.2.3","removable":true,"extra":1}]}' ;;
+  listfail)
+    echo '{"returnValue":false}' ;;
+esac
+"""
+
+IPK_BYTES = "IPKDATA"
+SHA = hashlib.sha256(IPK_BYTES.encode()).hexdigest()
+WRONG_SHA = "ab" * 32
+
+
+@pytest.fixture
+def apps_rig(tmp_path):
+    if NODE is None:
+        pytest.skip("no node")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "luna-send").write_text(FAKE_LUNA)
+    (bin_dir / "luna-send").chmod(0o755)
+    (bin_dir / "curl").write_text(FAKE_CURL)
+    (bin_dir / "curl").chmod(0o755)
+    log = tmp_path / "calls.log"
+
+    def run(*args, scenario="ok", timeout_ms=None, ipk_bytes=IPK_BYTES):
+        env = {"PATH": f"{bin_dir}:{Path(NODE).parent}:/usr/bin:/bin", "FAKE_LOG": str(log),
+               "FAKE_SCENARIO": scenario, "FAKE_IPK_BYTES": ipk_bytes, "TMPDIR": str(tmp_path)}
+        if timeout_ms:
+            env["WOF_APPS_TIMEOUT_MS"] = str(timeout_ms)
+            env["WOF_APPS_DOWNLOAD_TIMEOUT_MS"] = str(timeout_ms)
+        return subprocess.run([NODE, str(ASSETS / "apps.js"), *args], capture_output=True, text=True, env=env,
+                              timeout=20, cwd=tmp_path)
+
+    run.calls = lambda: log.read_text().splitlines() if log.exists() else []
+    run.root = tmp_path
+    return run
+
+
+def request(**fields):
+    return b64(json.dumps(fields))
+
+
+def test_apps_install_downloads_then_streams_until_installed(apps_rig):
+    result = apps_rig("install", request(url="https://example.com/a.ipk", sha256=SHA))
+    assert result.returncode == 0 and json.loads(result.stdout) == {"returnValue": True, "state": "installed"}
+    assert result.stdout.count("\n") == 1  # only the terminal line, none of the progress
+    calls = apps_rig.calls()
+    curl_call, luna_call = calls[0], calls[1]
+    assert curl_call.startswith("curl ") and "-- https://example.com/a.ipk" in curl_call
+    assert "-i luna://com.webos.appInstallService/dev/install " in luna_call
+    body = json.loads(luna_call.split("/install ", 1)[1])
+    assert body["id"] == "com.ares.defaultName" and body["subscribe"] is True
+    assert body["ipkUrl"].endswith(".ipk") and body["ipkUrl"] != "https://example.com/a.ipk"  # a local path, not the URL
+    assert not Path(body["ipkUrl"]).exists()  # deleted after the attempt, success or failure
+
+
+def test_apps_install_without_hash_skips_verification(apps_rig):
+    assert apps_rig("install", request(url="http://tv.example:8765/uploads/x.ipk")).returncode == 0
+
+
+def test_apps_install_hash_mismatch_never_reaches_luna(apps_rig):
+    result = apps_rig("install", request(url="https://example.com/a.ipk", sha256=WRONG_SHA))
+    assert result.returncode == 1 and "sha256" in result.stderr.lower()
+    assert all("luna-send" not in c for c in apps_rig.calls())  # curl ran, luna-send never did
+
+
+def test_apps_install_download_failure(apps_rig):
+    result = apps_rig("install", request(url="https://example.com/a.ipk"), scenario="download-fail")
+    assert result.returncode == 1 and "Download failed" in result.stderr
+    assert all("luna-send" not in c for c in apps_rig.calls())
+
+
+def test_apps_install_empty_download_is_rejected(apps_rig):
+    result = apps_rig("install", request(url="https://example.com/a.ipk"), scenario="empty")
+    assert result.returncode == 1 and "empty" in result.stderr.lower()
+
+
+def test_apps_install_failure_and_timeout(apps_rig):
+    refused = apps_rig("install", request(url="https://example.com/a.ipk"), scenario="refused")
+    assert refused.returncode == 1 and json.loads(refused.stdout)["errorText"] == "Install refused"
+    assert "Install refused" in refused.stderr
+    hang = apps_rig("install", request(url="https://example.com/a.ipk"), scenario="hang", timeout_ms=400)
+    assert hang.returncode == 1 and "install timed out" in hang.stderr and hang.stdout == ""
+    dies = apps_rig("install", request(url="https://example.com/a.ipk"), scenario="dies")
+    assert dies.returncode == 1 and "without finishing" in dies.stderr
+
+
+@pytest.mark.parametrize("name,payload", [
+    ("not base64", "a b!"),
+    ("not json", b64("nope")),
+    ("array", b64("[1]")),
+    ("url missing", request(sha256=SHA)),
+    ("ftp scheme", request(url="ftp://example.com/a.ipk")),
+    ("file scheme", request(url="file:///etc/passwd")),
+    ("whitespace in url", request(url="http://example.com/a b.ipk")),
+    ("quote in url", request(url='http://example.com/a"b')),
+    ("newline in url", request(url="http://example.com/a\nb")),
+    ("oversized url", request(url="http://example.com/" + "a" * 482)),
+    ("url not a string", request(url=["http://example.com/a"])),
+    ("sha too short", request(url="http://e.com/a", sha256="ab" * 31)),
+    ("sha uppercase", request(url="http://e.com/a", sha256="AB" * 32)),
+    ("sha not hex", request(url="http://e.com/a", sha256="zz" * 32)),
+    ("sha with prefix", request(url="http://e.com/a", sha256="sha256:" + SHA)),
+    ("extra field", request(url="http://e.com/a", ipkHash="x")),
+])
+def test_apps_install_rejects_bad_requests_before_curl(apps_rig, name, payload):
+    result = apps_rig("install", payload)
+    assert result.returncode == 3 and result.stderr and result.stdout == "", name
+    assert apps_rig.calls() == []
+
+
+def test_apps_install_url_is_a_curl_argument_never_a_shell_command(apps_rig):
+    url = "http://example.com/$(touch${IFS}PWNED);touch${IFS}PWNED&|x.ipk"
+    assert apps_rig("install", request(url=url)).returncode == 0
+    assert ("-- " + url) in apps_rig.calls()[0]  # argv, not shell-interpolated: curl receives it as inert data
+    assert not (apps_rig.root / "PWNED").exists()
+
+
+def test_apps_uninstall(apps_rig):
+    ok = apps_rig("uninstall", b64("com.example.game"), scenario="plain")
+    assert ok.returncode == 0 and json.loads(ok.stdout) == {"returnValue": True, "state": "removed"}
+    assert json.loads(apps_rig.calls()[0].split("/remove ", 1)[1]) == {"id": "com.example.game", "subscribe": True}
+    refused = apps_rig("uninstall", b64("com.example.game"), scenario="refused")
+    assert refused.returncode == 1 and "uninstall failed" in refused.stderr
+    hang = apps_rig("uninstall", b64("com.example.game"), scenario="hang", timeout_ms=400)
+    assert hang.returncode == 1 and "uninstall timed out" in hang.stderr
+
+
+@pytest.mark.parametrize("app_id", ["", "../x", "a b", "a;id", "$(id)", "-rf", ".hidden", "a" * 101, "a\nb"])
+def test_apps_uninstall_rejects_bad_ids(apps_rig, app_id):
+    result = apps_rig("uninstall", b64(app_id) if app_id else "")
+    assert result.returncode == 3 and apps_rig.calls() == []
+
+
+def test_apps_list_keeps_only_removable_apps(apps_rig):
+    result = apps_rig("list", scenario="list")
+    assert result.returncode == 0
+    assert json.loads(result.stdout) == [{"id": "com.example.game", "title": "Game", "icon": "/i.png",
+                                         "version": "1.2.3", "removable": True}]
+    assert "luna://com.webos.applicationManager/listApps" in apps_rig.calls()[0]
+    assert apps_rig("list", scenario="listfail").returncode == 1
+
+
+
+def test_apps_usage_errors(apps_rig):
+    assert apps_rig().returncode == 3 and apps_rig("nope").returncode == 3
+
+
+class RigTransport:
+    """Transport whose `run` executes the real dispatch.sh in the rig, so Python's chunking meets the shell's checks."""
+
+    def __init__(self, rig):
+        self.rig = rig
+
+    def run(self, command, data=b"", timeout=20):
+        result = self.rig.run(command, stdin=data)
+        if result.returncode != 0:
+            from webos_foundry.errors import TransportError
+            raise TransportError(result.stderr.decode())
+        return result.stdout
+
+
+def test_python_directory_push_roundtrips_through_dispatch_sh(rig, tmp_path):
+    from webos_foundry import install
+    big = bytes(range(256)) * 1100  # several chunks, binary
+    local = tmp_path / "local"
+    files = {"server.js": b"// server\n", "web/index.html": b"<html>", "web/css/app.css": b"a{}", "web/js/big.bin": big,
+             "web/fonts/x-1_2.woff2": b"\0\1\2", "config.json": b"{}", ".hidden": b"x"}
+    for name, data in files.items():
+        (local / name).parent.mkdir(parents=True, exist_ok=True)
+        (local / name).write_bytes(data)
+    pushed = install.push_tree(RigTransport(rig), local, "tv-server", skip=("config.json",))
+    assert len(pushed) == 5
+    for name, data in files.items():
+        target = rig.tv / "tv-server" / name
+        if name in ("config.json", ".hidden"):
+            assert not target.exists()
+        else:
+            assert target.read_bytes() == data, name
+    assert not list(rig.tv.rglob("*.part"))
+    assert sorted(p.name for p in rig.tv.iterdir()) == ["status.sh", "tv-server"]  # nothing outside the tv-server subtree
+
+
+def test_python_hook_push_roundtrips_through_dispatch_sh(rig):
+    from webos_foundry import dispatcher, install
+    transport = RigTransport(rig)
+    transport.run(dispatcher.build_install_hook(install.TV_SERVER_HOOK, b64(HOOK)))
+    out = transport.run(dispatcher.build_run_hook(install.TV_SERVER_HOOK, "start"))
+    assert out == b"hook says start\n" and (rig.hooks / install.TV_SERVER_HOOK).read_text() == HOOK

@@ -12,13 +12,20 @@ from .errors import ValidationError
 REMOTE_ACTIONS = ("wake", "power_off", "home", "back", "up", "down", "left", "right", "ok",
                   "hdmi", "volume_up", "volume_down", "mute", "unmute")
 INSTALL_FILES = ("status.sh", "details.js", "notify.js", "settings.js", "remote.js",
-                 "process-image.js", "process-audio.js", "dispatch.sh")
+                 "process-image.js", "process-audio.js", "apps.js", "dispatch.sh")
 REMOTE_DIR = "/var/lib/webosbrew/webos-foundry"
 LOCK = "/tmp/webos-foundry.lock"
 
 _NAME = r"[A-Za-z][A-Za-z0-9_]*"
 _PROFILE = r"[A-Za-z][A-Za-z0-9_-]*"
 _B64 = r"[A-Za-z0-9+/]"
+# One path component of a pushed tree: no leading dot (so never "." / ".." / a dotfile), a bounded charset.
+_PART = r"[A-Za-z0-9_-][A-Za-z0-9._-]{0,63}"
+_TREE_PATH = r"%s(?:/%s){1,7}" % (_PART, _PART)  # at least one directory: never a top-level asset such as dispatch.sh
+HOOK_PREFIX = "webos-foundry-"
+_HOOK = HOOK_PREFIX + r"[a-z0-9-]{1,48}"
+TREE_MODES = ("put", "begin", "more", "end")  # put = whole file; begin/more/end = chunks of one file (atomic rename on end)
+MAX_TREE_PATH = 200
 _REMOTE_PLAIN = "|".join(action for action in REMOTE_ACTIONS if action != "hdmi")
 
 GRAMMAR = {verb: re.compile(pattern) for verb, pattern in {
@@ -42,6 +49,13 @@ GRAMMAR = {verb: re.compile(pattern) for verb, pattern in {
     "install-vtcap": r"install-vtcap %s+={0,2}" % _B64,
     "uninstall-vtcap": r"uninstall-vtcap",
     "uninstall-all": r"uninstall-all",
+    "app-list": r"app-list",
+    "app-install": r"app-install %s{1,1000}={0,2}" % _B64,
+    "app-uninstall": r"app-uninstall %s{1,200}={0,2}" % _B64,
+    "install-tree": r"install-tree (?=.{1,%d} )%s (?:%s) %s{1,%d}={0,2}"
+                    % (MAX_TREE_PATH, _TREE_PATH, "|".join(TREE_MODES), _B64, 120_000),
+    "install-hook": r"install-hook %s %s{1,120000}={0,2}" % (_HOOK, _B64),
+    "run-hook": r"run-hook %s (?:start|stop)" % _HOOK,
 }.items()}
 
 
@@ -167,3 +181,27 @@ def build_uninstall_vtcap() -> str:
 
 def build_uninstall_all() -> str:
     return "uninstall-all"
+
+
+def build_app_list() -> str:
+    return "app-list"
+
+
+def build_app_install(b64) -> str:
+    return _built("app-install", "app-install " + _text(b64, "Payload"))
+
+
+def build_app_uninstall(b64) -> str:
+    return _built("app-uninstall", "app-uninstall " + _text(b64, "Payload"))
+
+
+def build_install_tree(path, mode, b64) -> str:
+    return _built("install-tree", "install-tree %s %s %s" % (_text(path, "Path"), _text(mode, "Mode"), _text(b64, "Payload")))
+
+
+def build_install_hook(name, b64) -> str:
+    return _built("install-hook", "install-hook %s %s" % (_text(name, "Hook name"), _text(b64, "Payload")))
+
+
+def build_run_hook(name, action="start") -> str:
+    return _built("run-hook", "run-hook %s %s" % (_text(name, "Hook name"), _text(action, "Action")))

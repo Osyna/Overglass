@@ -17,7 +17,9 @@ on-screen cards, screenshots and live view, with a locked-down SSH key instead o
 2. **Pair:** `wof pair --host 192.168.1.50 --root-key ~/.ssh/tv_root_key`. This uses your root key once,
    creates a dedicated restricted key, installs the TV-side scripts and then forgets the root key.
 3. **Serve and connect:** `wof serve --host 0.0.0.0 --token "$TOKEN"`, then add the **webOS Foundry**
-   integration in Home Assistant (host, port `8765`, token), or just open the web UI.
+   integration in Home Assistant (host, port `8765`, token), or just open the web UI. No PC to leave
+   running? `wof install --tv-server` puts the same UI and API on the TV itself instead — see
+   [docs/TV-SERVER.md](docs/TV-SERVER.md).
 
 ## Features
 
@@ -37,6 +39,14 @@ on-screen cards, screenshots and live view, with a locked-down SSH key instead o
   60.1 fps requesting 60; those are one TV's numbers.
 * **Image/audio processing:** push a PNG/JPEG or WAV through the TV's own AI picture or sound pipeline
   and get the result back.
+* **Install Homebrew apps:** push an IPK by URL (the TV downloads and optionally sha256-verifies it) or
+  upload one straight from the web UI; list and uninstall sideloaded apps too.
+* **Two ways to run it:** host the server on a PC and reach the TV over SSH (`wof serve`), or push a small
+  Node server to the TV itself so any phone on the LAN can open it with no PC at all (`wof install
+  --tv-server`; see [docs/TV-SERVER.md](docs/TV-SERVER.md)).
+* **Login you can turn off:** token auth is on by default; disable it from the web UI or
+  `PATCH /api/config/auth` for a trusted LAN with no sign-in step, with a persistent on-screen warning
+  while it's off.
 * **Least privilege:** after pairing, the TV accepts only a fixed command grammar through a forced
   command; there is no verb for erase, firmware, Pixel Refresher triggering, accounts or commissioning
   ([docs/SAFETY.md](docs/SAFETY.md)).
@@ -88,6 +98,7 @@ install, the entity list and automation examples.
 ## Documentation
 
 * [docs/INSTALL.md](docs/INSTALL.md): prerequisites, pairing, Docker, systemd, troubleshooting
+* [docs/TV-SERVER.md](docs/TV-SERVER.md): run the server on the TV itself instead of a PC
 * [docs/CLI.md](docs/CLI.md): every `wof` command
 * [docs/API.md](docs/API.md): HTTP API and authentication
 * [docs/HOME-ASSISTANT.md](docs/HOME-ASSISTANT.md): integration, entities, services, automations

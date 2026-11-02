@@ -301,9 +301,11 @@ inventing a private side channel.
 
 ## 10. App push, auth toggle, and the on-TV server (this round's addition)
 
-Three additions, built in parallel against this frozen contract. Evidence for the Homebrew install/uninstall
-calls below is a real, TV-tested exchange from this project's own session history (installing and removing
-`com.gabrielecirulli.app2048.webos` via `org.webosbrew.hbchannel.service`), not a guess.
+**Correction, applied after the first build pass:** `§10.2` originally guessed a
+`org.webosbrew.hbchannel.service` URL+hash install call. That was never actually proven this session; it was
+a conflation with a different, informal exploration. The mechanism below instead matches this project's own
+already-committed, already-working code: `slopbro/c5_overlay.py`'s `_installer()`, which installs and removes
+the overlay app via `luna://com.webos.appInstallService/dev/{install,remove}` and is the real evidence.
 
 ### 10.1 Config
 `Config` gets one new field: `auth_mode: str = "token"`, allowed values `"token"` (current behaviour: optional
@@ -312,22 +314,25 @@ risk the user opts into for a trusted LAN). `Config.load()`'s validation must re
 
 ### 10.2 Dispatcher verb: `app-install`
 New verb, same grammar style as the others: `app-install <b64>` where the decoded payload is JSON
-`{"url": "http(s) URL, <=500 chars", "sha256": "64 lowercase hex chars"}`. The regex rejects anything else
-(scheme, length, charset) before the payload ever reaches `luna-send`. `tv-assets/apps.js` (new) implements:
-- `node apps.js install <b64>` — decode, validate again host-side, then subscribe to
-  `luna://org.webosbrew.hbchannel.service.install` with `{"ipkUrl": url, "ipkHash": "sha256:" + sha256}`. The
-  service streams progress lines (`{"returnValue":true,"statusText":"Downloading...", "progress":N}`, then
-  `"Verifying..."`, `"Installing..."`); print only the line whose `statusText` is `"Finished"` (success) or
-  whose `returnValue` is `false` (failure), then exit. Timeout 90 s → exit 1, `"install timed out"` on stderr.
-- `node apps.js uninstall <b64-of-app-id>` — `luna://org.webosbrew.hbchannel.service.uninstall` with
-  `{"id": appId}`; print the final `{"returnValue":...}` line.
+`{"url": "http(s) URL, <=500 chars", "sha256"?: "64 lowercase hex chars"}`. The regex rejects anything else
+(scheme, length, charset) before the payload ever reaches the TV. `tv-assets/apps.js` (new) implements:
+- `node apps.js install <b64>` — decode, validate again host-side, download `url` with `curl` to a private
+  temp file (the TV has `curl`, per `docs/FINDINGS.md`), verify `sha256` against the downloaded bytes if one
+  was given (Node's own `crypto` module, no TV tool needed), then subscribe to
+  `luna://com.webos.appInstallService/dev/install` with `{"id": "com.ares.defaultName", "ipkUrl": <local
+  path>, "subscribe": true}` — the same call, same placeholder id, this project's own `c5_overlay.py`
+  installer already proved works on this TV; `ipkUrl` here is a **local filesystem path**, not the URL. The
+  service streams lines carrying a `state` field; print only the line whose `state` is `"installed"` (success)
+  or whose `errorText` is set (failure), then exit; delete the temp file either way. Timeout 90 s → exit 1,
+  `"install timed out"` on stderr.
+- `node apps.js uninstall <b64-of-app-id>` — `luna://com.webos.appInstallService/dev/remove` with `{"id":
+  appId, "subscribe": true}`; same streaming pattern, terminal `state` is `"removed"`.
 - `node apps.js list` — `luna://com.webos.applicationManager/listApps`; print the `apps` array filtered to
-  `removable: true` (system apps are not removable; Homebrew/sideloaded apps are) as
+  `removable: true` (system apps are not removable; sideloaded apps are) as
   `[{"id","title","icon","version","removable"}]`. There is no confirmed dedicated "list Homebrew apps" method;
   this is the documented heuristic, not an assumed API.
-New dispatcher-adjacent verb `app-list` and `app-uninstall <b64-of-id>` round out the set (same file, same
-streaming-until-terminal-line pattern for uninstall since hbchannel's `uninstall` was observed to behave the
-same way as `install`).
+New dispatcher-adjacent verbs `app-list` and `app-uninstall <b64-of-id>` round out the set (same file, same
+streaming-until-terminal-`state` pattern as install).
 
 ### 10.3 Python/server additions
 `webos_foundry/apps.py` (new): `list_apps(transport)`, `install_app(transport, url, sha256)`,

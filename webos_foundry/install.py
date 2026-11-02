@@ -1,8 +1,15 @@
 """Push, refresh and remove the TV-side assets over the dedicated (restricted) key.
 
-`tv-assets/` lives at the repository root, not inside the package, so a plain checkout or editable
-install works and a wheel does not carry it yet. Set WEBOS_FOUNDRY_ASSETS to point at another copy;
-moving the directory into package data is a packaging follow-up.
+`tv-assets/` (and the optional on-TV server in `tv-server/`) live at the repository root, not inside the package,
+so a plain checkout or editable install works and a wheel does not carry them yet. Set WEBOS_FOUNDRY_ASSETS /
+WEBOS_FOUNDRY_TV_SERVER / WEBOS_FOUNDRY_WEB to point at other copies; moving them into package data is a
+packaging follow-up.
+
+On-TV server layout (ARCHITECTURE.md §10.4), what `install(..., tv_server=True)` pushes:
+  tv-server/<rel>          -> /var/lib/webosbrew/webos-foundry/tv-server/<rel>   (every file but config.json and the hook)
+  web/<rel>                -> /var/lib/webosbrew/webos-foundry/tv-server/web/<rel>
+  tv-server/init.d-hook.sh -> /var/lib/webosbrew/init.d/webos-foundry-tv-server   (mode 755), then run with `start`
+The hook takes `start` (default; re-entrant) or `stop`; the TV's own config.json (token) is never overwritten.
 """
 import base64
 import io
@@ -17,19 +24,38 @@ from .dispatcher import INSTALL_FILES
 from .errors import ValidationError
 
 ASSETS_ENV = "WEBOS_FOUNDRY_ASSETS"
+TV_SERVER_ENV = "WEBOS_FOUNDRY_TV_SERVER"
+WEB_ENV = "WEBOS_FOUNDRY_WEB"
+TV_SERVER_DIR = "tv-server"  # under REMOTE_DIR on the TV
+TV_SERVER_HOOK_SOURCE = "init.d-hook.sh"
+TV_SERVER_HOOK = "webos-foundry-tv-server"
+TV_SERVER_KEEP_REMOTE = ("config.json",)  # TV-owned state: never pushed
 VTCAP_MODES = ("auto", "yes", "no")
 # The base64 payload is one SSH command argument; Linux caps a single argument at 128 KiB.
 MAX_PAYLOAD_B64 = 120_000
+CHUNK = MAX_PAYLOAD_B64 // 4 * 3  # raw bytes per tree-push command; a multiple of 3 so every chunk is unpadded base64
 AUTHORIZED_KEYS_HINT = ("The restricted key line in /home/root/.ssh/authorized_keys (the one starting with "
                         "command=\"sh /var/lib/webosbrew/webos-foundry/dispatch.sh\") is left in place; "
                         "delete it by hand to finish removing webOS Foundry.")
 
 
-def assets_dir() -> Path:
-    path = Path(os.environ.get(ASSETS_ENV) or Path(__file__).resolve().parent.parent / "tv-assets")
+def _repo_dir(name, env, label):
+    path = Path(os.environ.get(env) or Path(__file__).resolve().parent.parent / name)
     if not path.is_dir():
-        raise FileNotFoundError("TV assets not found at %s (set %s)" % (path, ASSETS_ENV))
+        raise FileNotFoundError("%s not found at %s (set %s)" % (label, path, env))
     return path
+
+
+def assets_dir() -> Path:
+    return _repo_dir("tv-assets", ASSETS_ENV, "TV assets")
+
+
+def tv_server_dir() -> Path:
+    return _repo_dir(TV_SERVER_DIR, TV_SERVER_ENV, "TV server files")
+
+
+def web_dir() -> Path:
+    return _repo_dir("web", WEB_ENV, "Web UI files")
 
 
 def _payload(data):
@@ -93,14 +119,61 @@ def _push_files(transport):
     return list(names)
 
 
-def install(transport, *, overlay=True, vtcap="auto") -> dict:
-    """Push every TV file; optionally the overlay app and the native capture client.
+def push_tree(transport, local_dir, remote_prefix, *, skip=()) -> list:
+    """Push every regular file under `local_dir` to <REMOTE_DIR>/<remote_prefix>/<relative path>, one install-tree
+    command per chunk. Hidden files (any dot-prefixed component) and the relative paths in `skip` are left out.
+    Every path and file is checked before the first byte is sent. Returns the remote-relative paths pushed."""
+    root = Path(local_dir)
+    plan = []
+    for path in sorted(root.rglob("*")):
+        rel = path.relative_to(root).as_posix()
+        if any(part.startswith(".") for part in rel.split("/")) or rel in skip or path.is_dir():
+            continue
+        remote = "%s/%s" % (remote_prefix, rel)
+        if path.is_symlink() or not path.is_file():
+            raise ValidationError("Not a regular file: " + rel)
+        if len(remote) > dispatcher.MAX_TREE_PATH or not dispatcher.GRAMMAR["install-tree"].fullmatch(
+                "install-tree %s put QQ==" % remote):
+            raise ValidationError("Cannot push %s: name not allowed on the TV" % rel)
+        data = path.read_bytes()
+        if not data:
+            raise ValidationError("Cannot push an empty file: " + rel)
+        plan.append((remote, data))
+    for remote, data in plan:
+        chunks = [data[i:i + CHUNK] for i in range(0, len(data), CHUNK)]
+        for index, chunk in enumerate(chunks):
+            mode = "put" if len(chunks) == 1 else "begin" if index == 0 else "end" if index == len(chunks) - 1 else "more"
+            transport.run(dispatcher.build_install_tree(remote, mode, _payload(chunk)), timeout=60)
+    return [remote for remote, _ in plan]
+
+
+def _tv_server_sources():
+    source = tv_server_dir()
+    hook = source / TV_SERVER_HOOK_SOURCE
+    if not hook.is_file():
+        raise FileNotFoundError("TV server hook not found at %s" % hook)
+    return source, hook, web_dir()
+
+
+def _install_tv_server(transport):
+    source, hook, web = _tv_server_sources()
+    files = push_tree(transport, source, TV_SERVER_DIR, skip=TV_SERVER_KEEP_REMOTE + (TV_SERVER_HOOK_SOURCE,))
+    files += push_tree(transport, web, TV_SERVER_DIR + "/web")
+    transport.run(dispatcher.build_install_hook(TV_SERVER_HOOK, _payload(hook.read_bytes())), timeout=60)
+    output = transport.run(dispatcher.build_run_hook(TV_SERVER_HOOK, "start"), timeout=60)
+    return {"files": files, "hook": TV_SERVER_HOOK, "started": True, "output": output.decode(errors="replace").strip()}
+
+
+def install(transport, *, overlay=True, vtcap="auto", tv_server=False) -> dict:
+    """Push every TV file; optionally the overlay app, the native capture client and the on-TV server.
     vtcap: "auto" installs it only if tv-assets/vtcap/vtcap has been built locally, "yes" requires it."""
     if vtcap not in VTCAP_MODES:
         raise ValidationError("vtcap must be one of " + ", ".join(VTCAP_MODES))
     binary = assets_dir() / "vtcap" / "vtcap"
     if vtcap == "yes" and not binary.is_file():
         raise FileNotFoundError("Build the capture client first: tv-assets/vtcap/build.sh")
+    if tv_server:  # fail on missing local files before anything is pushed
+        _tv_server_sources()
     result = {"files": _push_files(transport), "overlay": False, "vtcap": False}
     if overlay:
         transport.run(dispatcher.build_install_overlay(_payload(package_overlay())), timeout=120)
@@ -108,6 +181,8 @@ def install(transport, *, overlay=True, vtcap="auto") -> dict:
     if vtcap != "no" and binary.is_file():
         transport.run(dispatcher.build_install_vtcap(_payload(binary.read_bytes())), timeout=120)
         result["vtcap"] = True
+    if tv_server:
+        result["tv_server"] = _install_tv_server(transport)
     return result
 
 

@@ -42,7 +42,7 @@ def test_cli_imports_standalone_without_loading_the_server():
 
 
 @pytest.mark.parametrize("argv", [
-    "pair --host 192.168.1.50 --root-key k --port 2222", "install --no-overlay --vtcap no", "update", "uninstall --yes",
+    "pair --host 192.168.1.50 --root-key k --port 2222", "install --no-overlay --vtcap no", "install --tv-server", "update", "uninstall --yes",
     "doctor", "status --json", "details --json", "remote hdmi 2", "remote home", "settings list --json",
     "settings set sound aiSound on", "notify toast hi", "notify say hi --volume 10",
     "overlay show --title T --body B --line a --line b --image http://x/y.png --kind alert --position center --seconds 5",
@@ -191,14 +191,38 @@ def test_install_update_uninstall(fake, monkeypatch, tmp_path, capsys):
     monkeypatch.setenv("WEBOS_FOUNDRY_ASSETS", str(make_assets(tmp_path / "assets")))
     for verb in ("install", "install-overlay", "uninstall-all"):
         fake.add(verb, b"")
-    assert wof("install") == 0 and "Installed 8 files; overlay: True; vtcap: False" in capsys.readouterr().out
-    assert wof("update") == 0 and "Updated 8 files" in capsys.readouterr().out
+    assert wof("install") == 0 and "Installed 9 files; overlay: True; vtcap: False" in capsys.readouterr().out
+    assert wof("update") == 0 and "Updated 9 files" in capsys.readouterr().out
     monkeypatch.setattr("builtins.input", lambda prompt: "n")
     assert wof("uninstall") == 1 and "uninstall-all" not in fake.commands
     monkeypatch.setattr("builtins.input", lambda prompt: "y")
     assert wof("uninstall") == 0 and "authorized_keys" in capsys.readouterr().out and fake.commands[-1] == "uninstall-all"
     fake.calls.clear()
     assert wof("uninstall", "--yes") == 0 and fake.commands == ["uninstall-all"]
+
+
+def test_install_tv_server_flag_is_off_by_default_and_wired_through(fake, monkeypatch, tmp_path, capsys):
+    monkeypatch.setenv("WEBOS_FOUNDRY_ASSETS", str(make_assets(tmp_path / "assets")))
+    server = tmp_path / "tv-server"
+    server.mkdir()
+    (server / "server.js").write_bytes(b"//")
+    (server / "init.d-hook.sh").write_bytes(b"#!/bin/sh\n")
+    web = tmp_path / "web"
+    web.mkdir()
+    (web / "index.html").write_bytes(b"<html>")
+    monkeypatch.setenv("WEBOS_FOUNDRY_TV_SERVER", str(server))
+    monkeypatch.setenv("WEBOS_FOUNDRY_WEB", str(web))
+    for verb in ("install", "install-overlay", "install-tree", "install-hook"):
+        fake.add(verb, b"")
+    fake.add("run-hook", b"started\n")
+    assert cli.build_parser().parse_args(["install"]).tv_server is False
+    assert wof("install") == 0 and not any(c.startswith(("install-tree", "run-hook")) for c in fake.commands)
+    capsys.readouterr()
+    assert wof("install", "--tv-server") == 0
+    out = capsys.readouterr().out
+    assert "On-TV server installed (2 files)" in out and "8766" in out
+    assert fake.commands[-1] == "run-hook webos-foundry-tv-server start"
+    assert [c.split()[1] for c in fake.commands if c.startswith("install-tree")] == ["tv-server/server.js", "tv-server/web/index.html"]
 
 
 def test_pair_command(monkeypatch, tmp_path, capsys):

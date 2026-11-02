@@ -11,6 +11,7 @@ from .errors import ConfigError, NotPairedError
 ENV = "WEBOS_FOUNDRY_HOME"
 FILE = "config.json"
 NOT_PAIRED = "No TV is paired; run `wof pair --host <ip> --root-key <path>`"
+AUTH_MODES = ("token", "disabled")
 
 
 def config_dir(override=None) -> Path:
@@ -32,6 +33,7 @@ class Config:
     mac: Optional[str] = None
     broadcast: Optional[str] = None
     server_token: Optional[str] = None
+    auth_mode: str = "token"
 
     @classmethod
     def for_dir(cls, directory, **values) -> "Config":
@@ -58,6 +60,8 @@ class Config:
                 ok = type(value) is int
             else:
                 ok = isinstance(value, str) or (value is None and name in ("mac", "broadcast", "server_token"))
+            if name == "auth_mode" and ok and value not in AUTH_MODES:
+                ok = False
             if not ok:
                 raise ConfigError("%s: invalid value for %s" % (path, name))
         return cls(**doc)

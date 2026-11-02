@@ -1,0 +1,140 @@
+/* Signet · owner: impeccable · mode: operate · scope: system
+ * theme: Lamplight (warm paper / tangerine) · light-first + dark · nav: bottom bar (phone) / top tabs (desktop)
+ * critique: unscored · gates: swept by hand · detect: clean
+ * Generated from DESIGN.md. Every colour and font in app.css is a token from this file.
+ */
+:root {
+  color-scheme: light;
+  --bg: oklch(0.97 0.012 80);
+  --surface: oklch(0.995 0.004 80);
+  --sunken: oklch(0.94 0.014 80);
+  --sunken-hover: oklch(0.915 0.016 80);
+  --line: oklch(0.86 0.018 75);
+  --line-strong: oklch(0.6 0.022 70);
+  --fg: oklch(0.25 0.02 60);
+  --fg-2: oklch(0.42 0.02 60);
+  --fg-3: oklch(0.5 0.02 60);
+  --accent: oklch(0.55 0.15 45);
+  --accent-hover: oklch(0.5 0.15 45);
+  --accent-ink: oklch(0.99 0.01 80);
+  --accent-tint: oklch(0.94 0.04 55);
+  --ok: oklch(0.46 0.11 160);
+  --ok-tint: oklch(0.94 0.04 160);
+  --err: oklch(0.5 0.16 25);
+  --err-ink: oklch(0.99 0.01 80);
+  --err-tint: oklch(0.95 0.03 25);
+  --warn-ink: oklch(0.38 0.09 70);
+  --warn-tint: oklch(0.95 0.06 85);
+  --inverse: oklch(0.28 0.02 60);
+  --inverse-ink: oklch(0.97 0.012 80);
+  --scrim: oklch(0.25 0.02 60 / 0.45);
+  --shadow: 0 1px 2px oklch(0.3 0.03 60 / 0.06), 0 8px 24px oklch(0.3 0.03 60 / 0.08);
+  --shadow-up: 0 -2px 12px oklch(0.3 0.03 60 / 0.08);
+  --tone-1: oklch(0.9 0.06 45);  --tone-1-ink: oklch(0.38 0.1 45);
+  --tone-2: oklch(0.9 0.06 160); --tone-2-ink: oklch(0.36 0.08 160);
+  --tone-3: oklch(0.9 0.06 235); --tone-3-ink: oklch(0.38 0.09 235);
+  --tone-4: oklch(0.91 0.06 95); --tone-4-ink: oklch(0.38 0.08 85);
+  --tone-5: oklch(0.9 0.05 330); --tone-5-ink: oklch(0.4 0.09 330);
+  --get: oklch(0.45 0.1 235);
+  --put: oklch(0.45 0.12 320);
+  --del: oklch(0.5 0.16 25);
+
+  --font-ui: ui-rounded, "SF Pro Rounded", system-ui, -apple-system, "Segoe UI", "Noto Sans", "Cantarell", sans-serif;
+  --font-mono: ui-monospace, "SF Mono", "Cascadia Mono", "DejaVu Sans Mono", monospace;
+
+  --text-xs: 0.8125rem;
+  --text-sm: 0.9375rem;
+  --text-base: 1rem;
+  --text-lg: 1.25rem;
+  --text-xl: 1.625rem;
+  --text-2xl: clamp(1.75rem, 1.35rem + 1.6vw, 2.5rem);
+  --weight-body: 400;
+  --weight-strong: 600;
+  --weight-display: 700;
+
+  --space-1: 0.25rem; --space-2: 0.5rem; --space-3: 0.75rem; --space-4: 1rem;
+  --space-5: 1.5rem; --space-6: 2rem; --space-7: 3rem;
+  --radius-s: 10px; --radius-m: 14px; --radius-l: 16px; --radius-pill: 999px;
+  --tap: 44px;
+  --nav-h: 4.25rem;
+
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --dur-fast: 120ms;
+  --dur-base: 180ms;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --bg: oklch(0.2 0.012 60);
+    --surface: oklch(0.25 0.014 60);
+    --sunken: oklch(0.17 0.012 60);
+    --sunken-hover: oklch(0.2 0.014 60);
+    --line: oklch(0.36 0.016 60);
+    --line-strong: oklch(0.58 0.018 60);
+    --fg: oklch(0.95 0.01 80);
+    --fg-2: oklch(0.82 0.012 80);
+    --fg-3: oklch(0.72 0.012 80);
+    --accent: oklch(0.76 0.14 55);
+    --accent-hover: oklch(0.81 0.13 55);
+    --accent-ink: oklch(0.2 0.03 55);
+    --accent-tint: oklch(0.32 0.06 55);
+    --ok: oklch(0.8 0.13 160);
+    --ok-tint: oklch(0.3 0.05 160);
+    --err: oklch(0.78 0.13 25);
+    --err-ink: oklch(0.2 0.03 25);
+    --err-tint: oklch(0.3 0.06 25);
+    --warn-ink: oklch(0.88 0.1 85);
+    --warn-tint: oklch(0.32 0.05 80);
+    --inverse: oklch(0.93 0.01 80);
+    --inverse-ink: oklch(0.22 0.012 60);
+    --scrim: oklch(0.1 0.01 60 / 0.65);
+    --shadow: 0 1px 2px oklch(0.05 0.01 60 / 0.4), 0 8px 24px oklch(0.05 0.01 60 / 0.35);
+    --shadow-up: 0 -2px 12px oklch(0.05 0.01 60 / 0.4);
+    --tone-1: oklch(0.34 0.07 45);  --tone-1-ink: oklch(0.88 0.08 45);
+    --tone-2: oklch(0.33 0.06 160); --tone-2-ink: oklch(0.88 0.08 160);
+    --tone-3: oklch(0.34 0.07 235); --tone-3-ink: oklch(0.88 0.07 235);
+    --tone-4: oklch(0.34 0.06 95);  --tone-4-ink: oklch(0.9 0.08 95);
+    --tone-5: oklch(0.34 0.07 330); --tone-5-ink: oklch(0.88 0.07 330);
+    --get: oklch(0.8 0.1 235);
+    --put: oklch(0.8 0.1 320);
+    --del: oklch(0.78 0.13 25);
+  }
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: oklch(0.2 0.012 60);
+  --surface: oklch(0.25 0.014 60);
+  --sunken: oklch(0.17 0.012 60);
+  --sunken-hover: oklch(0.2 0.014 60);
+  --line: oklch(0.36 0.016 60);
+  --line-strong: oklch(0.58 0.018 60);
+  --fg: oklch(0.95 0.01 80);
+  --fg-2: oklch(0.82 0.012 80);
+  --fg-3: oklch(0.72 0.012 80);
+  --accent: oklch(0.76 0.14 55);
+  --accent-hover: oklch(0.81 0.13 55);
+  --accent-ink: oklch(0.2 0.03 55);
+  --accent-tint: oklch(0.32 0.06 55);
+  --ok: oklch(0.8 0.13 160);
+  --ok-tint: oklch(0.3 0.05 160);
+  --err: oklch(0.78 0.13 25);
+  --err-ink: oklch(0.2 0.03 25);
+  --err-tint: oklch(0.3 0.06 25);
+  --warn-ink: oklch(0.88 0.1 85);
+  --warn-tint: oklch(0.32 0.05 80);
+  --inverse: oklch(0.93 0.01 80);
+  --inverse-ink: oklch(0.22 0.012 60);
+  --scrim: oklch(0.1 0.01 60 / 0.65);
+  --shadow: 0 1px 2px oklch(0.05 0.01 60 / 0.4), 0 8px 24px oklch(0.05 0.01 60 / 0.35);
+  --shadow-up: 0 -2px 12px oklch(0.05 0.01 60 / 0.4);
+  --tone-1: oklch(0.34 0.07 45);  --tone-1-ink: oklch(0.88 0.08 45);
+  --tone-2: oklch(0.33 0.06 160); --tone-2-ink: oklch(0.88 0.08 160);
+  --tone-3: oklch(0.34 0.07 235); --tone-3-ink: oklch(0.88 0.07 235);
+  --tone-4: oklch(0.34 0.06 95);  --tone-4-ink: oklch(0.9 0.08 95);
+  --tone-5: oklch(0.34 0.07 330); --tone-5-ink: oklch(0.88 0.07 330);
+  --get: oklch(0.8 0.1 235);
+  --put: oklch(0.8 0.1 320);
+  --del: oklch(0.78 0.13 25);
+}

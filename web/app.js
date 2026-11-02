@@ -12,14 +12,16 @@ const JOB_STATE = {
 };
 const LIMIT = { image: 16 * 1048576, audio: 8 * 1048576 };
 const TOKEN_KEY = 'webos-foundry-token';
+const VIEWS = new Set(['home', 'remote', 'apps', 'show', 'tune', 'settings', 'api']);
 
 const S = {
-  view: 'control', api: null, status: null, statusError: null, statusBusy: false, statusAgain: false,
+  view: 'home', api: null, status: null, statusError: null, statusBusy: false, statusAgain: false,
   settings: null, settingsBusy: false, settingsAgain: false, settingNote: null,
   job: null, jobTimer: null, reserved: false, file: null, kind: null, logPolls: false, wakeUntil: 0,
   detailsBusy: false, detailsAgain: false, details: null, historyOpen: false, notifyBusy: false, shotBusy: false, shotUrl: null,
   overlayBusy: false, live: null, liveCooling: false,
   paired: null, token: '', statusUnauthorized: false, promptDismissed: false, resultFor: null, resultUrl: null,
+  authMode: null, bannerDismissed: false,
 };
 
 function h(tag, attrs = {}, ...kids) {
@@ -122,32 +124,89 @@ function curl({ method, path, json, file }) {
   return parts.join(' ');
 }
 
+/* ---------- what this server can do (GET /api is the source of truth) ---------- */
+
+// Before the catalogue loads, or if it cannot be read, assume everything is there; the calls then report their own errors.
+function supports({ group, route }) {
+  if (!S.api) return true;
+  return S.api.routes.some((r) => (!group || r.group === group) && (!route || r.path === route));
+}
+
+// Any panel that names a group or route the server does not list is greyed out and labelled, never left as a dead control.
+function applyAvailability() {
+  for (const panel of document.querySelectorAll('[data-needs-group], [data-needs-route]')) {
+    const ok = (!panel.dataset.needsGroup || supports({ group: panel.dataset.needsGroup }))
+      && (!panel.dataset.needsRoute || supports({ route: panel.dataset.needsRoute }));
+    const head = panel.querySelector(':scope > .panel-head');
+    panel.dataset.unavailable = String(!ok);
+    for (const child of panel.children) child.inert = !ok && child !== head;
+    for (const btn of head.querySelectorAll('button')) btn.inert = !ok;
+    const badge = head.querySelector('.badge');
+    if (!ok && !badge) head.append(h('span', { class: 'badge', text: 'Not available from this server' }));
+    if (ok && badge) badge.remove();
+  }
+  // A remote action the server's catalogue does not list (the on-TV server cannot wake itself) is hidden, not left to fail.
+  const remoteRoute = S.api && S.api.routes.find((r) => r.path === '/api/remote/{action}');
+  const actions = remoteRoute && remoteRoute.values ? new Set(remoteRoute.values.map((v) => v.name)) : null;
+  for (const btn of document.querySelectorAll('[data-action]')) btn.hidden = !!actions && !actions.has(btn.dataset.action);
+}
+
+const tvLabel = (host) => (!host ? 'Not paired' : /^(127\.|::1$|localhost$)/.test(host) ? 'Running on the TV itself' : host);
+
+async function copyText(text) {
+  if (navigator.clipboard && window.isSecureContext) return navigator.clipboard.writeText(text);
+  const box = h('textarea', { class: 'sr', readonly: true, 'aria-hidden': 'true' });  // a phone on plain-HTTP LAN has no clipboard API
+  box.value = text;
+  document.body.append(box);
+  box.select();
+  const copied = document.execCommand('copy');
+  box.remove();
+  if (!copied) throw new Error('copy blocked');
+  return undefined;
+}
+
 /* ---------- token ---------- */
 
 function readToken() {
-  try { return localStorage.getItem(TOKEN_KEY) || ''; } catch { return ''; }
+  try { return localStorage.getItem(TOKEN_KEY) || sessionStorage.getItem(TOKEN_KEY) || ''; } catch { return ''; }
 }
 
-function saveToken(value) {
+function saveToken(value, remember = true) {
   S.token = value;
   S.promptDismissed = false;
   S.statusUnauthorized = false;
   try {
-    if (value) localStorage.setItem(TOKEN_KEY, value); else localStorage.removeItem(TOKEN_KEY);
+    localStorage.removeItem(TOKEN_KEY);
+    sessionStorage.removeItem(TOKEN_KEY);
+    if (value) (remember ? localStorage : sessionStorage).setItem(TOKEN_KEY, value);
   } catch { /* storage blocked: the token lasts until the page is reloaded */ }
+  renderDevice();
+}
+
+function renderDevice() {
+  let saved = false;
+  try { saved = !!localStorage.getItem(TOKEN_KEY); } catch { /* storage blocked */ }
+  $('device-state').textContent = !S.token
+    ? 'No token is saved here. That is fine if login is off, or if this page runs on the computer that hosts the server.'
+    : saved ? 'A token is saved on this device.' : 'A token is kept for this browser tab only.';
 }
 
 function openToken(reason) {
   const dialog = $('token-dialog');
-  $('token-input').value = '';
-  if (reason) result($('token-msg'), 'Unauthorized: ' + reason, 'error'); else $('token-msg').hidden = true;
-  if (!dialog.open) dialog.showModal();
+  if (reason) {
+    result($('token-msg'), S.token ? 'That token was not accepted. Check it and try again.' : 'Enter your access token to continue.',
+      S.token ? 'error' : undefined);
+  } else {
+    $('token-msg').hidden = true;
+  }
+  $('token-clear').hidden = !S.token;
+  if (!dialog.open) { $('token-input').value = ''; dialog.showModal(); }
   $('token-input').focus();
 }
 
 function unauthorized(reason) {
-  say('Unauthorized: ' + reason + '. Use the Token button to enter the server token.', 'error');
   if (!S.promptDismissed) openToken(reason);
+  else say('Sign-in needed (' + reason + '). Open Settings and choose Change token.', 'error');
 }
 
 async function loadResult(job) {
@@ -176,7 +235,7 @@ function copyButton(label, text) {
   const btn = h('button', { class: 'btn quiet', type: 'button' }, icon('copy'), span);
   btn.addEventListener('click', async () => {
     try {
-      await navigator.clipboard.writeText(text());
+      await copyText(text());
       span.textContent = 'Copied';
     } catch {
       span.textContent = 'Copy failed';
@@ -244,9 +303,9 @@ async function loadStatus(poll = false) {
 
 function renderStatus() {
   const st = S.statusError ? null : S.status;
-  const power = document.querySelector('.status .power');
-  power.dataset.power = S.statusError ? 'error' : (st ? st.power : 'unknown');
-  $('st-power').textContent = S.statusUnauthorized ? 'Unauthorized' : S.paired === false ? 'Not paired' : S.statusError ? 'Unreachable'
+  const state = S.statusError ? 'error' : (st ? st.power : 'unknown');
+  document.querySelector('.status .power').dataset.power = state;
+  $('st-power').textContent = S.statusUnauthorized ? 'Sign in needed' : S.paired === false ? 'Not paired' : S.statusError ? 'Unreachable'
     : !st ? '—' : { on: 'On', off: 'Standby' }[st.power] || 'Unknown';
   $('st-power').title = S.statusError || (st && st.raw_power_state) || '';
   $('st-source').textContent = st && st.source ? st.source : '—';
@@ -254,6 +313,20 @@ function renderStatus() {
   $('st-temp').textContent = st && st.temperature_c != null ? st.temperature_c.toFixed(1) + ' °C' : '—';
   $('st-volume').textContent = !st || st.volume == null ? '—' : st.volume + (st.muted ? ' · muted' : '');
   $('volume-level').textContent = st && st.volume != null ? st.volume : '—';
+
+  $('hero-line').textContent = S.paired === false ? 'Not connected to a TV yet'
+    : S.statusUnauthorized ? 'Sign in to control your TV'
+      : S.statusError ? 'Can’t reach your TV'
+        : !st ? 'Checking your TV…'
+          : { on: 'Your TV is on', off: 'Your TV is in standby' }[st.power] || 'Your TV is in an unknown state';
+  $('hero-orb').dataset.power = state;
+  $('hero-orb').dataset.waking = String(S.wakeUntil > Date.now() && state !== 'on');
+  $('hero-signin').hidden = !S.statusUnauthorized;
+  document.body.dataset.paired = String(S.paired !== false);
+  document.querySelector('.hero-actions [data-action="wake"]').classList.toggle('primary', state !== 'on');
+  $('top-pill').dataset.power = state;
+  $('top-power').textContent = S.statusUnauthorized ? 'Sign in' : S.paired === false ? 'Not paired' : S.statusError ? 'Offline'
+    : !st ? 'Checking…' : { on: 'On', off: 'Standby' }[st.power] || 'Unknown';
 
   for (const seg of document.querySelectorAll('.seg')) {
     const current = !!st && st.power === 'on' && (seg.dataset.action === 'home'
@@ -273,10 +346,10 @@ function renderStatus() {
 
 function sync() {
   const off = !!S.status && !S.statusError && S.status.power === 'off';
-  for (const btn of document.querySelectorAll('.remote [data-action]')) {
+  for (const btn of document.querySelectorAll('[data-action]')) {
     btn.disabled = S.reserved || S.paired === false || (off && btn.hasAttribute('data-needs-on'));
   }
-  $('remote-hint').textContent = S.reserved ? 'Reserved by processing' : off ? 'In standby: Wake first' : '';
+  $('remote-hint').textContent = S.reserved ? 'Reserved by processing' : off ? 'In standby: turn the TV on first' : '';
   for (const el of document.querySelectorAll('#settings-body select, #settings-body button')) {
     if (S.reserved) el.disabled = true;
   }
@@ -332,9 +405,10 @@ function settingsMessage(text, tone, retry) {
 }
 
 async function loadSettings() {
+  if (!supports({ group: 'Picture & sound' })) return;
   if (S.paired === false) return settingsMessage('Not paired with a TV yet.');
   if (S.reserved) return settingsMessage('The TV is reserved by a processing job. Settings reload when it is released.');
-  if (S.status && !S.statusError && S.status.power === 'off') return settingsMessage('The TV is in standby. Wake it to read its settings.');
+  if (S.status && !S.statusError && S.status.power === 'off') return settingsMessage('The TV is in standby. Turn it on to read its settings.');
   if (S.settingsBusy) { S.settingsAgain = true; return; }
   S.settingsBusy = true;
   $('refresh-settings').dataset.state = 'loading';
@@ -633,10 +707,11 @@ function detailsMessage(text, tone, retry) {
 }
 
 async function loadDetails(poll = false) {
+  if (!supports({ route: '/api/details' })) return;
   if (S.paired === false) return detailsMessage('Not paired with a TV yet.');
   if (S.status && !S.statusError && S.status.power === 'off') {
     S.details = null;
-    return detailsMessage('The TV is in standby. Wake it to read its details.');
+    return detailsMessage('The TV is in standby. Turn it on to read its details.');
   }
   if (S.detailsBusy) { S.detailsAgain = true; return; }
   S.detailsBusy = true;
@@ -668,7 +743,7 @@ function syncNotify() {
   const empty = !$('notify-text').value.trim();
   $('toast').disabled = empty || off || S.notifyBusy;
   $('speak').disabled = empty || off || S.notifyBusy || S.reserved;
-  $('notify-hint').textContent = off ? 'In standby: Wake first' : S.reserved ? 'Speak waits for processing' : '';
+  $('notify-hint').textContent = off ? 'In standby: turn the TV on first' : S.reserved ? 'Reading aloud waits for processing' : '';
   $('shot-capture').disabled = off || S.shotBusy;
   syncOverlay(off);
   syncLive(off);
@@ -746,7 +821,7 @@ function syncOverlay(off) {
   $('ov-show').disabled = blocked || !(card.title || card.body || card.lines);
   $('ov-hide').disabled = blocked;
   $('ov-details').disabled = blocked;
-  $('overlay-hint').textContent = off ? 'In standby: Wake first' : S.reserved ? 'Reserved by processing' : '';
+  $('overlay-hint').textContent = off ? 'In standby: turn the TV on first' : S.reserved ? 'Reserved by processing' : '';
 }
 
 async function sendOverlay(card, btn) {
@@ -900,16 +975,16 @@ function stopLive() {
 
 function renderApi() {
   const api = S.api;
-  if (S.paired !== false) $('tv-addr').textContent = api.tv.address || '—';
-  const kinds = Object.entries(api.kinds).map(([kind, spec]) =>
+  if (S.paired !== false) $('tv-addr').textContent = api.tv && api.tv.address ? tvLabel(api.tv.address) : '—';
+  const kinds = Object.entries(api.kinds || {}).map(([kind, spec]) =>
     h('li', {}, h('strong', { text: kind + ': ' }), spec.profiles.map((p, i) => [i ? ', ' : '', h('code', { text: p.id })])));
   $('api-intro').replaceChildren(
     h('h2', { text: 'HTTP API' }),
-    h('p', { text: `Everything on the Control view goes through these routes, so anything you can click you can script. Base URL ${api.base}; JSON in and out, except file uploads and downloads.` }),
+    h('p', { text: `Everything in this app goes through these routes, so anything you can tap you can script. Base URL ${api.base}; JSON in and out, except file uploads and downloads.` }),
     h('p', { text: api.errors }),
     h('p', { text: 'The server answers on its configured address. Send the server token as Authorization: Bearer <token> on every route except GET /api and GET /api/health; a loopback server accepts requests without one. Requests from other websites are refused by Host, Origin and Sec-Fetch-Site checks.' }),
     h('dl', {},
-      h('dt', { text: 'TV' }), h('dd', {}, h('code', { text: api.tv.address || 'Not paired' }), ' over the dedicated restricted SSH key'),
+      h('dt', { text: 'TV' }), h('dd', {}, h('code', { text: (api.tv && api.tv.address) || 'Not paired' })),
       h('dt', { text: 'Profiles' }), h('dd', {}, h('ul', { class: 'plain' }, kinds)),
       h('dt', { text: 'Catalogue' }), h('dd', {}, h('code', { text: 'GET /api' }), ' returns this page as JSON')));
 
@@ -971,7 +1046,7 @@ function routeCard(route) {
 function copyButtonIcon(text) {
   const btn = h('button', { class: 'btn icon-only', type: 'button', 'aria-label': 'Copy curl command', title: 'Copy' }, icon('copy'));
   btn.addEventListener('click', async () => {
-    try { await navigator.clipboard.writeText(text()); flash(btn, 'ok'); } catch { flash(btn, 'error'); }
+    try { await copyText(text()); flash(btn, 'ok'); } catch { flash(btn, 'error'); }
   });
   return btn;
 }
@@ -979,20 +1054,28 @@ function copyButtonIcon(text) {
 /* ---------- views, keyboard, startup ---------- */
 
 function showView(view) {
+  if (!VIEWS.has(view)) view = 'home';
   S.view = view;
-  $('view-control').hidden = view !== 'control';
-  $('view-api').hidden = view !== 'api';
+  for (const el of document.querySelectorAll('.view')) el.hidden = el.dataset.viewId !== view;
   for (const tab of document.querySelectorAll('.tab')) {
     if (tab.dataset.view === view) tab.setAttribute('aria-current', 'page');
     else tab.removeAttribute('aria-current');
   }
-  if (location.hash !== '#' + view) history.replaceState(null, '', view === 'control' ? location.pathname : '#api');
+  if (view !== 'show') stopLive();  // the live picture is private: it must not keep streaming into a hidden page
+  if (view === 'apps' && S.api) loadApps();
+  if (location.hash !== '#' + view) history.replaceState(null, '', view === 'home' ? location.pathname : '#' + view);
+  window.scrollTo(0, 0);
+}
+
+function renderTheme() {
+  const chosen = savedTheme();
+  for (const btn of document.querySelectorAll('[data-theme-choice]')) btn.setAttribute('aria-pressed', String(btn.dataset.themeChoice === chosen));
 }
 
 const KEYS = { ArrowUp: 'up', ArrowDown: 'down', ArrowLeft: 'left', ArrowRight: 'right', Backspace: 'back', h: 'home', H: 'home' };
 document.addEventListener('keydown', (event) => {
-  if (S.view !== 'control' || event.altKey || event.ctrlKey || event.metaKey) return;
-  if ($('token-dialog').open) return;
+  if (!['home', 'remote'].includes(S.view) || event.altKey || event.ctrlKey || event.metaKey) return;
+  if (document.querySelector('dialog[open]')) return;
   const target = event.target;
   if (target.closest('input, select, textarea, [contenteditable], summary')) return;
   let action = KEYS[event.key];
@@ -1005,20 +1088,32 @@ document.addEventListener('keydown', (event) => {
 });
 
 function wire() {
-  $('token-btn').addEventListener('click', () => openToken());
+  $('token-btn').addEventListener('click', () => { S.promptDismissed = false; openToken(); });
+  $('hero-signin').addEventListener('click', () => { S.promptDismissed = false; openToken(); });
   $('token-form').addEventListener('submit', (e) => {
     e.preventDefault();
     const value = $('token-input').value.trim();
-    if (!value) return result($('token-msg'), 'Enter a token, or choose Forget token to send none', 'error');
-    saveToken(value);
+    if (!value) return result($('token-msg'), 'Enter a token, or choose Forget saved token to send none', 'error');
+    saveToken(value, $('token-remember').checked);
     $('token-dialog').close();
     loadAll();
   });
   $('token-clear').addEventListener('click', () => { saveToken(''); $('token-dialog').close(); loadAll(); });
   $('token-cancel').addEventListener('click', () => { S.promptDismissed = true; $('token-dialog').close(); });
   $('token-dialog').addEventListener('cancel', () => { S.promptDismissed = true; });
-  for (const btn of document.querySelectorAll('.remote [data-action]')) btn.addEventListener('click', () => remote(btn));
+  for (const btn of document.querySelectorAll('[data-action]')) btn.addEventListener('click', () => remote(btn));
   for (const tab of document.querySelectorAll('.tab')) tab.addEventListener('click', () => showView(tab.dataset.view));
+  for (const link of document.querySelectorAll('[data-goto]')) link.addEventListener('click', () => showView(link.dataset.goto));
+  window.addEventListener('hashchange', () => showView(location.hash.slice(1)));
+  for (const btn of document.querySelectorAll('[data-copy]')) {
+    btn.addEventListener('click', async () => {
+      try { await copyText(btn.dataset.copy); flash(btn, 'ok'); } catch { flash(btn, 'error'); }
+    });
+  }
+  for (const btn of document.querySelectorAll('[data-theme-choice]')) {
+    btn.addEventListener('click', () => { applyTheme(btn.dataset.themeChoice); renderTheme(); });
+  }
+  $('theme-toggle').addEventListener('click', () => { applyTheme(effectiveTheme() === 'dark' ? 'light' : 'dark'); renderTheme(); });
   $('refresh-status').addEventListener('click', () => loadStatus());
   $('refresh-settings').addEventListener('click', loadSettings);
   $('log-polls').addEventListener('change', (e) => { S.logPolls = e.target.checked; });
@@ -1055,33 +1150,41 @@ function wire() {
 }
 
 async function loadAll() {
-  if (S.paired === false) { renderStatus(); loadSettings(); loadDetails(); return; }
-  try {
-    const jobs = await call('GET', '/api/jobs');
-    const id = jobs.active || (jobs.jobs[0] && jobs.jobs[0].id);
-    if (id) showJob(await call('GET', '/api/jobs/' + id));
-  } catch (err) {
-    if (err.status !== 401) say('Could not read processing jobs: ' + err.message, 'error');
+  if (S.paired === false) { renderStatus(); loadSettings(); loadDetails(); loadAuth(); return; }
+  if (supports({ route: '/api/jobs' })) {
+    try {
+      const jobs = await call('GET', '/api/jobs');
+      const id = jobs.active || (jobs.jobs[0] && jobs.jobs[0].id);
+      if (id) showJob(await call('GET', '/api/jobs/' + id));
+    } catch (err) {
+      if (err.status !== 401) say('Could not read processing jobs: ' + err.message, 'error');
+    }
   }
   await loadStatus();
   loadSettings();
   loadDetails();
+  loadApps();
+  loadAuth();
 }
 
 async function start() {
   S.token = readToken();
   wire();
-  showView(location.hash === '#api' ? 'api' : 'control');
+  wireExtras();
+  renderTheme();
+  renderDevice();
+  showView(location.hash.slice(1));
   try {
     const health = await call('GET', '/api/health');
     S.paired = health.paired;
-    $('tv-addr').textContent = health.paired ? health.tv_host : 'Not paired';
+    $('tv-addr').textContent = tvLabel(health.paired && health.tv_host);
     $('pair-hint').hidden = health.paired;
   } catch (err) {
     say('Could not reach the server: ' + err.message, 'error');
   }
   try {
     S.api = await call('GET', '/api');
+    applyAvailability();
     renderApi();
   } catch (err) {
     say('Could not load the API catalogue: ' + err.message, 'error');
@@ -1089,4 +1192,4 @@ async function start() {
   await loadAll();
 }
 
-start();
+document.addEventListener('DOMContentLoaded', start);
