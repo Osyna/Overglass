@@ -14,9 +14,9 @@
   <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/github/license/Osyna/Overglass"></a>
 </p>
 
-![Example match overlay rendered over a football photo](assets/overlay-matchday.webp)
+![Animated examples of the Overglass football overlay](assets/overlay-demo.gif)
 
-<p align="center"><sub>Overlay renderer example with sample match data. The 3840 × 2160 photo is by <a href="https://www.pexels.com/photo/exciting-soccer-match-in-abu-dhabi-stadium-31163019/">Eslam Mohammed Abdelmaksoud</a> on <a href="https://www.pexels.com/license/">Pexels</a>.</sub></p>
+<p align="center"><sub>Animated demo of the actual overlay renderer: sample scoreboard, stats, ticker and kickoff card. Match data is illustrative. The 3840 × 2160 photo is by <a href="https://www.pexels.com/photo/exciting-soccer-match-in-abu-dhabi-stadium-31163019/">Eslam Mohammed Abdelmaksoud</a> on <a href="https://www.pexels.com/license/">Pexels</a>.</sub></p>
 
 [MIT license](LICENSE) · [Setup](docs/INSTALL.md) · [API](docs/API.md) · [Home Assistant](docs/HOME-ASSISTANT.md)
 
