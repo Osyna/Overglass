@@ -1,10 +1,24 @@
-# Overglass
+<h1 align="center">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/banner-dark.svg">
+  <source media="(prefers-color-scheme: light)" srcset="assets/banner-light.svg">
+  <img alt="Overglass" src="assets/banner-light.svg" width="720">
+</picture>
+</h1>
 
-Control an already-rooted LG webOS TV from a browser, the `wof` CLI, an HTTP API, or Home Assistant.
+<p align="center">Control an already-rooted LG webOS TV from a browser, the <code>wof</code> CLI, an HTTP API, or Home Assistant.</p>
+
+<p align="center">
+  <a href="https://github.com/Osyna/Overglass/releases"><img alt="Latest release" src="https://img.shields.io/github/v/release/Osyna/Overglass"></a>
+  <a href="https://github.com/Osyna/Overglass/actions/workflows/ci.yml"><img alt="CI status" src="https://img.shields.io/github/actions/workflow/status/Osyna/Overglass/ci.yml?branch=main&amp;label=CI"></a>
+  <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/github/license/Osyna/Overglass"></a>
+</p>
+
+![Example match overlay rendered over a football photo](assets/overlay-matchday.webp)
+
+<p align="center"><sub>Overlay renderer example with sample match data. The 3840 × 2160 photo is by <a href="https://www.pexels.com/photo/exciting-soccer-match-in-abu-dhabi-stadium-31163019/">Eslam Mohammed Abdelmaksoud</a> on <a href="https://www.pexels.com/license/">Pexels</a>.</sub></p>
 
 [MIT license](LICENSE) · [Setup](docs/INSTALL.md) · [API](docs/API.md) · [Home Assistant](docs/HOME-ASSISTANT.md)
-
-![Included TV app installer in the running web UI](assets/bundled-installer.webp)
 
 ## Features
 
@@ -81,11 +95,15 @@ The page shows success only after the TV confirms installation, and displays ins
 The included app is `dev.webosfoundry.overlay`. It displays the JSON cards on the TV.
 Sending another design does not require reinstalling it.
 
+![Included TV app installed from the Overglass web UI](assets/bundled-installer.webp)
+
 ### Make an overlay
 
 Open Show, choose a starting design, and edit its widgets or import JSON.
 Preview the card, then choose Send to TV.
 The overlay app must be installed before the TV can display the card.
+
+![Match-day editor with the widget outline, settings and TV preview](assets/widget-editor.webp)
 
 ### Run without a computer left on
 
@@ -139,7 +157,7 @@ node web/check-studio.mjs
 
 The web checks require Node.js. Contributor setup and optional tools are documented in [CONTRIBUTING.md](CONTRIBUTING.md).
 
-The screenshot above is from the running application. To record the CLI help walkthrough, run `vhs demo.tape` after installing the project.
+To record the CLI help walkthrough, run `vhs demo.tape` after installing the project.
 It writes `assets/demo.gif`; that GIF is not included until it has actually been rendered.
 
 ## Documentation and contributing
