@@ -24,6 +24,32 @@ The core package has no required Python dependencies.
 
 ## Install
 
+### Release package
+
+Download `webos_foundry-0.1.0-py3-none-any.whl` from [Releases](https://github.com/Osyna/Overglass/releases).
+Install it in a virtual environment:
+
+```sh
+python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install ./webos_foundry-0.1.0-py3-none-any.whl
+wof --help
+wof serve
+```
+
+The release also includes a portable web/CLI source ZIP and TV app IPK.
+
+For the portable web UI and CLI, extract `Overglass-0.1.0.zip` and run:
+
+```sh
+unzip Overglass-0.1.0.zip
+cd Overglass-0.1.0
+python3 -m webos_foundry.cli --help
+python3 -m webos_foundry.server
+```
+
+### From source
+
 Clone the repository and install from source:
 
 ```sh
@@ -36,7 +62,7 @@ wof --help
 wof serve
 ```
 
-Keep the checkout available: the CLI and server read `web/` and `tv-assets/` from it.
+Keep the checkout available when using an editable install.
 
 ## Use the web UI
 

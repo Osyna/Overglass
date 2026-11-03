@@ -21,10 +21,41 @@ The TV must be on the same network as the machine running `wof`, and must keep S
 normal standby if you want `wof status` to work while it is off. `wof remote wake` sends a
 Wake-on-LAN packet and needs the TV's MAC address (`wof config set mac AA:BB:CC:DD:EE:FF`).
 
+## Install a release
+
+Download the wheel from [Releases](https://github.com/Osyna/Overglass/releases), then:
+
+```sh
+python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install ./webos_foundry-0.1.0-py3-none-any.whl
+wof --help
+wof serve
+```
+
+The wheel includes the browser UI, CLI resources, TV scripts, overlay renderer, and on-TV server.
+Use it without a source checkout. Configuration and existing TV pairing stay in
+`~/.config/webos-foundry/`.
+
+The `Overglass-0.1.0.zip` release contains the web UI, CLI and TV server sources.
+Extract it and run the browser UI:
+
+```sh
+unzip Overglass-0.1.0.zip
+cd Overglass-0.1.0
+python3 -m webos_foundry.cli --help
+python3 -m webos_foundry.server
+```
+
+The server opens at `http://127.0.0.1:8765/`. Python and the system SSH tools are still required.
+
+The standalone `dev.webosfoundry.overlay_1.0.1_all.ipk` installs the TV renderer.
+You can also install it from **Apps → Included with Overglass → Install on TV**.
+
 ## Install from source
 
-Use a checkout or extracted copy of this repository. The CLI and web server read
-`web/` and `tv-assets/` from it, so keep the checkout available. From its root:
+Use a checkout or extracted copy of this repository. An editable install reads assets
+from it, so keep the checkout available. From its root:
 
 ```sh
 python3 -m venv .venv
@@ -84,9 +115,9 @@ The overlay renderer (`dev.webosfoundry.overlay`) has an **Install on TV** butto
 and a **Repair** button when installed. No external package URL or manual IPK build is needed.
 The installer waits for the TV's installed state and checks installation status before reporting success.
 
-The PC-hosted server builds the IPK from this checkout. `wof install --tv-server` also stages
-a private copy for the on-TV server, so that server can install or repair the renderer without a PC.
-If its package is unavailable, update the on-TV installation from a checkout with that command.
+The PC-hosted server builds the IPK from its installed overlay resources. `wof install --tv-server`
+also stages a private copy for the on-TV server, so that server can install or repair the renderer
+without a PC. If its package is unavailable, update the on-TV installation with that command.
 Other apps still use the existing file/link installer and uninstall confirmation.
 
 ### 3. Doctor
@@ -118,8 +149,8 @@ See [API.md](API.md) for routes and [CLI.md](CLI.md) for every command.
 ## Docker
 
 The image (`Dockerfile`) is `python:3.12-slim` plus `openssh-client`, with the package installed
-editable from the source tree (the server and CLI read `web/` and `tv-assets/` from it). Its
-entrypoint is `wof`, its default command is `serve --host 0.0.0.0`, and it runs as uid 1000 with
+editable from the source tree. Its entrypoint is `wof`, its default command is `serve --host 0.0.0.0`,
+and it runs as uid 1000 with
 `WEBOS_FOUNDRY_HOME=/config`. `docker-compose.yml` publishes port `8765` and keeps `/config` in a named
 volume so pairing survives restarts.
 
@@ -142,10 +173,9 @@ variable for the token inside the container; `WOF_TOKEN` is only compose variabl
 
 ## systemd
 
-Install the package system-wide first from a checkout (`sudo pip install -e .`; editable because the
-server and CLI read `web/` and `tv-assets/` from the source tree, so keep the checkout readable by
-the `webos-foundry` user and outside `/home`, which the unit hides with `ProtectHome=true`) so it can run `wof`; the unit sets
-`WEBOS_FOUNDRY_HOME=/var/lib/webos-foundry/config`.
+Install the release wheel into a service-owned virtual environment outside `/home`, which the unit
+hides with `ProtectHome=true`, and make its `wof` executable available at the unit's `ExecStart` path.
+The unit sets `WEBOS_FOUNDRY_HOME=/var/lib/webos-foundry/config`.
 
 `systemd/webos-foundry.service` runs `wof serve` as a dedicated `webos-foundry` user:
 

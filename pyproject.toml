@@ -31,10 +31,22 @@ Issues = "https://github.com/Osyna/Overglass/issues"
 wof = "webos_foundry.cli:main"
 
 [tool.setuptools]
-packages = ["webos_foundry", "webos_foundry.connectors"]
+include-package-data = true
+packages = [
+  "webos_foundry", "webos_foundry.connectors",
+  "webos_foundry.web", "webos_foundry.tv_assets", "webos_foundry.tv_server",
+]
+
+[tool.setuptools.package-dir]
+"webos_foundry.web" = "web"
+"webos_foundry.tv_assets" = "tv-assets"
+"webos_foundry.tv_server" = "tv-server"
 
 [tool.setuptools.package-data]
 webos_foundry = ["py.typed"]
+"webos_foundry.web" = ["**/*"]
+"webos_foundry.tv_assets" = ["**/*"]
+"webos_foundry.tv_server" = ["**/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

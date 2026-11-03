@@ -409,8 +409,9 @@ inventing a private side channel.
   `process.wait_for_idle(transport)`; `process.enhance_*(..., *, log=None, cancel=None)`;
   `capture.stream(..., info=None)`; `process.py` and `capture.py` may call local `ffmpeg`/`ffprobe`
   (subprocess) — only `ssh` access is confined to `transport.py`/`pairing.py`.
-- `tv-assets/` lives at the repo root; `install.py` finds it via `WEBOS_FOUNDRY_ASSETS` or the repo
-  root next to the package (packaging it as package data is a later step).
+- Wheels carry `webos_foundry/web`, `webos_foundry/tv_assets`, and `webos_foundry/tv_server`.
+  Editable installs read the repository directories. `WEBOS_FOUNDRY_ASSETS`,
+  `WEBOS_FOUNDRY_TV_SERVER`, and `WEBOS_FOUNDRY_WEB` override resource locations explicitly.
 - **TV-assets amendments (tv-assets build):**
   - `dispatch.sh` rejects with exit 64 and `webos-foundry: <reason>` on stderr. Whole-request allowlist first
     (`[A-Za-z0-9+/=._ -]`, single spaces), then per-verb argument checks.

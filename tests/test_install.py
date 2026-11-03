@@ -95,9 +95,31 @@ def test_missing_assets(monkeypatch, tmp_path):
         install.update(tv())
 
 
-def test_default_assets_dir_is_repo_root(monkeypatch):
-    monkeypatch.delenv("WEBOS_FOUNDRY_ASSETS", raising=False)
-    assert install.assets_dir().name == "tv-assets"
+@pytest.mark.parametrize("name,env,resolve", [
+    ("tv-assets", install.ASSETS_ENV, install.assets_dir),
+    ("tv-server", install.TV_SERVER_ENV, install.tv_server_dir),
+    ("web", install.WEB_ENV, install.web_dir),
+])
+@pytest.mark.parametrize("selection", ["bundled", "checkout", "custom", "missing"])
+def test_resource_selection_and_explicit_overrides(monkeypatch, tmp_path, name, env, resolve, selection):
+    package = tmp_path / "site-packages" / "webos_foundry"
+    package.mkdir(parents=True)
+    monkeypatch.setattr(install, "__file__", str(package / "install.py"))
+    monkeypatch.delenv(env, raising=False)
+    locations = {"bundled": package / name.replace("-", "_"),
+                 "checkout": package.parent / name, "custom": tmp_path / "custom"}
+    for label, path in locations.items():
+        if label == "bundled" and selection == "checkout":
+            continue
+        path.mkdir(parents=True)
+        (path / "payload.txt").write_text(label)
+    if selection in ("custom", "missing"):
+        monkeypatch.setenv(env, str(tmp_path / selection))
+    if selection == "missing":
+        with pytest.raises(FileNotFoundError, match=env):
+            resolve()
+    else:
+        assert (resolve() / "payload.txt").read_text() == selection
 
 
 def test_status_parsing():
@@ -362,11 +384,6 @@ def test_tv_server_transport_errors_propagate(assets, tv_server):
         install.install(fake, overlay=False, vtcap="no", tv_server=True)
 
 
-def test_tv_server_dir_defaults_to_repo_root_sibling_of_tv_assets(monkeypatch):
-    monkeypatch.delenv("WEBOS_FOUNDRY_TV_SERVER", raising=False)
-    monkeypatch.delenv("WEBOS_FOUNDRY_WEB", raising=False)
-    monkeypatch.delenv("WEBOS_FOUNDRY_ASSETS", raising=False)
-    assert install.tv_server_dir().parent == install.assets_dir().parent == install.web_dir().parent
 
 
 def test_real_tv_server_and_web_trees_pass_the_tv_grammar(monkeypatch):
@@ -379,6 +396,8 @@ def test_real_tv_server_and_web_trees_pass_the_tv_grammar(monkeypatch):
     result = install.install(fake, overlay=False, vtcap="no", tv_server=True)
     assert "tv-server/server.js" in result["tv_server"]["files"]
     assert "tv-server/web/index.html" in result["tv_server"]["files"]
+    assert "tv-server/__init__.py" not in result["tv_server"]["files"]
+    assert "web/__init__.py" not in result["tv_server"]["files"]
     assert "tv-server/config.json" not in result["tv_server"]["files"]
     assert all(dispatcher.verb_of(c) for c in fake.commands)
     payload = next(call.data for call in fake.calls if call.command ==

@@ -229,7 +229,8 @@ def test_no_personal_data():
 
 
 def test_tv_server_dir_ships_only_two_files():
-    assert sorted(p.name for p in (ROOT / "tv-server").iterdir() if p.name != "__pycache__") == ["init.d-hook.sh", "server.js"]
+    assert sorted(p.name for p in (ROOT / "tv-server").iterdir()
+                  if p.name not in ("__pycache__", "__init__.py")) == ["init.d-hook.sh", "server.js"]
 
 
 # ---------------------------------------------------------------- catalogue

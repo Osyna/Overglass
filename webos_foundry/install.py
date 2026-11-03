@@ -1,9 +1,8 @@
 """Push, refresh and remove the TV-side assets over the dedicated (restricted) key.
 
-`tv-assets/` (and the optional on-TV server in `tv-server/`) live at the repository root, not inside the package,
-so a plain checkout or editable install works and a wheel does not carry them yet. Set WEBOS_FOUNDRY_ASSETS /
-WEBOS_FOUNDRY_TV_SERVER / WEBOS_FOUNDRY_WEB to point at other copies; moving them into package data is a
-packaging follow-up.
+Wheels carry the web UI, TV scripts and overlay resources inside the Python package. Checkouts and
+editable installs use the repository directories. WEBOS_FOUNDRY_ASSETS / WEBOS_FOUNDRY_TV_SERVER /
+WEBOS_FOUNDRY_WEB select explicit resource directories.
 
 On-TV server layout (ARCHITECTURE.md §10.4), what `install(..., tv_server=True)` pushes:
   tv-server/<rel>          -> /var/lib/webosbrew/webos-foundry/tv-server/<rel>   (every file but config.json and the hook)
@@ -41,7 +40,10 @@ AUTHORIZED_KEYS_HINT = ("The restricted key line in /home/root/.ssh/authorized_k
 
 
 def _repo_dir(name, env, label):
-    path = Path(os.environ.get(env) or Path(__file__).resolve().parent.parent / name)
+    package = Path(__file__).resolve().parent
+    bundled = package / name.replace("-", "_")
+    default = bundled if bundled.is_dir() else package.parent / name
+    path = Path(os.environ.get(env) or default)
     if not path.is_dir():
         raise FileNotFoundError("%s not found at %s (set %s)" % (label, path, env))
     return path
@@ -160,9 +162,10 @@ def _tv_server_sources():
 def _install_tv_server(transport):
     source, hook, web = _tv_server_sources()
     overlay = _checked(package_overlay())
+    # These empty files mark wheel resource packages; they are not TV-side assets.
     files = push_tree(transport, source, TV_SERVER_DIR,
-                      skip=TV_SERVER_KEEP_REMOTE + (TV_SERVER_HOOK_SOURCE, BUNDLED_OVERLAY_PATH))
-    files += push_tree(transport, web, TV_SERVER_DIR + "/web")
+                      skip=TV_SERVER_KEEP_REMOTE + (TV_SERVER_HOOK_SOURCE, BUNDLED_OVERLAY_PATH, "__init__.py"))
+    files += push_tree(transport, web, TV_SERVER_DIR + "/web", skip=("__init__.py",))
     bundled = TV_SERVER_DIR + "/" + BUNDLED_OVERLAY_PATH
     transport.run(dispatcher.build_install_tree(bundled, "put"), data=overlay, timeout=60)
     files.append(bundled)
